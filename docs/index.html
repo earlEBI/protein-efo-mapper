@@ -350,18 +350,6 @@ Beta-glucosidase 2	protein_name</pre>
         <div class="btn-row">
           <button class="btn primary copy-btn" type="button" data-copy-target="map-cmd">Copy Run Command</button>
         </div>
-        <pre id="map-cmd-serum">.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --measurement-context blood \
-  --additional-contexts serum \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-        <div class="btn-row">
-          <button class="btn ghost copy-btn" type="button" data-copy-target="map-cmd-serum">Copy Blood + Serum Command</button>
-        </div>
       </article>
     </section>
 
