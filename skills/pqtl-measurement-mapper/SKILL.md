@@ -129,11 +129,15 @@ Refresh EFO measurement cache and rebuild index (one command):
 ```bash
 .venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py \
   refresh-efo-cache \
+  --download-url https://github.com/EBISPOT/efo/releases/latest/download/efo.obo \
   --term-cache skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv \
   --index skills/pqtl-measurement-mapper/references/measurement_index.json \
   --analyte-cache skills/pqtl-measurement-mapper/references/analyte_to_efo_cache.tsv \
   --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv
 ```
+
+By default this refresh command downloads EFO OBO from the URL above when `--efo-obo` is not provided.  
+Index rebuild is enabled by default and should usually be left on.
 
 Map in bulk:
 

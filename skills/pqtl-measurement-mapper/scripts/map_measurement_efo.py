@@ -3252,7 +3252,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_refresh.add_argument(
         "--download-url",
         default=DEFAULT_EFO_OBO_URL,
-        help="EFO OBO URL used when --efo-obo is not provided",
+        help=(
+            "EFO OBO URL used when --efo-obo is not provided "
+            f"(default: {DEFAULT_EFO_OBO_URL})"
+        ),
     )
     p_refresh.add_argument(
         "--download-to",
@@ -3279,7 +3282,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--rebuild-index",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Rebuild local JSON index after cache refresh (default: on)",
+        help=(
+            "Rebuild local JSON index after cache refresh (recommended, default: on). "
+            "Use --no-rebuild-index only for staged/advanced workflows."
+        ),
     )
     p_refresh.add_argument(
         "--index",
