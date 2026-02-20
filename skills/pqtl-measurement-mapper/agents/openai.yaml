@@ -1,0 +1,4 @@
+interface:
+  display_name: "pQTL Measurement Mapper"
+  short_description: "Map proteins or metabolites to measurement EFO terms"
+  default_prompt: "Use $pqtl-measurement-mapper to map protein/metabolite IDs or gene symbols to measurement EFO IDs with validation."

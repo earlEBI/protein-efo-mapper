@@ -1,0 +1,4 @@
+analyte_key	efo_id	label	confidence	validation	source	evidence
+p00738	EFO:0004640	haptoglobin measurement	0.850	validated	auto-writeback	query=Haptoglobin measurement; source=local-term-cache; label=haptoglobin measurement
+p14625	EFO:0801570	endoplasmin measurement	0.850	validated	auto-writeback	query=Endoplasmin measurement; source=local-term-cache; label=endoplasmin measurement
+q9uli3	EFO:0802947	protein HEG homolog 1 measurement	1.000	validated	manual-curated	manual curated mapping to EFO:0802947

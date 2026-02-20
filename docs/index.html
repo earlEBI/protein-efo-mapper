@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pQTL Measurement Mapper</title>
+  <meta name="description" content="Map UniProt IDs, gene symbols, and protein names to EFO/OBA measurement terms for pQTL studies.">
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+    :root {
+      --bg-a: #f4efe6;
+      --bg-b: #e8f5ef;
+      --ink: #1b1f24;
+      --ink-muted: #475569;
+      --panel: rgba(255, 255, 255, 0.82);
+      --line: rgba(27, 31, 36, 0.12);
+      --accent: #0f766e;
+      --accent-strong: #0d9488;
+      --warning: #b45309;
+      --shadow: 0 20px 40px rgba(2, 8, 23, 0.12);
+      --radius: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 8% -10%, #fff 0%, transparent 55%),
+        radial-gradient(900px 420px at 100% 0%, #d6f4ea 0%, transparent 65%),
+        linear-gradient(130deg, var(--bg-a), var(--bg-b));
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    .orb {
+      position: fixed;
+      border-radius: 999px;
+      pointer-events: none;
+      filter: blur(2px);
+      opacity: 0.3;
+      z-index: 0;
+      animation: float 8s ease-in-out infinite;
+    }
+
+    .orb.one {
+      width: 220px;
+      height: 220px;
+      right: -70px;
+      top: 90px;
+      background: #38bdf8;
+    }
+
+    .orb.two {
+      width: 180px;
+      height: 180px;
+      left: -40px;
+      bottom: 120px;
+      background: #34d399;
+      animation-delay: 1.8s;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+
+    main {
+      position: relative;
+      z-index: 1;
+      width: min(1040px, 92vw);
+      margin: 32px auto 56px;
+      display: grid;
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--panel);
+      backdrop-filter: blur(6px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 22px;
+      transform: translateY(12px);
+      opacity: 0;
+      animation: rise 460ms ease forwards;
+    }
+
+    .card:nth-child(2) { animation-delay: 80ms; }
+    .card:nth-child(3) { animation-delay: 160ms; }
+    .card:nth-child(4) { animation-delay: 240ms; }
+    .card:nth-child(5) { animation-delay: 320ms; }
+
+    @keyframes rise {
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.8rem, 4.8vw, 2.7rem);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 1.1rem;
+      letter-spacing: 0.01em;
+    }
+
+    p {
+      margin: 0;
+      color: var(--ink-muted);
+    }
+
+    .badge-row {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .badge {
+      border: 1px solid rgba(13, 148, 136, 0.25);
+      color: #0f766e;
+      background: rgba(15, 118, 110, 0.08);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 12px;
+      border-radius: 12px;
+      background: #0f172a;
+      color: #d1fae5;
+      border: 1px solid #1e293b;
+      overflow-x: auto;
+      font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
+      font-size: 0.84rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    code {
+      font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
+      font-size: 0.88em;
+    }
+
+    .btn-row {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .btn {
+      border: 1px solid transparent;
+      border-radius: 12px;
+      padding: 9px 14px;
+      font-weight: 600;
+      font-size: 0.88rem;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 120ms ease, filter 120ms ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.02);
+    }
+
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+    }
+
+    .btn.ghost {
+      color: #0f766e;
+      background: rgba(255, 255, 255, 0.65);
+      border-color: rgba(15, 118, 110, 0.25);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--ink-muted);
+    }
+
+    .note {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(180, 83, 9, 0.22);
+      background: rgba(251, 191, 36, 0.12);
+      color: #78350f;
+      font-size: 0.86rem;
+    }
+
+    footer {
+      margin-top: 8px;
+      color: #64748b;
+      font-size: 0.82rem;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        margin-top: 20px;
+      }
+
+      .card {
+        padding: 18px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="orb one"></div>
+  <div class="orb two"></div>
+  <main>
+    <section class="card">
+      <h1>pQTL Measurement Mapper</h1>
+      <p>Maps UniProt accessions, gene symbols, gene IDs, and protein names to measurement terms in EFO and OBA-imported EFO terms.</p>
+      <div class="badge-row">
+        <span class="badge">EFO + OBA</span>
+        <span class="badge">Matrix-aware (plasma &gt; blood &gt; serum)</span>
+        <span class="badge">Validated vs review-queue outputs</span>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Input Template</h2>
+        <p>Use one query column. Add <code>input_type</code> when known for better precision.</p>
+        <pre>query	input_type
+Q9ULI3	accession
+LIPC	gene_symbol
+ENSG00000172137	gene_id
+Beta-glucosidase 2	protein_name</pre>
+        <div class="btn-row">
+          <a class="btn ghost" href="./input_template.tsv" download>Download TSV Template</a>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Run Mapper</h2>
+        <p>Run locally from your project root:</p>
+        <pre id="map-cmd">.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py map \
+  --input data/analytes.tsv \
+  --output final_output/analytes_efo.tsv \
+  --review-output final_output/review_queue.tsv \
+  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
+  --workers 8 \
+  --parallel-mode process \
+  --progress</pre>
+        <div class="btn-row">
+          <button id="copy-cmd" class="btn primary" type="button">Copy Command</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Outputs</h2>
+        <ul>
+          <li><code>final_output/analytes_efo.tsv</code>: main mappings with confidence and validation.</li>
+          <li><code>final_output/review_queue.tsv</code>: unresolved or withheld mappings with top suggestions.</li>
+          <li><code>final_output/analytes_unmapped.tsv</code>: optional pure unresolved list.</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>GitHub Pages Deploy</h2>
+        <ul>
+          <li>Keep this site under <code>docs/</code>.</li>
+          <li>Enable GitHub Pages in repository settings.</li>
+          <li>Workflow <code>.github/workflows/pages.yml</code> deploys this folder automatically.</li>
+        </ul>
+        <div class="note">
+          GitHub Pages is static hosting. The mapping itself still runs in your Python CLI or web API backend.
+        </div>
+      </article>
+    </section>
+
+    <footer>
+      Last updated <span id="today"></span>
+    </footer>
+  </main>
+  <script>
+    const copyButton = document.getElementById("copy-cmd");
+    const cmd = document.getElementById("map-cmd");
+    copyButton.addEventListener("click", async () => {
+      const text = cmd.textContent.trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        copyButton.textContent = "Copied";
+        setTimeout(() => { copyButton.textContent = "Copy Command"; }, 1200);
+      } catch (_err) {
+        copyButton.textContent = "Copy failed";
+      }
+    });
+
+    const today = new Date();
+    document.getElementById("today").textContent = today.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    });
+  </script>
+</body>
+</html>
