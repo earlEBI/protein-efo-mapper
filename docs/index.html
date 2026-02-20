@@ -438,6 +438,9 @@ glucose	metabolite_name</pre>
       <ul>
         <li>Useful optional flags: <code>--top-k</code>, <code>--min-score</code>, <code>--workers</code>, <code>--name-mode</code>, <code>--entity-type</code>, <code>--auto-enrich-uniprot</code>, <code>--metabolite-aliases</code>, <code>--unmapped-output</code>, <code>--review-output</code>.</li>
       </ul>
+      <div class="note">
+        <code>--auto-enrich-uniprot</code> is incremental: it fetches missing aliases only for accession-like queries in your current input, writes them to <code>uniprot_aliases.tsv</code>, then rebuilds the index. It is not a full UniProt rebuild.
+      </div>
     </section>
 
     <section class="card">

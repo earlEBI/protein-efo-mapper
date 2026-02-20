@@ -18,9 +18,9 @@ Provide an input file with one analyte per row:
 - `.txt` or `.list`: one value per line
 - `.csv` or `.tsv`: include one query column and optionally an input-type column.
   - Query column (one of):
-  - `query`, `id`, `identifier`, `protein_id`, `metabolite_id`, `gene`, `gene_symbol`, `symbol`, `term`
+  - `query`, `id`, `identifier`, `protein_id`, `metabolite_id`, `metabolite_name`, `gene`, `gene_symbol`, `symbol`, `term`
 - Optional type column (one of): `input_type`, `query_type`, `id_type`, `type`
-  - Allowed values: `accession`, `gene_symbol`, `gene_id`, `protein_name`, `auto`
+  - Allowed values: `accession`, `gene_symbol`, `gene_id`, `protein_name`, `metabolite_id`, `metabolite_name`, `auto`
 - If no known column exists, the first column is used.
 
 Recommended TSV template:
@@ -31,6 +31,8 @@ Q9ULI3	accession
 LIPC	gene_symbol
 Beta-glucosidase 2	protein_name
 ENSG00000172137	gene_id
+CHEBI:17234	metabolite_id
+glucose	metabolite_name
 ```
 
 Examples of acceptable input values:
@@ -57,6 +59,7 @@ Cache files used by default:
 - `references/analyte_to_efo_cache.tsv` (exact analyte -> EFO mappings)
 - `references/efo_measurement_terms_cache.tsv` (full measurement branch list from EFO/OBA imports: id/label/synonyms)
 - `references/uniprot_aliases.tsv` (optional accession -> alias expansion table)
+- `references/metabolite_aliases.tsv` (optional metabolite concept aliases and IDs: HMDB/ChEBI/KEGG)
 - Preferred matrix ordering for tie-breaks: `plasma,blood,serum`
 
 ## Procedure
@@ -65,6 +68,7 @@ Cache files used by default:
 - Create a JSON index from local cache/reference TSV files.
 - Include term exact-match and token indexes for fast retrieval.
 - Include analyte cache and optional UniProt accession alias index.
+- Include optional metabolite concept alias index (HMDB/ChEBI/KEGG + synonyms).
 - Build term cache from full EFO measurement branch (recommended), not sparse bootstrap queries.
 - Generate `uniprot_aliases.tsv` from UniProt export when needed.
 - For external users, preload all human UniProt aliases once to avoid alias-missing failures on new accessions.
@@ -73,7 +77,9 @@ Cache files used by default:
 - Read the input list and map each query from the local index.
 - Run exact analyte cache hits first.
 - Expand UniProt accessions using local alias table when available.
+- Resolve metabolite IDs/names using local metabolite alias concept index when available.
 - In `--name-mode strict` (default), free-text names/gene symbols are mapped only after exact alias resolution to UniProt accessions.
+- For mixed inputs, keep `--entity-type auto`; for single-entity batches, use `--entity-type protein` or `--entity-type metabolite`.
 - Apply exact term and token-retrieval lexical scoring.
 - Support compound ID cells (for example `Q9NZ08;Q9NZ08-2`) and isoform canonicalization.
 - For new IDs, optionally auto-enrich UniProt aliases before mapping.
@@ -121,7 +127,27 @@ Alternative from a local UniProt export file:
   --term-cache skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv \
   --analyte-cache skills/pqtl-measurement-mapper/references/analyte_to_efo_cache.tsv \
   --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv \
+  --metabolite-aliases skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
   --output-index skills/pqtl-measurement-mapper/references/measurement_index.json
+```
+
+Build metabolite alias table from HMDB/ChEBI/KEGG resources (optional, recommended for metabolite mapping):
+
+```bash
+.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py \
+  metabolite-alias-build \
+  --output skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
+  --download-common-sources
+```
+
+Optional HMDB download in the same command:
+
+```bash
+.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py \
+  metabolite-alias-build \
+  --output skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
+  --download-common-sources \
+  --download-hmdb
 ```
 
 Refresh EFO measurement cache and rebuild index (one command):
@@ -133,7 +159,8 @@ Refresh EFO measurement cache and rebuild index (one command):
   --term-cache skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv \
   --index skills/pqtl-measurement-mapper/references/measurement_index.json \
   --analyte-cache skills/pqtl-measurement-mapper/references/analyte_to_efo_cache.tsv \
-  --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv
+  --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv \
+  --metabolite-aliases skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv
 ```
 
 By default this refresh command downloads EFO OBO from the URL above when `--efo-obo` is not provided.  
@@ -147,6 +174,7 @@ Map in bulk:
   --input data/analytes.tsv \
   --output data/analytes_efo.tsv \
   --index skills/pqtl-measurement-mapper/references/measurement_index.json \
+  --entity-type auto \
   --top-k 2 \
   --min-score 0.55 \
   --workers 8 \

@@ -11,12 +11,16 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import gzip
 import json
 import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 import time
+import xml.etree.ElementTree as ET
+import zipfile
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -31,6 +35,7 @@ SEARCHABLE_COLUMNS = [
     "identifier",
     "protein_id",
     "metabolite_id",
+    "metabolite_name",
     "gene",
     "gene_symbol",
     "symbol",
@@ -62,6 +67,25 @@ INPUT_TYPE_ALIASES = {
     "name": "protein_name",
     "protein": "protein_name",
     "analyte_name": "protein_name",
+    "metabolite_id": "metabolite_id",
+    "hmdb_id": "metabolite_id",
+    "chebi_id": "metabolite_id",
+    "kegg_id": "metabolite_id",
+    "metabolite_name": "metabolite_name",
+    "compound_name": "metabolite_name",
+    "compound": "metabolite_name",
+}
+ENTITY_TYPE_ALIASES = {
+    "": "auto",
+    "auto": "auto",
+    "any": "auto",
+    "both": "auto",
+    "protein": "protein",
+    "proteins": "protein",
+    "metabolite": "metabolite",
+    "metabolites": "metabolite",
+    "compound": "metabolite",
+    "compounds": "metabolite",
 }
 
 MEASUREMENT_KEYWORDS = {
@@ -214,6 +238,9 @@ ROMAN_NUMERAL_TOKENS = frozenset(
 UNIPROT_ACCESSION_RE = re.compile(
     r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$"
 )
+HMDB_ID_RE = re.compile(r"^HMDB(\d{3,})$", re.IGNORECASE)
+CHEBI_ID_RE = re.compile(r"^CHEBI[:_](\d{1,7})$", re.IGNORECASE)
+KEGG_ID_RE = re.compile(r"^(?:KEGG[:_])?(?:CPD:|DR:)?([CD]\d{5})$", re.IGNORECASE)
 EFO_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
 ALLOWED_ONTOLOGY_ID_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
 MULTI_ID_SEP_RE = re.compile(r"[;|]")
@@ -221,6 +248,11 @@ DEFAULT_ANALYTE_CACHE = Path(__file__).resolve().parents[1] / "references" / "an
 DEFAULT_TERM_CACHE = Path(__file__).resolve().parents[1] / "references" / "efo_measurement_terms_cache.tsv"
 DEFAULT_INDEX = Path(__file__).resolve().parents[1] / "references" / "measurement_index.json"
 DEFAULT_UNIPROT_ALIASES = Path(__file__).resolve().parents[1] / "references" / "uniprot_aliases.tsv"
+DEFAULT_METABOLITE_ALIASES = Path(__file__).resolve().parents[1] / "references" / "metabolite_aliases.tsv"
+DEFAULT_METABOLITE_DOWNLOAD_DIR = Path(__file__).resolve().parents[1] / "references" / "metabolite_downloads"
+DEFAULT_HMDB_XML_URL = "https://hmdb.ca/system/downloads/current/hmdb_metabolites.zip"
+DEFAULT_CHEBI_NAMES_URL = "https://ftp.ebi.ac.uk/pub/databases/chebi/flat_files/names.tsv.gz"
+DEFAULT_KEGG_CONV_URL = "https://rest.kegg.jp/conv/chebi/compound"
 DEFAULT_EFO_OBO_URL = "https://github.com/EBISPOT/efo/releases/latest/download/efo.obo"
 DEFAULT_EFO_OBO_LOCAL = Path(__file__).resolve().parents[1] / "references" / "efo.obo"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
@@ -361,17 +393,29 @@ def normalize_input_type(value: str) -> str:
     return INPUT_TYPE_ALIASES.get(key, "auto")
 
 
+@lru_cache(maxsize=50_000)
+def normalize_entity_type(value: str) -> str:
+    key = norm_key(value).replace("-", "_").replace(" ", "_")
+    return ENTITY_TYPE_ALIASES.get(key, "auto")
+
+
 def effective_name_mode(default_name_mode: str, input_type: str) -> str:
     kind = normalize_input_type(input_type)
     if kind == "protein_name":
         # Protein-name inputs are often not uniquely resolvable via strict alias
         # lookup; enable fuzzy candidate retrieval but rely on validation gates.
         return "fuzzy"
+    if kind == "metabolite_name":
+        # Metabolite free-text names are commonly synonym-heavy and benefit from
+        # lexical candidate retrieval before downstream validation gates.
+        return "fuzzy"
     if kind == "gene_symbol":
         return "strict"
     if kind == "gene_id":
         return "strict"
     if kind == "accession":
+        return "strict"
+    if kind == "metabolite_id":
         return "strict"
     return default_name_mode
 
@@ -392,6 +436,41 @@ def canonical_accession(value: str) -> str:
     return ""
 
 
+@lru_cache(maxsize=200_000)
+def canonical_metabolite_id(value: str) -> str:
+    token = normalize(value).upper().replace(" ", "")
+    if not token:
+        return ""
+    token = token.replace("_", ":")
+
+    hmdb_match = HMDB_ID_RE.match(token)
+    if hmdb_match:
+        digits = hmdb_match.group(1)
+        # HMDB accessions are typically zero-padded to 7+ digits.
+        return f"HMDB{digits.zfill(7)}"
+
+    chebi_match = CHEBI_ID_RE.match(token)
+    if chebi_match:
+        return f"CHEBI:{chebi_match.group(1)}"
+
+    kegg_match = KEGG_ID_RE.match(token)
+    if kegg_match:
+        return kegg_match.group(1).upper()
+
+    return ""
+
+
+def metabolite_id_bucket(met_id: str) -> str:
+    mid = canonical_metabolite_id(met_id)
+    if mid.startswith("HMDB"):
+        return "hmdb"
+    if mid.startswith("CHEBI:"):
+        return "chebi"
+    if re.match(r"^[CD]\d{5}$", mid):
+        return "kegg"
+    return "other"
+
+
 @lru_cache(maxsize=100_000)
 def query_variants(query: str) -> tuple[str, ...]:
     q = normalize(query)
@@ -402,6 +481,9 @@ def query_variants(query: str) -> tuple[str, ...]:
         canonical = canonical_accession(part)
         if canonical:
             variants.add(canonical)
+        metabolite_id = canonical_metabolite_id(part)
+        if metabolite_id:
+            variants.add(metabolite_id)
     return tuple(v for v in variants if v)
 
 
@@ -623,6 +705,485 @@ def write_uniprot_alias_records(path: Path, records: dict[str, dict[str, str]]) 
             )
 
 
+def parse_pipe_list(value: str) -> list[str]:
+    return [normalize(x) for x in (value or "").split("|") if normalize(x)]
+
+
+def normalize_metabolite_ids(values: list[str]) -> list[str]:
+    ids: list[str] = []
+    for raw in values:
+        mid = canonical_metabolite_id(raw)
+        if mid:
+            ids.append(mid)
+    return sorted(set(ids))
+
+
+def default_metabolite_concept_id(label: str, ids: list[str], idx: int = 0) -> str:
+    if ids:
+        return ids[0]
+    key = re.sub(r"[^a-z0-9]+", "_", norm_key(label)).strip("_")
+    if not key:
+        key = f"concept_{idx + 1}"
+    return f"META:{key}"
+
+
+def load_metabolite_alias_records(path: Path) -> dict[str, dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+    if not path.exists():
+        return records
+
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row_i, row in enumerate(reader):
+            concept_raw = (
+                row.get("concept_id")
+                or row.get("metabolite_concept_id")
+                or row.get("metabolite_id")
+                or row.get("id")
+                or ""
+            )
+            label = normalize(row.get("primary_label") or row.get("label") or row.get("name") or "")
+            aliases = parse_pipe_list(row.get("aliases") or row.get("synonyms") or "")
+
+            hmdb_ids = parse_pipe_list(row.get("hmdb_ids") or row.get("hmdb_id") or "")
+            chebi_ids = [
+                f"CHEBI:{val}" if re.fullmatch(r"\d{1,7}", val) else val
+                for val in parse_pipe_list(row.get("chebi_ids") or row.get("chebi_id") or "")
+            ]
+            kegg_ids = parse_pipe_list(row.get("kegg_ids") or row.get("kegg_id") or "")
+            generic_ids = parse_pipe_list(row.get("ids") or row.get("metabolite_ids") or "")
+            concept_seed = (
+                f"CHEBI:{concept_raw}"
+                if re.fullmatch(r"\d{1,7}", normalize(concept_raw))
+                else concept_raw
+            )
+            all_ids = normalize_metabolite_ids(
+                [concept_seed, *hmdb_ids, *chebi_ids, *kegg_ids, *generic_ids]
+            )
+
+            concept_id = normalize(concept_seed)
+            concept_id_canonical = canonical_metabolite_id(concept_id) if concept_id else ""
+            if concept_id_canonical:
+                concept_id = concept_id_canonical
+            if not concept_id:
+                concept_id = default_metabolite_concept_id(label, all_ids, idx=row_i)
+
+            source = normalize(row.get("source") or "metabolite-aliases")
+            merged_aliases = sorted(
+                {
+                    *aliases,
+                    *[mid for mid in all_ids],
+                    *([label] if label else []),
+                }
+            )
+            record = records.get(concept_id)
+            if record is None:
+                records[concept_id] = {
+                    "concept_id": concept_id,
+                    "primary_label": label,
+                    "aliases": "|".join(merged_aliases),
+                    "hmdb_ids": "|".join([mid for mid in all_ids if metabolite_id_bucket(mid) == "hmdb"]),
+                    "chebi_ids": "|".join([mid for mid in all_ids if metabolite_id_bucket(mid) == "chebi"]),
+                    "kegg_ids": "|".join([mid for mid in all_ids if metabolite_id_bucket(mid) == "kegg"]),
+                    "source": source,
+                }
+                continue
+
+            existing_aliases = set(parse_pipe_list(record.get("aliases") or ""))
+            existing_aliases.update(merged_aliases)
+            record["aliases"] = "|".join(sorted(existing_aliases))
+            if not normalize(record.get("primary_label") or "") and label:
+                record["primary_label"] = label
+
+            existing_ids = normalize_metabolite_ids(
+                [
+                    *parse_pipe_list(record.get("hmdb_ids") or ""),
+                    *parse_pipe_list(record.get("chebi_ids") or ""),
+                    *parse_pipe_list(record.get("kegg_ids") or ""),
+                    *all_ids,
+                ]
+            )
+            record["hmdb_ids"] = "|".join([mid for mid in existing_ids if metabolite_id_bucket(mid) == "hmdb"])
+            record["chebi_ids"] = "|".join([mid for mid in existing_ids if metabolite_id_bucket(mid) == "chebi"])
+            record["kegg_ids"] = "|".join([mid for mid in existing_ids if metabolite_id_bucket(mid) == "kegg"])
+            if source and source not in parse_pipe_list(record.get("source") or ""):
+                record["source"] = "|".join(sorted(set(parse_pipe_list(record.get("source") or "")) | {source}))
+
+    return records
+
+
+def write_metabolite_alias_records(path: Path, records: dict[str, dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["concept_id", "primary_label", "aliases", "hmdb_ids", "chebi_ids", "kegg_ids", "source"]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        for concept_id in sorted(records):
+            row = records[concept_id]
+            aliases = sorted(set(parse_pipe_list(row.get("aliases") or "")))
+            ids = normalize_metabolite_ids(
+                [
+                    *parse_pipe_list(row.get("hmdb_ids") or ""),
+                    *parse_pipe_list(row.get("chebi_ids") or ""),
+                    *parse_pipe_list(row.get("kegg_ids") or ""),
+                ]
+            )
+            writer.writerow(
+                {
+                    "concept_id": concept_id,
+                    "primary_label": normalize(row.get("primary_label") or ""),
+                    "aliases": "|".join(aliases),
+                    "hmdb_ids": "|".join([mid for mid in ids if metabolite_id_bucket(mid) == "hmdb"]),
+                    "chebi_ids": "|".join([mid for mid in ids if metabolite_id_bucket(mid) == "chebi"]),
+                    "kegg_ids": "|".join([mid for mid in ids if metabolite_id_bucket(mid) == "kegg"]),
+                    "source": normalize(row.get("source") or ""),
+                }
+            )
+
+
+def download_to_file(url: str, destination: Path, timeout: float) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": HTTP_USER_AGENT,
+            "Accept": "*/*",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as out:  # nosec B310
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+    return destination
+
+
+def filename_from_url(url: str, fallback: str) -> str:
+    path = urllib.parse.urlparse(url).path
+    name = Path(path).name
+    return name or fallback
+
+
+def extract_first_xml_from_zip(zip_path: Path, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        xml_members = [name for name in zf.namelist() if name.lower().endswith(".xml")]
+        if not xml_members:
+            raise ValueError(f"No XML file found in archive: {zip_path}")
+        # Prefer obvious HMDB metabolite XML names when present.
+        xml_members_sorted = sorted(
+            xml_members,
+            key=lambda name: (0 if "metabolite" in name.lower() else 1, len(name), name),
+        )
+        member = xml_members_sorted[0]
+        # Zip members can contain nested directories; flatten to filename in output_dir.
+        out_path = output_dir / Path(member).name
+        with zf.open(member) as src, out_path.open("wb") as dst:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+    return out_path
+
+
+def prepare_metabolite_source_paths(
+    *,
+    hmdb_xml_path: Path | None,
+    chebi_names_path: Path | None,
+    kegg_conv_path: Path | None,
+    download_common_sources: bool,
+    download_hmdb: bool,
+    download_dir: Path,
+    hmdb_url: str,
+    chebi_names_url: str,
+    kegg_conv_url: str,
+    timeout: float,
+) -> tuple[Path | None, Path | None, Path | None, list[str]]:
+    notes: list[str] = []
+    hmdb_path = hmdb_xml_path
+    chebi_path = chebi_names_path
+    kegg_path = kegg_conv_path
+
+    download_chebi = download_common_sources and chebi_path is None
+    download_kegg = download_common_sources and kegg_path is None
+    should_download_hmdb = download_hmdb and hmdb_path is None
+
+    if should_download_hmdb:
+        hmdb_download = download_dir / filename_from_url(hmdb_url, "hmdb_metabolites.zip")
+        try:
+            download_to_file(hmdb_url, hmdb_download, timeout=timeout)
+            if hmdb_download.suffix.lower() == ".zip":
+                hmdb_path = extract_first_xml_from_zip(hmdb_download, download_dir)
+            else:
+                hmdb_path = hmdb_download
+            notes.append(f"downloaded HMDB -> {hmdb_path}")
+        except Exception as exc:
+            raise RuntimeError(
+                f"HMDB download failed from {hmdb_url}. "
+                "Rerun without --download-hmdb or provide --hmdb-xml <local-file>."
+            ) from exc
+
+    if download_chebi:
+        chebi_download = download_dir / filename_from_url(chebi_names_url, "chebi_names.tsv.gz")
+        try:
+            download_to_file(chebi_names_url, chebi_download, timeout=timeout)
+            chebi_path = chebi_download
+            notes.append(f"downloaded ChEBI names -> {chebi_path}")
+        except Exception as exc:
+            raise RuntimeError(
+                f"ChEBI names download failed from {chebi_names_url}. "
+                "Provide --chebi-names <local-file>."
+            ) from exc
+
+    if download_kegg:
+        kegg_download = download_dir / filename_from_url(kegg_conv_url, "kegg_conv_chebi_compound.tsv")
+        try:
+            download_to_file(kegg_conv_url, kegg_download, timeout=timeout)
+            kegg_path = kegg_download
+            notes.append(f"downloaded KEGG conv -> {kegg_path}")
+        except Exception as exc:
+            raise RuntimeError(
+                f"KEGG conv download failed from {kegg_conv_url}. "
+                "Provide --kegg-conv <local-file>."
+            ) from exc
+
+    return hmdb_path, chebi_path, kegg_path, notes
+
+
+def open_text_with_optional_gzip(path: Path):
+    if path.suffix.lower() == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open("r", encoding="utf-8")
+
+
+def xml_local_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.split("}", 1)[1]
+    return tag
+
+
+def upsert_metabolite_builder_record(
+    records: dict[str, dict[str, str]],
+    id_to_concept: dict[str, str],
+    *,
+    concept_id: str,
+    label: str,
+    aliases: list[str],
+    ids: list[str],
+    source: str,
+) -> None:
+    canonical_ids = normalize_metabolite_ids([concept_id, *ids])
+    cid = canonical_metabolite_id(concept_id) if concept_id else ""
+    if cid:
+        concept_id = cid
+    merged_concept_id = ""
+    for mid in canonical_ids:
+        existing = id_to_concept.get(mid, "")
+        if existing:
+            merged_concept_id = existing
+            break
+    concept_id = normalize(merged_concept_id or concept_id) or default_metabolite_concept_id(label, canonical_ids)
+    source_clean = normalize(source) or "metabolite-build"
+
+    rec = records.get(concept_id)
+    if rec is None:
+        rec = {
+            "concept_id": concept_id,
+            "primary_label": normalize(label),
+            "aliases": "",
+            "hmdb_ids": "",
+            "chebi_ids": "",
+            "kegg_ids": "",
+            "source": source_clean,
+        }
+        records[concept_id] = rec
+
+    if not normalize(rec.get("primary_label") or "") and normalize(label):
+        rec["primary_label"] = normalize(label)
+
+    merged_aliases = set(parse_pipe_list(rec.get("aliases") or ""))
+    merged_aliases.update([normalize(a) for a in aliases if normalize(a)])
+    if normalize(label):
+        merged_aliases.add(normalize(label))
+    for mid in canonical_ids:
+        merged_aliases.add(mid)
+    rec["aliases"] = "|".join(sorted(merged_aliases))
+
+    merged_ids = normalize_metabolite_ids(
+        [
+            *parse_pipe_list(rec.get("hmdb_ids") or ""),
+            *parse_pipe_list(rec.get("chebi_ids") or ""),
+            *parse_pipe_list(rec.get("kegg_ids") or ""),
+            *canonical_ids,
+        ]
+    )
+    rec["hmdb_ids"] = "|".join([mid for mid in merged_ids if metabolite_id_bucket(mid) == "hmdb"])
+    rec["chebi_ids"] = "|".join([mid for mid in merged_ids if metabolite_id_bucket(mid) == "chebi"])
+    rec["kegg_ids"] = "|".join([mid for mid in merged_ids if metabolite_id_bucket(mid) == "kegg"])
+    for mid in merged_ids:
+        id_to_concept[mid] = concept_id
+    if source_clean:
+        rec["source"] = "|".join(sorted(set(parse_pipe_list(rec.get("source") or "")) | {source_clean}))
+
+
+def parse_hmdb_xml_into_records(path: Path, records: dict[str, dict[str, str]], id_to_concept: dict[str, str]) -> int:
+    count = 0
+    with open_text_with_optional_gzip(path) as handle:
+        context = ET.iterparse(handle, events=("end",))
+        for _event, elem in context:
+            if xml_local_name(elem.tag) != "metabolite":
+                continue
+
+            accession = ""
+            name = ""
+            aliases: list[str] = []
+            ids: list[str] = []
+            for child in list(elem):
+                child_name = xml_local_name(child.tag)
+                child_text = normalize(child.text or "")
+                if child_name == "accession":
+                    accession = child_text
+                    if accession:
+                        ids.append(accession)
+                    continue
+                if child_name == "name":
+                    name = child_text
+                    if name:
+                        aliases.append(name)
+                    continue
+                if child_name in {"chebi_id", "kegg_id"} and child_text:
+                    ids.append(child_text)
+                    continue
+                if child_name == "synonyms":
+                    for syn in list(child):
+                        if xml_local_name(syn.tag) != "synonym":
+                            continue
+                        syn_text = normalize(syn.text or "")
+                        if syn_text:
+                            aliases.append(syn_text)
+
+            if accession or name or aliases:
+                upsert_metabolite_builder_record(
+                    records,
+                    id_to_concept,
+                    concept_id=accession,
+                    label=name,
+                    aliases=aliases,
+                    ids=ids,
+                    source="hmdb",
+                )
+                count += 1
+            elem.clear()
+    return count
+
+
+def parse_chebi_names_into_records(path: Path, records: dict[str, dict[str, str]], id_to_concept: dict[str, str]) -> int:
+    count = 0
+    with open_text_with_optional_gzip(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if not reader.fieldnames:
+            return 0
+        field_map = {norm_key(name): name for name in reader.fieldnames if name}
+        id_field = (
+            field_map.get("chebi_id")
+            or field_map.get("compound_id")
+            or field_map.get("id")
+        )
+        name_field = field_map.get("name")
+        type_field = field_map.get("type")
+        if not id_field or not name_field:
+            return 0
+        for row in reader:
+            chebi_raw = normalize(row.get(id_field) or "")
+            if not chebi_raw:
+                continue
+            chebi_id = canonical_metabolite_id(f"CHEBI:{chebi_raw}")
+            if not chebi_id:
+                continue
+            name = normalize(row.get(name_field) or "")
+            if not name:
+                continue
+            row_type = norm_key(row.get(type_field) or "") if type_field else ""
+            preferred = row_type in {"name", "preferred name", "preferred"} or not row_type
+            upsert_metabolite_builder_record(
+                records,
+                id_to_concept,
+                concept_id=chebi_id,
+                label=name if preferred else "",
+                aliases=[name],
+                ids=[chebi_id],
+                source="chebi",
+            )
+            count += 1
+    return count
+
+
+def parse_kegg_conv_into_records(path: Path, records: dict[str, dict[str, str]], id_to_concept: dict[str, str]) -> int:
+    count = 0
+    with open_text_with_optional_gzip(path) as handle:
+        for raw in handle:
+            line = raw.rstrip("\n\r")
+            if not line or "\t" not in line:
+                continue
+            left, right = line.split("\t", 1)
+            left = normalize(left)
+            right = normalize(right)
+            left_id = canonical_metabolite_id(left)
+            right_id = canonical_metabolite_id(right)
+            if not left_id and not right_id:
+                continue
+            concept_id = left_id or right_id
+            ids = [mid for mid in [left_id, right_id] if mid]
+            upsert_metabolite_builder_record(
+                records,
+                id_to_concept,
+                concept_id=concept_id,
+                label="",
+                aliases=[],
+                ids=ids,
+                source="kegg-conv",
+            )
+            count += 1
+    return count
+
+
+def build_metabolite_alias_records(
+    *,
+    output_path: Path,
+    hmdb_xml_path: Path | None,
+    chebi_names_path: Path | None,
+    kegg_conv_path: Path | None,
+    merge_existing: bool,
+) -> tuple[int, int, int, int]:
+    records = load_metabolite_alias_records(output_path) if merge_existing else {}
+    id_to_concept: dict[str, str] = {}
+    for concept_id, row in records.items():
+        for mid in normalize_metabolite_ids(
+            [
+                concept_id,
+                *parse_pipe_list(row.get("hmdb_ids") or ""),
+                *parse_pipe_list(row.get("chebi_ids") or ""),
+                *parse_pipe_list(row.get("kegg_ids") or ""),
+            ]
+        ):
+            id_to_concept[mid] = concept_id
+    hmdb_rows = 0
+    chebi_rows = 0
+    kegg_rows = 0
+
+    if hmdb_xml_path is not None:
+        hmdb_rows = parse_hmdb_xml_into_records(hmdb_xml_path, records, id_to_concept)
+    if chebi_names_path is not None:
+        chebi_rows = parse_chebi_names_into_records(chebi_names_path, records, id_to_concept)
+    if kegg_conv_path is not None:
+        kegg_rows = parse_kegg_conv_into_records(kegg_conv_path, records, id_to_concept)
+
+    write_metabolite_alias_records(output_path, records)
+    return hmdb_rows, chebi_rows, kegg_rows, len(records)
+
+
 def fetch_json(url: str, timeout: float) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
@@ -784,6 +1345,7 @@ def build_index(
     term_rows: list[dict[str, Any]],
     analyte_rows: list[dict[str, Any]],
     accession_aliases: dict[str, list[str]],
+    metabolite_alias_records: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     term_meta: dict[str, dict[str, Any]] = {}
     exact_term_index: dict[str, set[str]] = {}
@@ -845,8 +1407,48 @@ def build_index(
                 if symbol_key:
                     symbol_accession_index.setdefault(symbol_key, set()).add(acc)
 
+    metabolite_concept_index: dict[str, dict[str, Any]] = {}
+    metabolite_id_concept_index: dict[str, set[str]] = {}
+    metabolite_alias_concept_index: dict[str, set[str]] = {}
+    metabolite_alias_loose_index: dict[str, set[str]] = {}
+    metabolite_alias_records = metabolite_alias_records or {}
+    for concept_id, row in metabolite_alias_records.items():
+        concept = normalize(concept_id)
+        if not concept:
+            continue
+        label = normalize(row.get("primary_label") or row.get("label") or "")
+        aliases = parse_pipe_list(row.get("aliases") or "")
+        ids = normalize_metabolite_ids(
+            [
+                concept,
+                *parse_pipe_list(row.get("hmdb_ids") or ""),
+                *parse_pipe_list(row.get("chebi_ids") or ""),
+                *parse_pipe_list(row.get("kegg_ids") or ""),
+                *parse_pipe_list(row.get("ids") or ""),
+            ]
+        )
+        searchable_aliases = sorted(set([label, *aliases, *ids]) - {""})
+        subject_terms = sorted(extract_subject_terms(label, searchable_aliases))
+        metabolite_concept_index[concept] = {
+            "label": label,
+            "aliases": sorted(set(aliases)),
+            "ids": ids,
+            "subject_terms": subject_terms,
+            "source": normalize(row.get("source") or ""),
+        }
+        for met_id in ids:
+            metabolite_id_concept_index.setdefault(met_id, set()).add(concept)
+        for alias in searchable_aliases:
+            for alias_variant in alias_variants(alias):
+                key = norm_key(alias_variant)
+                if key:
+                    metabolite_alias_concept_index.setdefault(key, set()).add(concept)
+                loose = loose_key(alias_variant)
+                if loose:
+                    metabolite_alias_loose_index.setdefault(loose, set()).add(concept)
+
     return {
-        "version": "2",
+        "version": "3",
         "built_at": datetime.now(UTC).isoformat(),
         "term_meta": term_meta,
         "exact_term_index": {k: sorted(v) for k, v in exact_term_index.items()},
@@ -856,6 +1458,10 @@ def build_index(
         "alias_accession_index": {k: sorted(v) for k, v in alias_accession_index.items()},
         "alias_loose_index": {k: sorted(v) for k, v in alias_loose_index.items()},
         "symbol_accession_index": {k: sorted(v) for k, v in symbol_accession_index.items()},
+        "metabolite_concept_index": metabolite_concept_index,
+        "metabolite_id_concept_index": {k: sorted(v) for k, v in metabolite_id_concept_index.items()},
+        "metabolite_alias_concept_index": {k: sorted(v) for k, v in metabolite_alias_concept_index.items()},
+        "metabolite_alias_loose_index": {k: sorted(v) for k, v in metabolite_alias_loose_index.items()},
     }
 
 
@@ -934,6 +1540,43 @@ def load_index(path: Path) -> dict[str, Any]:
                                 symbol_accession_index.setdefault(symbol_key, set()).add(acc_clean)
         index["alias_loose_index"] = {k: sorted(v) for k, v in alias_loose_index.items()}
         index["symbol_accession_index"] = {k: sorted(v) for k, v in symbol_accession_index.items()}
+
+    if "metabolite_concept_index" not in index:
+        index["metabolite_concept_index"] = {}
+    if (
+        "metabolite_id_concept_index" not in index
+        or "metabolite_alias_concept_index" not in index
+        or "metabolite_alias_loose_index" not in index
+    ):
+        concept_index = index.get("metabolite_concept_index") or {}
+        metabolite_id_concept_index: dict[str, set[str]] = {}
+        metabolite_alias_concept_index: dict[str, set[str]] = {}
+        metabolite_alias_loose_index: dict[str, set[str]] = {}
+        if isinstance(concept_index, dict):
+            for concept_id, concept_meta in concept_index.items():
+                concept = normalize(concept_id)
+                if not concept or not isinstance(concept_meta, dict):
+                    continue
+                label = normalize(concept_meta.get("label") or "")
+                aliases = [normalize(x) for x in (concept_meta.get("aliases") or []) if normalize(x)]
+                ids = normalize_metabolite_ids([*aliases, *(concept_meta.get("ids") or []), concept])
+                searchable = sorted(set([label, *aliases, *ids]) - {""})
+                subject_terms = extract_subject_terms(label, searchable)
+                concept_meta["subject_terms"] = sorted(subject_terms)
+                concept_meta["ids"] = ids
+                for mid in ids:
+                    metabolite_id_concept_index.setdefault(mid, set()).add(concept)
+                for alias in searchable:
+                    for alias_variant in alias_variants(alias):
+                        key = norm_key(alias_variant)
+                        if key:
+                            metabolite_alias_concept_index.setdefault(key, set()).add(concept)
+                        loose = loose_key(alias_variant)
+                        if loose:
+                            metabolite_alias_loose_index.setdefault(loose, set()).add(concept)
+        index["metabolite_id_concept_index"] = {k: sorted(v) for k, v in metabolite_id_concept_index.items()}
+        index["metabolite_alias_concept_index"] = {k: sorted(v) for k, v in metabolite_alias_concept_index.items()}
+        index["metabolite_alias_loose_index"] = {k: sorted(v) for k, v in metabolite_alias_loose_index.items()}
     return index
 
 
@@ -952,6 +1595,7 @@ def init_process_mapper(
     name_mode: str,
     force_map_best: bool,
     fallback_efo_id: str,
+    entity_type: str,
 ) -> None:
     global PROCESS_INDEX, PROCESS_MAP_KW
     PROCESS_INDEX = load_index(Path(index_path))
@@ -965,6 +1609,7 @@ def init_process_mapper(
         "name_mode": name_mode,
         "force_map_best": force_map_best,
         "fallback_efo_id": fallback_efo_id,
+        "entity_type": entity_type,
     }
 
 
@@ -985,6 +1630,7 @@ def process_map_one(query_item: tuple[str, str]) -> list[dict[str, str]]:
         force_map_best=bool(PROCESS_MAP_KW["force_map_best"]),
         fallback_efo_id=str(PROCESS_MAP_KW["fallback_efo_id"]),
         input_type=input_type,
+        entity_type=str(PROCESS_MAP_KW.get("entity_type", "auto")),
     )
 
 
@@ -2063,6 +2709,180 @@ def profile_subject_exact_match_rank(
     return 0
 
 
+def is_metabolite_like_input_type(input_type: str) -> bool:
+    kind = normalize_input_type(input_type)
+    return kind in {"metabolite_id", "metabolite_name"}
+
+
+def is_protein_like_input_type(input_type: str) -> bool:
+    kind = normalize_input_type(input_type)
+    return kind in {"accession", "gene_symbol", "gene_id", "protein_name"}
+
+
+def resolve_query_metabolite_concepts(query: str, index: dict[str, Any]) -> tuple[list[str], bool, bool]:
+    id_index = index.get("metabolite_id_concept_index", {})
+    alias_index = index.get("metabolite_alias_concept_index", {})
+    loose_index = index.get("metabolite_alias_loose_index", {})
+    concept_scores: dict[str, int] = {}
+    used_alias_resolution = False
+    ambiguous_alias_resolution = False
+
+    variants = name_lookup_variants(query)
+    for variant in variants:
+        met_id = canonical_metabolite_id(variant)
+        if met_id:
+            hits = id_index.get(met_id, [])
+            if len(hits) == 1:
+                return [normalize(hits[0])], False, False
+            if hits:
+                for hit in hits:
+                    concept = normalize(hit)
+                    if concept:
+                        concept_scores[concept] = concept_scores.get(concept, 0) + 8
+
+        key = norm_key(variant)
+        if key:
+            hits = alias_index.get(key, [])
+            if len(hits) == 1:
+                used_alias_resolution = True
+                concept = normalize(hits[0])
+                if concept:
+                    concept_scores[concept] = concept_scores.get(concept, 0) + 6
+            elif len(hits) > 1:
+                used_alias_resolution = True
+                ambiguous_alias_resolution = True
+                for hit in sorted({normalize(h) for h in hits if normalize(h)})[:25]:
+                    concept_scores[hit] = concept_scores.get(hit, 0) + 4
+
+        loose = loose_key(variant)
+        if loose:
+            hits = loose_index.get(loose, [])
+            if len(hits) == 1:
+                used_alias_resolution = True
+                concept = normalize(hits[0])
+                if concept:
+                    concept_scores[concept] = concept_scores.get(concept, 0) + 3
+            elif len(hits) > 1:
+                used_alias_resolution = True
+                ambiguous_alias_resolution = True
+                for hit in sorted({normalize(h) for h in hits if normalize(h)})[:20]:
+                    concept_scores[hit] = concept_scores.get(hit, 0) + 2
+
+    if concept_scores:
+        top = max(concept_scores.values())
+        chosen = sorted(c for c, score in concept_scores.items() if score == top)
+        return chosen, used_alias_resolution, ambiguous_alias_resolution
+    return [], used_alias_resolution, ambiguous_alias_resolution
+
+
+def detect_entity_route(
+    *,
+    query: str,
+    input_type: str,
+    forced_entity_type: str,
+    resolved_accessions: list[str],
+    resolved_metabolites: list[str],
+) -> str:
+    forced = normalize_entity_type(forced_entity_type)
+    if forced in {"protein", "metabolite"}:
+        return forced
+    if is_protein_like_input_type(input_type):
+        return "protein"
+    if is_metabolite_like_input_type(input_type):
+        return "metabolite"
+    if any(canonical_accession(v) for v in query_variants(query)):
+        return "protein"
+    if any(canonical_metabolite_id(v) for v in query_variants(query)):
+        return "metabolite"
+    if resolved_accessions:
+        return "protein"
+    if resolved_metabolites:
+        return "metabolite"
+    return "protein"
+
+
+def concept_subject_terms(concept_ids: list[str], index: dict[str, Any]) -> tuple[frozenset[str], ...]:
+    concept_index = index.get("metabolite_concept_index", {})
+    profiles: list[frozenset[str]] = []
+    for concept_id in concept_ids:
+        meta = concept_index.get(concept_id) or {}
+        if not isinstance(meta, dict):
+            continue
+        subject_terms = frozenset(normalize(x) for x in (meta.get("subject_terms") or []) if normalize(x))
+        if subject_terms:
+            profiles.append(subject_terms)
+    return tuple(profiles)
+
+
+def metabolite_identity_match(
+    query: str,
+    candidate_subject_terms: frozenset[str],
+    candidate_nums: frozenset[str],
+    concept_subject_profiles: tuple[frozenset[str], ...],
+) -> bool:
+    if not concept_subject_profiles:
+        return True
+    query_nums = numeric_tokens(normalize_measurement_subject(query) or norm_key(query))
+    for profile_terms in concept_subject_profiles:
+        if not profile_terms:
+            continue
+        if subject_terms_match(profile_terms, candidate_subject_terms, strict=False):
+            if query_nums and candidate_nums and query_nums.isdisjoint(candidate_nums):
+                continue
+            return True
+    return False
+
+
+def build_metabolite_query_aliases(
+    query: str,
+    index: dict[str, Any],
+    resolved_concepts: list[str],
+    name_mode: str,
+    is_metabolite_id_input: bool,
+) -> list[str]:
+    aliases: set[str] = set()
+    concept_index = index.get("metabolite_concept_index", {})
+
+    if name_mode == "strict" and not is_metabolite_id_input and not resolved_concepts:
+        for variant in name_lookup_variants(query):
+            aliases.add(variant)
+        return [x for x in aliases if x]
+
+    for variant in name_lookup_variants(query):
+        aliases.add(variant)
+        met_id = canonical_metabolite_id(variant) if is_metabolite_id_input else ""
+        if met_id:
+            aliases.add(met_id)
+        aliases.add(variant.replace("_", " "))
+        aliases.add(variant.replace("-", " "))
+
+    for concept_id in resolved_concepts:
+        concept = concept_index.get(concept_id) or {}
+        if not isinstance(concept, dict):
+            continue
+        label = normalize(concept.get("label") or "")
+        if label:
+            aliases.add(label)
+        for alias in concept.get("aliases") or []:
+            alias_clean = normalize(alias)
+            if alias_clean:
+                aliases.add(alias_clean)
+        for met_id in concept.get("ids") or []:
+            met_id_clean = canonical_metabolite_id(met_id)
+            if met_id_clean:
+                aliases.add(met_id_clean)
+
+    expanded_aliases: set[str] = set()
+    for alias in aliases:
+        if not alias:
+            continue
+        expanded_aliases.add(alias)
+        for variant in subject_phrase_variants(alias):
+            if variant:
+                expanded_aliases.add(variant)
+    return sorted(set(x for x in expanded_aliases if x))
+
+
 def build_query_aliases(
     query: str,
     index: dict[str, Any],
@@ -2132,6 +2952,8 @@ def candidates_from_index(
     additional_contexts: list[str],
     additional_context_keywords: list[str],
     name_mode: str,
+    input_type: str = "auto",
+    entity_type: str = "auto",
 ) -> list[Candidate]:
     term_meta: dict[str, dict[str, Any]] = index.get("term_meta", {})
     exact_term_index: dict[str, list[str]] = index.get("exact_term_index", {})
@@ -2139,20 +2961,46 @@ def candidates_from_index(
     analyte_index: dict[str, list[dict[str, Any]]] = index.get("analyte_index", {})
 
     candidates: dict[str, Candidate] = {}
+    input_type_norm = normalize_input_type(input_type)
     resolved_accessions, used_alias_resolution, _ambiguous_alias_resolution = resolve_query_accessions(query, index)
+    resolved_metabolites, used_met_alias_resolution, _ambiguous_met_alias_resolution = resolve_query_metabolite_concepts(
+        query, index
+    )
+    route = detect_entity_route(
+        query=query,
+        input_type=input_type_norm,
+        forced_entity_type=entity_type,
+        resolved_accessions=resolved_accessions,
+        resolved_metabolites=resolved_metabolites,
+    )
     is_accession_input = any(canonical_accession(v) for v in query_variants(query))
+    is_metabolite_id_input = any(canonical_metabolite_id(v) for v in query_variants(query))
     is_symbol_input = bool(symbol_query_key(query) or uniprot_mnemonic_symbol_keys(query, index))
-    accession_profiles = compile_accession_profiles(accession_profiles_for_accessions(resolved_accessions, index))
+    accession_profiles = (
+        compile_accession_profiles(accession_profiles_for_accessions(resolved_accessions, index))
+        if route == "protein"
+        else tuple()
+    )
+    metabolite_subject_profiles = concept_subject_terms(resolved_metabolites, index) if route == "metabolite" else tuple()
     has_accession_profiles = bool(accession_profiles)
+    has_metabolite_profiles = bool(metabolite_subject_profiles)
     allow_ratio_terms = query_requests_ratio(query)
     strict_unresolved_name = (
         name_mode == "strict"
-        and not is_accession_input
+        and ((route == "protein" and not is_accession_input) or (route == "metabolite" and not is_metabolite_id_input))
         and not EFO_RE.match(query)
-        and not used_alias_resolution
+        and not (used_alias_resolution if route == "protein" else used_met_alias_resolution)
     )
     strict_tokens = (
-        strict_query_tokens(query) if (name_mode == "strict" and not is_accession_input and not is_symbol_input) else frozenset()
+        strict_query_tokens(query)
+        if (
+            name_mode == "strict"
+            and (
+                (route == "protein" and not is_accession_input and not is_symbol_input)
+                or (route == "metabolite" and not is_metabolite_id_input)
+            )
+        )
+        else frozenset()
     )
     term_cache: dict[str, tuple[str, list[str], str, frozenset[str], frozenset[str]]] = {}
     identity_cache: dict[str, bool] = {}
@@ -2190,31 +3038,41 @@ def candidates_from_index(
         nums: frozenset[str],
         subject_terms: frozenset[str],
     ) -> bool:
-        if not has_accession_profiles:
+        if route == "protein" and not has_accession_profiles:
+            return True
+        if route == "metabolite" and not has_metabolite_profiles:
             return True
         cached = identity_cache.get(efo_id)
         if cached is not None:
             return cached
-        ok = accession_identity_match(
-            query,
-            label,
-            syns,
-            index,
-            precomputed_profiles=accession_profiles,
-            candidate_text=merged,
-            candidate_nums=nums,
-            candidate_subject_terms=subject_terms,
-        )
+        if route == "protein":
+            ok = accession_identity_match(
+                query,
+                label,
+                syns,
+                index,
+                precomputed_profiles=accession_profiles,
+                candidate_text=merged,
+                candidate_nums=nums,
+                candidate_subject_terms=subject_terms,
+            )
+        else:
+            ok = metabolite_identity_match(
+                query=query,
+                candidate_subject_terms=subject_terms,
+                candidate_nums=nums,
+                concept_subject_profiles=metabolite_subject_profiles,
+            )
         identity_cache[efo_id] = ok
         return ok
 
     def profile_exact_bonus(subject_terms: frozenset[str]) -> int:
-        if not has_accession_profiles:
+        if route != "protein" or not has_accession_profiles:
             return 0
         return profile_subject_exact_match_bonus(accession_profiles, subject_terms)
 
     def profile_exact_rank(subject_terms: frozenset[str]) -> int:
-        if not has_accession_profiles:
+        if route != "protein" or not has_accession_profiles:
             return 0
         return profile_subject_exact_match_rank(accession_profiles, subject_terms)
 
@@ -2337,13 +3195,22 @@ def candidates_from_index(
             reverse=True,
         )
 
-    expanded = build_query_aliases(
-        query,
-        index,
-        resolved_accessions=resolved_accessions,
-        name_mode=name_mode,
-        is_accession_input=is_accession_input,
-    )
+    if route == "metabolite":
+        expanded = build_metabolite_query_aliases(
+            query,
+            index,
+            resolved_concepts=resolved_metabolites,
+            name_mode=name_mode,
+            is_metabolite_id_input=is_metabolite_id_input,
+        )
+    else:
+        expanded = build_query_aliases(
+            query,
+            index,
+            resolved_accessions=resolved_accessions,
+            name_mode=name_mode,
+            is_accession_input=is_accession_input,
+        )
     term_parts: list[tuple[str, str, str, set[str], set[str]]] = []
     for term in expanded:
         term_key = norm_key(term)
@@ -2432,6 +3299,7 @@ def map_one(
     force_map_best: bool,
     fallback_efo_id: str,
     input_type: str = "auto",
+    entity_type: str = "auto",
 ) -> list[dict[str, str]]:
     query = normalize(query)
     input_type_norm = normalize_input_type(input_type)
@@ -2443,6 +3311,8 @@ def map_one(
         additional_contexts=additional_contexts,
         additional_context_keywords=additional_context_keywords,
         name_mode=name_mode,
+        input_type=input_type_norm,
+        entity_type=entity_type,
     )
     eligible = [c for c in candidates if c.score >= min_score]
 
@@ -2553,6 +3423,7 @@ def map_queries(
     name_mode: str,
     force_map_best: bool,
     fallback_efo_id: str,
+    entity_type: str,
     show_progress: bool,
     parallel_mode: str,
     index_path: Path | None = None,
@@ -2584,6 +3455,7 @@ def map_queries(
             force_map_best=force_map_best,
             fallback_efo_id=fallback_efo_id,
             input_type=input_type,
+            entity_type=entity_type,
         )
 
     if workers <= 1:
@@ -2618,6 +3490,7 @@ def map_queries(
                     name_mode,
                     force_map_best,
                     fallback_efo_id,
+                    entity_type,
                 ),
             ) as pool:
                 future_to_query = {pool.submit(process_map_one, item): item for item in unique_inputs}
@@ -2664,21 +3537,43 @@ def lexical_probe_candidates(
     additional_contexts: list[str],
     additional_context_keywords: list[str],
     name_mode: str,
+    input_type: str = "auto",
+    entity_type: str = "auto",
 ) -> list[Candidate]:
     term_meta: dict[str, dict[str, Any]] = index.get("term_meta", {})
     exact_term_index: dict[str, list[str]] = index.get("exact_term_index", {})
     token_index: dict[str, list[str]] = index.get("token_index", {})
     candidates: dict[str, Candidate] = {}
     resolved_accessions, _used_alias_resolution, _ambiguous_alias_resolution = resolve_query_accessions(query, index)
-    is_accession_input = any(canonical_accession(v) for v in query_variants(query))
-    allow_ratio_terms = query_requests_ratio(query)
-    expanded = build_query_aliases(
-        query,
-        index,
-        resolved_accessions=resolved_accessions,
-        name_mode=name_mode,
-        is_accession_input=is_accession_input,
+    resolved_metabolites, _used_met_alias_resolution, _ambiguous_met_alias_resolution = resolve_query_metabolite_concepts(
+        query, index
     )
+    route = detect_entity_route(
+        query=query,
+        input_type=normalize_input_type(input_type),
+        forced_entity_type=entity_type,
+        resolved_accessions=resolved_accessions,
+        resolved_metabolites=resolved_metabolites,
+    )
+    is_accession_input = any(canonical_accession(v) for v in query_variants(query))
+    is_metabolite_id_input = any(canonical_metabolite_id(v) for v in query_variants(query))
+    allow_ratio_terms = query_requests_ratio(query)
+    if route == "metabolite":
+        expanded = build_metabolite_query_aliases(
+            query,
+            index,
+            resolved_concepts=resolved_metabolites,
+            name_mode=name_mode,
+            is_metabolite_id_input=is_metabolite_id_input,
+        )
+    else:
+        expanded = build_query_aliases(
+            query,
+            index,
+            resolved_accessions=resolved_accessions,
+            name_mode=name_mode,
+            is_accession_input=is_accession_input,
+        )
     term_parts: list[tuple[str, str, set[str], set[str]]] = []
     for term in expanded:
         term_lower = term.lower()
@@ -2749,9 +3644,27 @@ def infer_review_reason(
     additional_context_keywords: list[str],
     name_mode: str,
     input_type: str = "auto",
+    entity_type: str = "auto",
 ) -> tuple[str, str, list[str], list[Candidate]]:
     query = normalize(query)
     effective_mode = effective_name_mode(name_mode, input_type)
+    resolved_accessions, used_alias_resolution, ambiguous_alias_resolution = resolve_query_accessions(query, index)
+    resolved_metabolites, used_met_alias_resolution, ambiguous_met_alias_resolution = resolve_query_metabolite_concepts(
+        query, index
+    )
+    route = detect_entity_route(
+        query=query,
+        input_type=normalize_input_type(input_type),
+        forced_entity_type=entity_type,
+        resolved_accessions=resolved_accessions,
+        resolved_metabolites=resolved_metabolites,
+    )
+    resolved_identity = resolved_accessions if route == "protein" else resolved_metabolites
+    is_accession_input = any(canonical_accession(v) for v in query_variants(query))
+    is_metabolite_input = any(canonical_metabolite_id(v) for v in query_variants(query))
+    used_resolution = used_alias_resolution if route == "protein" else used_met_alias_resolution
+    ambiguous_resolution = ambiguous_alias_resolution if route == "protein" else ambiguous_met_alias_resolution
+
     strict_candidates = candidates_from_index(
         query,
         index,
@@ -2760,9 +3673,9 @@ def infer_review_reason(
         additional_contexts=additional_contexts,
         additional_context_keywords=additional_context_keywords,
         name_mode=effective_mode,
+        input_type=input_type,
+        entity_type=route,
     )
-    resolved_accessions, used_alias_resolution, ambiguous_alias_resolution = resolve_query_accessions(query, index)
-    is_accession_input = any(canonical_accession(v) for v in query_variants(query))
 
     if strict_candidates:
         best = strict_candidates[0]
@@ -2773,7 +3686,7 @@ def infer_review_reason(
                     f"best candidate {format_ontology_id_for_output(best.efo_id)} scored {best.score:.3f} but did not pass "
                     "auto-validation gate"
                 ),
-                resolved_accessions,
+                resolved_identity,
                 strict_candidates,
             )
         return (
@@ -2782,7 +3695,7 @@ def infer_review_reason(
                 f"best candidate {format_ontology_id_for_output(best.efo_id)} "
                 f"scored {best.score:.3f}, below min_score={min_score:.3f}"
             ),
-            resolved_accessions,
+            resolved_identity,
             strict_candidates,
         )
 
@@ -2795,6 +3708,8 @@ def infer_review_reason(
             additional_contexts=[],
             additional_context_keywords=[],
             name_mode=effective_mode,
+            input_type=input_type,
+            entity_type=route,
         )
         if any_context_candidates:
             best = any_context_candidates[0]
@@ -2804,15 +3719,28 @@ def infer_review_reason(
                     f"candidate {format_ontology_id_for_output(best.efo_id)} exists only outside "
                     f"requested context '{measurement_context}'"
                 ),
-                resolved_accessions,
+                resolved_identity,
                 any_context_candidates,
             )
 
-    if effective_mode == "strict" and not is_accession_input and not EFO_RE.match(query) and not used_alias_resolution:
+    if (
+        effective_mode == "strict"
+        and not EFO_RE.match(query)
+        and (
+            (route == "protein" and not is_accession_input)
+            or (route == "metabolite" and not is_metabolite_input)
+        )
+        and not used_resolution
+    ):
+        unresolved_msg = (
+            "query did not resolve to a unique accession in strict mode"
+            if route == "protein"
+            else "query did not resolve to a unique metabolite concept in strict mode"
+        )
         return (
             "unresolved_name_strict_mode",
-            "query did not resolve to a unique accession in strict mode",
-            resolved_accessions,
+            unresolved_msg,
+            resolved_identity,
             [],
         )
 
@@ -2824,8 +3752,10 @@ def infer_review_reason(
         additional_contexts=additional_contexts,
         additional_context_keywords=additional_context_keywords,
         name_mode=effective_mode,
+        input_type=input_type,
+        entity_type=route,
     )
-    if resolved_accessions and probe_candidates:
+    if route == "protein" and resolved_accessions and probe_candidates:
         best = probe_candidates[0]
         return (
             "identity_conflict_family_member",
@@ -2836,27 +3766,49 @@ def infer_review_reason(
             resolved_accessions,
             probe_candidates,
         )
-
-    if ambiguous_alias_resolution and not resolved_accessions:
+    if route == "metabolite" and resolved_metabolites and probe_candidates:
+        best = probe_candidates[0]
         return (
-            "ambiguous_alias_resolution",
-            "query alias matched multiple accessions without a stable winner",
-            resolved_accessions,
+            "identity_conflict_metabolite",
+            (
+                f"lexical candidate {format_ontology_id_for_output(best.efo_id)} exists but "
+                "failed metabolite concept identity validation"
+            ),
+            resolved_metabolites,
             probe_candidates,
         )
 
-    if resolved_accessions:
+    if ambiguous_resolution and not resolved_identity:
+        return (
+            "ambiguous_alias_resolution" if route == "protein" else "ambiguous_metabolite_alias_resolution",
+            (
+                "query alias matched multiple accessions without a stable winner"
+                if route == "protein"
+                else "query alias matched multiple metabolite concepts without a stable winner"
+            ),
+            resolved_identity,
+            probe_candidates,
+        )
+
+    if route == "protein" and resolved_accessions:
         return (
             "no_measurement_term_for_resolved_accession",
             "resolved accession(s) found but no valid measurement term passed filters",
             resolved_accessions,
             probe_candidates,
         )
+    if route == "metabolite" and resolved_metabolites:
+        return (
+            "no_measurement_term_for_resolved_metabolite",
+            "resolved metabolite concept(s) found but no valid measurement term passed filters",
+            resolved_metabolites,
+            probe_candidates,
+        )
 
     return (
         "no_candidate_found",
         "no local candidates were retrieved from exact/token indexes",
-        resolved_accessions,
+        resolved_identity,
         probe_candidates,
     )
 
@@ -2866,6 +3818,10 @@ def review_action(reason_code: str) -> tuple[str, str]:
         "identity_conflict_family_member": (
             "keep_not_mapped",
             "Top lexical matches conflict with accession identity; do not auto-map.",
+        ),
+        "identity_conflict_metabolite": (
+            "keep_not_mapped",
+            "Top lexical matches conflict with metabolite concept identity; do not auto-map.",
         ),
         "context_mismatch": (
             "check_context",
@@ -2881,15 +3837,23 @@ def review_action(reason_code: str) -> tuple[str, str]:
         ),
         "unresolved_name_strict_mode": (
             "resolve_identifier",
-            "Resolve query to a UniProt accession or canonical gene symbol first.",
+            "Resolve query to a stable UniProt accession or metabolite identifier first.",
         ),
         "ambiguous_alias_resolution": (
             "resolve_ambiguity",
             "Alias maps to multiple accessions; disambiguate before mapping.",
         ),
+        "ambiguous_metabolite_alias_resolution": (
+            "resolve_ambiguity",
+            "Alias maps to multiple metabolite concepts; disambiguate before mapping.",
+        ),
         "no_measurement_term_for_resolved_accession": (
             "curate_new_term",
             "Resolved accession has no suitable local measurement term; consider cache curation.",
+        ),
+        "no_measurement_term_for_resolved_metabolite": (
+            "curate_new_term",
+            "Resolved metabolite concept has no suitable local measurement term; consider cache curation.",
         ),
         "no_candidate_found": (
             "expand_resources",
@@ -2975,6 +3939,7 @@ def write_review_tsv(
     additional_contexts: list[str],
     additional_context_keywords: list[str],
     name_mode: str,
+    entity_type: str,
     top_n: int,
 ) -> int:
     pending_rows = [row for row in rows if row.get("validation") != "validated"]
@@ -3025,6 +3990,7 @@ def write_review_tsv(
                     additional_context_keywords=additional_context_keywords,
                     name_mode=name_mode,
                     input_type=input_type,
+                    entity_type=entity_type,
                 )
                 reason_cache[reason_key] = cached_reason
             reason_code, reason, resolved_accessions, suggestions = cached_reason
@@ -3233,6 +4199,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_idx.add_argument("--term-cache", default=str(DEFAULT_TERM_CACHE), help="Term cache TSV path")
     p_idx.add_argument("--analyte-cache", default=str(DEFAULT_ANALYTE_CACHE), help="Analyte->EFO cache TSV path")
     p_idx.add_argument("--uniprot-aliases", default=str(DEFAULT_UNIPROT_ALIASES), help="UniProt accession alias TSV")
+    p_idx.add_argument(
+        "--metabolite-aliases",
+        default=str(DEFAULT_METABOLITE_ALIASES),
+        help="Metabolite alias TSV (HMDB/ChEBI/KEGG/local synonyms)",
+    )
     p_idx.add_argument("--output-index", default=str(DEFAULT_INDEX), help="Output JSON index path")
 
     p_refresh = sub.add_parser(
@@ -3302,6 +4273,84 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_UNIPROT_ALIASES),
         help="UniProt alias TSV used if rebuilding index",
     )
+    p_refresh.add_argument(
+        "--metabolite-aliases",
+        default=str(DEFAULT_METABOLITE_ALIASES),
+        help="Metabolite alias TSV used if rebuilding index",
+    )
+
+    p_met_alias = sub.add_parser(
+        "metabolite-alias-build",
+        help="Build/merge local metabolite alias TSV from HMDB XML, ChEBI names TSV, and/or KEGG conv mappings",
+    )
+    p_met_alias.add_argument(
+        "--output",
+        default=str(DEFAULT_METABOLITE_ALIASES),
+        help="Output metabolite alias TSV path",
+    )
+    p_met_alias.add_argument(
+        "--hmdb-xml",
+        default="",
+        help="Optional HMDB metabolites XML(.gz) path",
+    )
+    p_met_alias.add_argument(
+        "--chebi-names",
+        default="",
+        help="Optional ChEBI names TSV(.gz) path",
+    )
+    p_met_alias.add_argument(
+        "--kegg-conv",
+        default="",
+        help="Optional KEGG conv mapping file path",
+    )
+    p_met_alias.add_argument(
+        "--merge-existing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Merge parsed aliases into existing output TSV (default: on)",
+    )
+    p_met_alias.add_argument(
+        "--download-common-sources",
+        action="store_true",
+        help=(
+            "Download ChEBI names and KEGG conv mappings automatically when local "
+            "paths are not provided."
+        ),
+    )
+    p_met_alias.add_argument(
+        "--download-hmdb",
+        action="store_true",
+        help=(
+            "Download HMDB metabolite archive automatically when --hmdb-xml is not provided. "
+            "This can fail if HMDB access policy changes."
+        ),
+    )
+    p_met_alias.add_argument(
+        "--download-dir",
+        default=str(DEFAULT_METABOLITE_DOWNLOAD_DIR),
+        help="Directory for downloaded metabolite source files",
+    )
+    p_met_alias.add_argument(
+        "--download-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) for metabolite source downloads",
+    )
+    p_met_alias.add_argument(
+        "--hmdb-url",
+        default=DEFAULT_HMDB_XML_URL,
+        help="HMDB archive URL used with --download-hmdb",
+    )
+    p_met_alias.add_argument(
+        "--chebi-names-url",
+        default=DEFAULT_CHEBI_NAMES_URL,
+        help="ChEBI names TSV(.gz) URL used with --download-common-sources",
+    )
+    p_met_alias.add_argument(
+        "--kegg-conv-url",
+        default=DEFAULT_KEGG_CONV_URL,
+        help="KEGG conv URL used with --download-common-sources",
+    )
 
     p_map = sub.add_parser("map", help="Map queries using local JSON index")
     p_map.add_argument(
@@ -3309,7 +4358,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "Input txt/csv/tsv with analyte queries. Optional tabular input_type column "
-            "(input_type/query_type/id_type/type): accession, gene_symbol, gene_id, protein_name, auto"
+            "(input_type/query_type/id_type/type): accession, gene_symbol, gene_id, protein_name, "
+            "metabolite_id, metabolite_name, auto"
         ),
     )
     p_map.add_argument("--output", required=True, help="Output mapping TSV")
@@ -3369,8 +4419,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["strict", "fuzzy"],
         default="strict",
         help=(
-            "Handling for non-accession free-text names/gene symbols: "
-            "strict requires unique alias->UniProt resolution; fuzzy enables lexical fallback"
+            "Handling for free-text names: strict requires unique alias resolution "
+            "(UniProt for proteins, concept alias for metabolites); fuzzy enables lexical fallback"
+        ),
+    )
+    p_map.add_argument(
+        "--entity-type",
+        choices=["auto", "protein", "metabolite"],
+        default="auto",
+        help=(
+            "Entity mapping mode. auto routes per query; protein uses UniProt identity gating; "
+            "metabolite uses metabolite-concept identity gating."
         ),
     )
     p_map.add_argument(
@@ -3392,6 +4451,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--uniprot-aliases",
         default=str(DEFAULT_UNIPROT_ALIASES),
         help="UniProt alias TSV path used for enrichment and index rebuild",
+    )
+    p_map.add_argument(
+        "--metabolite-aliases",
+        default=str(DEFAULT_METABOLITE_ALIASES),
+        help="Metabolite alias TSV used for metabolite concept resolution and index rebuild",
     )
     p_map.add_argument(
         "--term-cache",
@@ -3449,13 +4513,20 @@ def main() -> int:
             term_rows = load_term_cache(Path(args.term_cache))
             analyte_rows = load_analyte_cache(Path(args.analyte_cache))
             aliases = load_uniprot_aliases(Path(args.uniprot_aliases))
-            index = build_index(term_rows=term_rows, analyte_rows=analyte_rows, accession_aliases=aliases)
+            metabolite_aliases = load_metabolite_alias_records(Path(args.metabolite_aliases))
+            index = build_index(
+                term_rows=term_rows,
+                analyte_rows=analyte_rows,
+                accession_aliases=aliases,
+                metabolite_alias_records=metabolite_aliases,
+            )
             save_index(index, Path(args.output_index))
             print(
                 f"[OK] built index at {args.output_index} "
                 f"(terms={len(index.get('term_meta', {}))}, "
                 f"analyte_keys={len(index.get('analyte_index', {}))}, "
-                f"accessions={len(index.get('accession_alias_index', {}))})"
+                f"accessions={len(index.get('accession_alias_index', {}))}, "
+                f"metabolite_concepts={len(index.get('metabolite_concept_index', {}))})"
             )
             return 0
 
@@ -3475,18 +4546,61 @@ def main() -> int:
                 term_rows = load_term_cache(Path(args.term_cache))
                 analyte_rows = load_analyte_cache(Path(args.analyte_cache))
                 aliases = load_uniprot_aliases(Path(args.uniprot_aliases))
+                metabolite_aliases = load_metabolite_alias_records(Path(args.metabolite_aliases))
                 index = build_index(
                     term_rows=term_rows,
                     analyte_rows=analyte_rows,
                     accession_aliases=aliases,
+                    metabolite_alias_records=metabolite_aliases,
                 )
                 save_index(index, Path(args.index))
                 print(
                     f"[OK] rebuilt index at {args.index} "
                     f"(terms={len(index.get('term_meta', {}))}, "
                     f"analyte_keys={len(index.get('analyte_index', {}))}, "
-                    f"accessions={len(index.get('accession_alias_index', {}))})"
+                    f"accessions={len(index.get('accession_alias_index', {}))}, "
+                    f"metabolite_concepts={len(index.get('metabolite_concept_index', {}))})"
                 )
+            return 0
+
+        if args.command == "metabolite-alias-build":
+            output_path = Path(args.output)
+            hmdb_path = Path(args.hmdb_xml) if normalize(args.hmdb_xml) else None
+            chebi_path = Path(args.chebi_names) if normalize(args.chebi_names) else None
+            kegg_path = Path(args.kegg_conv) if normalize(args.kegg_conv) else None
+            hmdb_path, chebi_path, kegg_path, download_notes = prepare_metabolite_source_paths(
+                hmdb_xml_path=hmdb_path,
+                chebi_names_path=chebi_path,
+                kegg_conv_path=kegg_path,
+                download_common_sources=bool(args.download_common_sources),
+                download_hmdb=bool(args.download_hmdb),
+                download_dir=Path(args.download_dir),
+                hmdb_url=args.hmdb_url,
+                chebi_names_url=args.chebi_names_url,
+                kegg_conv_url=args.kegg_conv_url,
+                timeout=float(args.download_timeout),
+            )
+            if hmdb_path is None and chebi_path is None and kegg_path is None:
+                raise ValueError(
+                    "No metabolite sources selected. Provide --hmdb-xml/--chebi-names/--kegg-conv "
+                    "or enable --download-common-sources and/or --download-hmdb."
+                )
+            for source_path in [hmdb_path, chebi_path, kegg_path]:
+                if source_path is not None and not source_path.exists():
+                    raise FileNotFoundError(f"Metabolite source file not found: {source_path}")
+            hmdb_rows, chebi_rows, kegg_rows, concept_count = build_metabolite_alias_records(
+                output_path=output_path,
+                hmdb_xml_path=hmdb_path,
+                chebi_names_path=chebi_path,
+                kegg_conv_path=kegg_path,
+                merge_existing=bool(args.merge_existing),
+            )
+            for note in download_notes:
+                print(f"[OK] {note}")
+            print(
+                f"[OK] wrote metabolite aliases to {output_path} "
+                f"(hmdb_rows={hmdb_rows}, chebi_rows={chebi_rows}, kegg_rows={kegg_rows}, concepts={concept_count})"
+            )
             return 0
 
         if args.command == "map":
@@ -3500,7 +4614,9 @@ def main() -> int:
             index_path = Path(args.index)
             analyte_cache_path = Path(args.analyte_cache)
             uniprot_alias_path = Path(args.uniprot_aliases)
+            metabolite_alias_path = Path(args.metabolite_aliases)
             term_cache_path = Path(args.term_cache)
+            entity_type = normalize_entity_type(args.entity_type)
 
             enriched_added = 0
             enriched_failed = 0
@@ -3522,17 +4638,20 @@ def main() -> int:
                 term_rows = load_term_cache(term_cache_path)
                 analyte_rows = load_analyte_cache(analyte_cache_path)
                 aliases = load_uniprot_aliases(uniprot_alias_path)
+                metabolite_aliases = load_metabolite_alias_records(metabolite_alias_path)
                 index = build_index(
                     term_rows=term_rows,
                     analyte_rows=analyte_rows,
                     accession_aliases=aliases,
+                    metabolite_alias_records=metabolite_aliases,
                 )
                 save_index(index, index_path)
                 print(
                     f"[OK] rebuilt index at {index_path} "
                     f"(terms={len(index.get('term_meta', {}))}, "
                     f"analyte_keys={len(index.get('analyte_index', {}))}, "
-                    f"accessions={len(index.get('accession_alias_index', {}))})"
+                    f"accessions={len(index.get('accession_alias_index', {}))}, "
+                    f"metabolite_concepts={len(index.get('metabolite_concept_index', {}))})"
                 )
             else:
                 index = load_index(index_path)
@@ -3550,6 +4669,7 @@ def main() -> int:
                 name_mode=args.name_mode,
                 force_map_best=args.force_map_best,
                 fallback_efo_id=args.fallback_efo_id,
+                entity_type=entity_type,
                 show_progress=args.progress,
                 parallel_mode=args.parallel_mode,
                 index_path=index_path,
@@ -3569,6 +4689,7 @@ def main() -> int:
                     additional_contexts=additional_contexts,
                     additional_context_keywords=additional_context_keywords,
                     name_mode=args.name_mode,
+                    entity_type=entity_type,
                     top_n=max(1, args.review_top_n),
                 )
                 print(f"[OK] wrote {review_rows} review rows to {args.review_output}")

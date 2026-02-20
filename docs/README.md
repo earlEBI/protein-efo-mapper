@@ -124,7 +124,8 @@ Useful optional arguments:
 - `--workers` parallel workers.
 - `--name-mode strict|fuzzy` handling for name-like inputs.
 - `--entity-type auto|protein|metabolite` routing/validation mode.
-- `--auto-enrich-uniprot` fetch missing UniProt aliases.
+- `--auto-enrich-uniprot` checks UniProt for accession-like queries missing from your local alias file, appends returned aliases to `uniprot_aliases.tsv`, and rebuilds index before mapping.
+  - It is incremental for current input queries, not a full UniProt rebuild.
 - `--metabolite-aliases` local metabolite concept aliases for HMDB/ChEBI/KEGG/name resolution.
 - `--unmapped-output` write unresolved rows to a separate TSV.
 - `--review-output` write optional manual-review suggestions (`review_queue.tsv`).
