@@ -339,7 +339,7 @@ Beta-glucosidase 2	protein_name</pre>
 
       <article class="card">
         <h2>Run Mapper</h2>
-        <p>Run locally from your project root:</p>
+        <p>Run locally from your project root. Default blood context returns blood/plasma/unlabeled terms (serum excluded).</p>
         <pre id="map-cmd">.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py map \
   --input data/analytes.tsv \
   --output final_output/analytes_efo.tsv \
@@ -351,6 +351,19 @@ Beta-glucosidase 2	protein_name</pre>
         <div class="btn-row">
           <button class="btn primary copy-btn" type="button" data-copy-target="map-cmd">Copy Run Command</button>
         </div>
+        <pre id="map-cmd-serum">.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py map \
+  --input data/analytes.tsv \
+  --output final_output/analytes_efo.tsv \
+  --review-output final_output/review_queue.tsv \
+  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
+  --measurement-context blood \
+  --additional-contexts serum \
+  --workers 8 \
+  --parallel-mode process \
+  --progress</pre>
+        <div class="btn-row">
+          <button class="btn ghost copy-btn" type="button" data-copy-target="map-cmd-serum">Copy Blood + Serum Command</button>
+        </div>
       </article>
     </section>
 
@@ -360,6 +373,7 @@ Beta-glucosidase 2	protein_name</pre>
         <li><code>final_output/analytes_efo.tsv</code>: main mappings with confidence and validation.</li>
         <li><code>final_output/review_queue.tsv</code>: unresolved or withheld mappings with top suggestions.</li>
         <li><code>final_output/analytes_unmapped.tsv</code>: optional pure unresolved list.</li>
+        <li>Ontology IDs are written with underscores (for example <code>EFO_0802947</code>).</li>
       </ul>
       <div class="note">
         This website is documentation and templates. Mapping runs in your local Python environment.

@@ -32,6 +32,12 @@ Run mapping:
   --progress
 ```
 
+Defaults and options:
+
+- Default `--measurement-context blood` excludes serum-specific terms.
+- Add serum explicitly with `--additional-contexts serum`.
+- Output IDs are written with underscores (for example `EFO_0802947`).
+
 The published site URL is:
 
 `https://earlebi.github.io/protein-efo-mapper/`

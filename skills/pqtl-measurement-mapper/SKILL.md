@@ -44,7 +44,7 @@ Examples of acceptable input values:
 Write a TSV with one or more candidate mappings per input:
 - `input_query`
 - `input_type`
-- `mapped_efo_id`
+- `mapped_efo_id` (underscore format, for example `EFO_0802947`)
 - `mapped_label`
 - `confidence`
 - `matched_via` (`direct-id`, `uniprot`, `synonym`, `none`)
@@ -78,6 +78,7 @@ Cache files used by default:
 - Support compound ID cells (for example `Q9NZ08;Q9NZ08-2`) and isoform canonicalization.
 - For new IDs, optionally auto-enrich UniProt aliases before mapping.
 - Enforce matrix/tissue context (`blood` by default); explicit non-blood terms (for example cerebrospinal fluid) are rejected unless context is changed.
+- In default `blood` context, serum-specific terms are excluded unless explicitly added with `--additional-contexts serum`.
 
 3. Validate and review
 - Mark `validated` when mapped ID exists in local term index.
@@ -135,8 +136,21 @@ Map in bulk:
   --workers 8 \
   --name-mode strict \
   --progress \
+  --measurement-context blood \
   --matrix-priority plasma,blood,serum \
   --cache-writeback
+```
+
+Allow serum alongside blood (optional):
+
+```bash
+.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py \
+  map \
+  --input data/analytes.tsv \
+  --output data/analytes_efo.tsv \
+  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
+  --measurement-context blood \
+  --additional-contexts serum
 ```
 
 Performance tips for large batches:

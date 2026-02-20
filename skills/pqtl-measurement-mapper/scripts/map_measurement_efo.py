@@ -213,8 +213,8 @@ ROMAN_NUMERAL_TOKENS = frozenset(
 UNIPROT_ACCESSION_RE = re.compile(
     r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$"
 )
-EFO_RE = re.compile(r"^(EFO|OBA):\d+$", re.IGNORECASE)
-ALLOWED_ONTOLOGY_ID_RE = re.compile(r"^(EFO|OBA):\d+$", re.IGNORECASE)
+EFO_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
+ALLOWED_ONTOLOGY_ID_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
 MULTI_ID_SEP_RE = re.compile(r"[;|]")
 DEFAULT_ANALYTE_CACHE = Path(__file__).resolve().parents[1] / "references" / "analyte_to_efo_cache.tsv"
 DEFAULT_TERM_CACHE = Path(__file__).resolve().parents[1] / "references" / "efo_measurement_terms_cache.tsv"
@@ -228,7 +228,9 @@ TOKEN_SUBJECT_EXACT_AUTO_VALIDATE_MIN_SCORE = 0.70
 UNIPROT_ENTRY_URL = "https://rest.uniprot.org/uniprotkb/{acc}.json"
 HTTP_USER_AGENT = "pqtl-measurement-mapper/1.0"
 MEASUREMENT_CONTEXT_PATTERNS = {
-    "blood": ["blood", "plasma", "serum", "circulating"],
+    "blood": ["blood", "circulating"],
+    "plasma": ["plasma", "blood plasma"],
+    "serum": ["serum", "blood serum"],
     "cerebrospinal_fluid": ["cerebrospinal fluid", "csf"],
     "urine": ["urine", "urinary"],
     "saliva": ["saliva", "salivary"],
@@ -239,8 +241,11 @@ MEASUREMENT_CONTEXT_ALIASES = {
     "any": "auto",
     "none": "auto",
     "blood": "blood",
-    "plasma": "blood",
-    "serum": "blood",
+    "whole blood": "blood",
+    "plasma": "plasma",
+    "blood plasma": "plasma",
+    "serum": "serum",
+    "blood serum": "serum",
     "circulating": "blood",
     "csf": "cerebrospinal_fluid",
     "cerebrospinal fluid": "cerebrospinal_fluid",
@@ -331,6 +336,14 @@ def normalize(text: str) -> str:
 @lru_cache(maxsize=200_000)
 def normalize_id(value: str) -> str:
     return normalize(value).upper().replace("_", ":")
+
+
+@lru_cache(maxsize=200_000)
+def format_ontology_id_for_output(value: str) -> str:
+    efo_id = normalize_id(value)
+    if not efo_id:
+        return ""
+    return efo_id.replace(":", "_")
 
 
 @lru_cache(maxsize=200_000)
@@ -930,6 +943,7 @@ def init_process_mapper(
     min_score: float,
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
     force_map_best: bool,
     fallback_efo_id: str,
@@ -941,6 +955,7 @@ def init_process_mapper(
         "min_score": min_score,
         "matrix_priority": matrix_priority,
         "measurement_context": measurement_context,
+        "additional_contexts": additional_contexts,
         "name_mode": name_mode,
         "force_map_best": force_map_best,
         "fallback_efo_id": fallback_efo_id,
@@ -958,6 +973,7 @@ def process_map_one(query_item: tuple[str, str]) -> list[dict[str, str]]:
         min_score=float(PROCESS_MAP_KW["min_score"]),
         matrix_priority=list(PROCESS_MAP_KW["matrix_priority"]),
         measurement_context=str(PROCESS_MAP_KW["measurement_context"]),
+        additional_contexts=list(PROCESS_MAP_KW["additional_contexts"]),
         name_mode=effective_name_mode(str(PROCESS_MAP_KW["name_mode"]), input_type),
         force_map_best=bool(PROCESS_MAP_KW["force_map_best"]),
         fallback_efo_id=str(PROCESS_MAP_KW["fallback_efo_id"]),
@@ -993,6 +1009,23 @@ def parse_measurement_context(raw: str) -> str:
     return MEASUREMENT_CONTEXT_ALIASES.get(key, DEFAULT_MEASUREMENT_CONTEXT)
 
 
+def parse_additional_contexts(raw: str) -> list[str]:
+    contexts: list[str] = []
+    seen: set[str] = set()
+    for token in raw.split(","):
+        key = norm_key(token).replace("_", " ")
+        if not key:
+            continue
+        ctx = MEASUREMENT_CONTEXT_ALIASES.get(key, "")
+        if not ctx or ctx == "auto":
+            continue
+        if ctx in seen:
+            continue
+        seen.add(ctx)
+        contexts.append(ctx)
+    return contexts
+
+
 def contains_context_token(text: str, token: str) -> bool:
     token = norm_key(token)
     if not token:
@@ -1017,7 +1050,11 @@ def extract_measurement_context_tags(label: str, synonyms: list[str]) -> set[str
 def extract_explicit_matrix_tags(label: str, synonyms: list[str]) -> set[str]:
     text = norm_key(" ".join([label] + synonyms))
     tags: set[str] = set()
-    if re.search(r"\bin (?:blood|plasma|serum|blood serum|blood plasma)\b", text):
+    if re.search(r"\bin (?:blood serum|serum)\b", text):
+        tags.add("serum")
+    if re.search(r"\bin (?:blood plasma|plasma)\b", text):
+        tags.add("plasma")
+    if re.search(r"\bin blood\b(?!\s+(?:serum|plasma))", text):
         tags.add("blood")
     if re.search(r"\bin cerebrospinal fluid\b|\bcsf\b", text):
         tags.add("cerebrospinal_fluid")
@@ -1030,16 +1067,40 @@ def extract_explicit_matrix_tags(label: str, synonyms: list[str]) -> set[str]:
     return tags
 
 
-def context_compatible(label: str, synonyms: list[str], measurement_context: str) -> bool:
+def expand_context_scope(context: str) -> set[str]:
+    if context == "blood":
+        # Default blood context allows blood/plasma/circulating but excludes serum.
+        return {"blood", "plasma", "circulating"}
+    if context in {"plasma", "serum", "cerebrospinal_fluid", "urine", "saliva", "tissue"}:
+        return {context}
+    return set()
+
+
+def allowed_context_tags(measurement_context: str, additional_contexts: list[str]) -> set[str]:
+    allowed = expand_context_scope(measurement_context)
+    for ctx in additional_contexts:
+        allowed.update(expand_context_scope(ctx))
+    return allowed
+
+
+def context_compatible(
+    label: str,
+    synonyms: list[str],
+    measurement_context: str,
+    additional_contexts: list[str] | tuple[str, ...] = (),
+) -> bool:
     if measurement_context == "auto":
+        return True
+    allowed = allowed_context_tags(measurement_context, list(additional_contexts))
+    if not allowed:
         return True
     explicit_tags = extract_explicit_matrix_tags(label, synonyms)
     if explicit_tags:
-        return measurement_context in explicit_tags
+        return bool(explicit_tags & allowed)
     tags = extract_measurement_context_tags(label, synonyms)
     if not tags:
         return True
-    return measurement_context in tags
+    return bool(tags & allowed)
 
 
 def matrix_bonus(label: str, synonyms: list[str], matrix_priority: list[str]) -> float:
@@ -2028,6 +2089,7 @@ def candidates_from_index(
     index: dict[str, Any],
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
 ) -> list[Candidate]:
     term_meta: dict[str, dict[str, Any]] = index.get("term_meta", {})
@@ -2120,7 +2182,7 @@ def candidates_from_index(
         cached = context_cache.get(cache_key)
         if cached is not None:
             return cached
-        ok = context_compatible(label, syns, measurement_context)
+        ok = context_compatible(label, syns, measurement_context, additional_contexts)
         context_cache[cache_key] = ok
         return ok
 
@@ -2317,6 +2379,7 @@ def map_one(
     min_score: float,
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
     force_map_best: bool,
     fallback_efo_id: str,
@@ -2329,6 +2392,7 @@ def map_one(
         index,
         matrix_priority=matrix_priority,
         measurement_context=measurement_context,
+        additional_contexts=additional_contexts,
         name_mode=name_mode,
     )
     eligible = [c for c in candidates if c.score >= min_score]
@@ -2352,7 +2416,7 @@ def map_one(
             return [
                 {
                     "input_query": query,
-                    "mapped_efo_id": best.efo_id,
+                    "mapped_efo_id": format_ontology_id_for_output(best.efo_id),
                     "mapped_label": best.label,
                     "confidence": f"{best.score:.3f}",
                     "matched_via": f"{best.matched_via}-forced",
@@ -2376,7 +2440,7 @@ def map_one(
                     "validation": "not_mapped",
                     "input_type": input_type_norm,
                     "evidence": (
-                        f"candidate withheld from auto-validation: {best.efo_id} "
+                        f"candidate withheld from auto-validation: {format_ontology_id_for_output(best.efo_id)} "
                         f"(score={best.score:.3f}, matched_via={best.matched_via})"
                     ),
                 }
@@ -2388,7 +2452,7 @@ def map_one(
             return [
                 {
                     "input_query": query,
-                    "mapped_efo_id": fallback_id,
+                    "mapped_efo_id": format_ontology_id_for_output(fallback_id),
                     "mapped_label": fallback_label,
                     "confidence": "0.000",
                     "matched_via": "fallback-generic",
@@ -2415,7 +2479,7 @@ def map_one(
         out.append(
             {
                 "input_query": query,
-                "mapped_efo_id": cand.efo_id,
+                "mapped_efo_id": format_ontology_id_for_output(cand.efo_id),
                 "mapped_label": cand.label,
                 "confidence": f"{cand.score:.3f}",
                 "matched_via": cand.matched_via,
@@ -2435,6 +2499,7 @@ def map_queries(
     workers: int,
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
     force_map_best: bool,
     fallback_efo_id: str,
@@ -2463,6 +2528,7 @@ def map_queries(
             min_score=min_score,
             matrix_priority=matrix_priority,
             measurement_context=measurement_context,
+            additional_contexts=additional_contexts,
             name_mode=effective_name_mode(name_mode, input_type),
             force_map_best=force_map_best,
             fallback_efo_id=fallback_efo_id,
@@ -2496,6 +2562,7 @@ def map_queries(
                     min_score,
                     matrix_priority,
                     measurement_context,
+                    additional_contexts,
                     name_mode,
                     force_map_best,
                     fallback_efo_id,
@@ -2542,6 +2609,7 @@ def lexical_probe_candidates(
     index: dict[str, Any],
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
 ) -> list[Candidate]:
     term_meta: dict[str, dict[str, Any]] = index.get("term_meta", {})
@@ -2579,7 +2647,7 @@ def lexical_probe_candidates(
                 continue
             if not allow_ratio_terms and is_ratio_trait(label, syns):
                 continue
-            if not context_compatible(label, syns, measurement_context):
+            if not context_compatible(label, syns, measurement_context, additional_contexts):
                 continue
             score = similarity_score_prepared(term_lower, term_toks, label, syns)
             if not is_measurement_like(label, syns):
@@ -2618,6 +2686,7 @@ def infer_review_reason(
     min_score: float,
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
     input_type: str = "auto",
 ) -> tuple[str, str, list[str], list[Candidate]]:
@@ -2628,6 +2697,7 @@ def infer_review_reason(
         index,
         matrix_priority=matrix_priority,
         measurement_context=measurement_context,
+        additional_contexts=additional_contexts,
         name_mode=effective_mode,
     )
     resolved_accessions, used_alias_resolution, ambiguous_alias_resolution = resolve_query_accessions(query, index)
@@ -2639,7 +2709,7 @@ def infer_review_reason(
             return (
                 "manual_validation_required",
                 (
-                    f"best candidate {best.efo_id} scored {best.score:.3f} but did not pass "
+                    f"best candidate {format_ontology_id_for_output(best.efo_id)} scored {best.score:.3f} but did not pass "
                     "auto-validation gate"
                 ),
                 resolved_accessions,
@@ -2647,7 +2717,10 @@ def infer_review_reason(
             )
         return (
             "below_score_threshold",
-            f"best candidate {best.efo_id} scored {best.score:.3f}, below min_score={min_score:.3f}",
+            (
+                f"best candidate {format_ontology_id_for_output(best.efo_id)} "
+                f"scored {best.score:.3f}, below min_score={min_score:.3f}"
+            ),
             resolved_accessions,
             strict_candidates,
         )
@@ -2658,13 +2731,17 @@ def infer_review_reason(
             index,
             matrix_priority=matrix_priority,
             measurement_context="auto",
+            additional_contexts=[],
             name_mode=effective_mode,
         )
         if any_context_candidates:
             best = any_context_candidates[0]
             return (
                 "context_mismatch",
-                f"candidate {best.efo_id} exists only outside requested context '{measurement_context}'",
+                (
+                    f"candidate {format_ontology_id_for_output(best.efo_id)} exists only outside "
+                    f"requested context '{measurement_context}'"
+                ),
                 resolved_accessions,
                 any_context_candidates,
             )
@@ -2682,13 +2759,17 @@ def infer_review_reason(
         index,
         matrix_priority=matrix_priority,
         measurement_context=measurement_context,
+        additional_contexts=additional_contexts,
         name_mode=effective_mode,
     )
     if resolved_accessions and probe_candidates:
         best = probe_candidates[0]
         return (
             "identity_conflict_family_member",
-            f"lexical candidate {best.efo_id} exists but failed accession identity validation",
+            (
+                f"lexical candidate {format_ontology_id_for_output(best.efo_id)} exists but "
+                "failed accession identity validation"
+            ),
             resolved_accessions,
             probe_candidates,
         )
@@ -2828,6 +2909,7 @@ def write_review_tsv(
     min_score: float,
     matrix_priority: list[str],
     measurement_context: str,
+    additional_contexts: list[str],
     name_mode: str,
     top_n: int,
 ) -> int:
@@ -2875,6 +2957,7 @@ def write_review_tsv(
                     min_score=min_score,
                     matrix_priority=matrix_priority,
                     measurement_context=measurement_context,
+                    additional_contexts=additional_contexts,
                     name_mode=name_mode,
                     input_type=input_type,
                 )
@@ -2931,7 +3014,7 @@ def write_review_tsv(
                         "resolved_accessions": "|".join(resolved_accessions),
                         "candidate_count": str(len(top)),
                         "suggestion_rank": str(rank),
-                        "suggested_efo_id": cand.efo_id,
+                        "suggested_efo_id": format_ontology_id_for_output(cand.efo_id),
                         "suggested_label": cand.label,
                         "suggested_subject": normalize_measurement_subject(cand.label),
                         "suggested_score": f"{cand.score:.3f}",
@@ -3084,8 +3167,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--measurement-context",
         default=DEFAULT_MEASUREMENT_CONTEXT,
         help=(
-            "Expected measurement matrix context: blood, cerebrospinal_fluid, urine, "
-            "saliva, tissue, or auto (default: blood)"
+            "Expected measurement matrix context: blood, plasma, serum, cerebrospinal_fluid, "
+            "urine, saliva, tissue, or auto (default: blood)"
+        ),
+    )
+    p_map.add_argument(
+        "--additional-contexts",
+        default="",
+        help=(
+            "Optional extra contexts allowed in addition to --measurement-context, comma-separated "
+            "(for example: serum). Default is none; blood context excludes serum unless added here."
         ),
     )
     p_map.add_argument(
@@ -3188,6 +3279,8 @@ def main() -> int:
             if not query_inputs:
                 raise ValueError("No usable queries found in input")
             queries = [query for query, _input_type in query_inputs]
+            measurement_context = parse_measurement_context(args.measurement_context)
+            additional_contexts = parse_additional_contexts(args.additional_contexts)
             index_path = Path(args.index)
             analyte_cache_path = Path(args.analyte_cache)
             uniprot_alias_path = Path(args.uniprot_aliases)
@@ -3235,7 +3328,8 @@ def main() -> int:
                 min_score=args.min_score,
                 workers=max(1, args.workers),
                 matrix_priority=parse_matrix_priority(args.matrix_priority),
-                measurement_context=parse_measurement_context(args.measurement_context),
+                measurement_context=measurement_context,
+                additional_contexts=additional_contexts,
                 name_mode=args.name_mode,
                 force_map_best=args.force_map_best,
                 fallback_efo_id=args.fallback_efo_id,
@@ -3254,7 +3348,8 @@ def main() -> int:
                     index=index,
                     min_score=args.min_score,
                     matrix_priority=parse_matrix_priority(args.matrix_priority),
-                    measurement_context=parse_measurement_context(args.measurement_context),
+                    measurement_context=measurement_context,
+                    additional_contexts=additional_contexts,
                     name_mode=args.name_mode,
                     top_n=max(1, args.review_top_n),
                 )
