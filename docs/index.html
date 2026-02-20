@@ -158,6 +158,10 @@
       font-size: 0.88em;
     }
 
+    a {
+      color: #0f766e;
+    }
+
     .btn-row {
       margin-top: 12px;
       display: flex;
@@ -261,15 +265,32 @@
 
     <section class="card">
       <h2>First-Time Setup (Novice)</h2>
-      <p>Do these steps once on a new machine. After setup, you only edit input and run the mapper command.</p>
+      <p>Do this once on a new machine. Follow the exact steps below even if you have never used Python before.</p>
       <ol>
-        <li><strong>Install the tools:</strong> install Git and Python 3.10+ first. Git downloads the project from GitHub; Python runs the mapper script.</li>
-        <li><strong>Download the project safely:</strong> clone this repository, then create and activate a virtual environment. This keeps this tool's Python packages separate from other projects.</li>
-        <li><strong>Finish setup:</strong> install required packages and copy the template input file. Then replace template rows with your own protein or gene terms.</li>
+        <li>
+          <strong>Open your command line:</strong> use Terminal (Mac/Linux) or PowerShell (Windows).
+        </li>
+        <li>
+          <strong>Install Git and Python 3.10+:</strong> if missing, install from
+          <a href="https://git-scm.com/downloads" target="_blank" rel="noopener noreferrer">git-scm.com/downloads</a>
+          and
+          <a href="https://www.python.org/downloads/" target="_blank" rel="noopener noreferrer">python.org/downloads</a>.
+          Then check versions:
+          <code>git --version</code>,
+          <code>python3 --version</code> (Mac/Linux),
+          or <code>py --version</code> (Windows).
+        </li>
+        <li>
+          <strong>Copy one full setup block below and run it:</strong> this downloads the project, creates an isolated Python environment,
+          installs required packages, creates folders, and copies your input template to <code>data/analytes.tsv</code>.
+        </li>
       </ol>
+      <div class="note">
+        If a command says <code>not found</code>, stop there, install the missing tool (Git or Python), then run the block again.
+      </div>
       <div class="grid">
         <article>
-          <h2>Mac/Linux Setup</h2>
+          <h2>Mac/Linux: run this exactly</h2>
           <pre id="setup-mac">git clone https://github.com/earlEBI/protein-efo-mapper.git
 cd protein-efo-mapper
 python3 -m venv .venv
@@ -283,7 +304,7 @@ cp docs/input_template.tsv data/analytes.tsv</pre>
           </div>
         </article>
         <article>
-          <h2>Windows PowerShell Setup</h2>
+          <h2>Windows PowerShell: run this exactly</h2>
           <pre id="setup-win">git clone https://github.com/earlEBI/protein-efo-mapper.git
 cd protein-efo-mapper
 py -3 -m venv .venv
