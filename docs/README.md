@@ -31,6 +31,30 @@ cp docs/input_template.tsv data/analytes.tsv
 
 This writes your main results to `final_output/analytes_efo.tsv` and withheld items to `final_output/withheld_for_review.tsv`.
 
+How mapping works (accession vs name input):
+
+- Accession input (`UniProt`, `HMDB`, `ChEBI`, `KEGG`) is treated as highest-confidence identity input.
+- For UniProt accessions, the mapper canonicalizes the accession (for example `P12345-2` to `P12345`), resolves aliases from local UniProt alias resources, then searches EFO/OBA labels and synonyms.
+- For gene symbol / gene ID / UniProt mnemonic inputs, the mapper first tries to resolve to a stable UniProt accession; if successful, it uses the same accession-based identity checks.
+- For free-text protein or metabolite names, the mapper uses synonym/lexical retrieval, then stricter validation gates to avoid family-member drift.
+- EFO/OBA matching uses normalized exact phrase matches first, then token retrieval + lexical reranking as fallback.
+- Token retrieval means candidate generation by shared informative words/tokens between your query aliases and EFO/OBA labels/synonyms.
+- Lexical reranking means scoring those token-retrieved candidates (string similarity + token overlap + synonym evidence, plus matrix/subject adjustments) and ordering best-to-worst before validation.
+
+Validation and context filters:
+
+- Identity validation: accession/concept-aware subject checks reduce wrong mappings from near-name collisions (for example numeric family mismatches like protein 1 vs protein 4).
+- Context validation: `--measurement-context blood` (default) allows blood/plasma/unlabeled and excludes serum unless `--additional-contexts serum` is set.
+- Keyword context add-on: `--additional-context-keywords` can allow extra free-text contexts (for example `aorta`).
+- Ratio safeguard: ratio/quotient traits are blocked unless the query explicitly requests a ratio.
+- Auto-validation gate: lower-confidence token-only hits are withheld unless they pass stricter criteria; withheld rows go to `--review-output` when enabled.
+
+Practical expectation:
+
+- Accession-based input is usually most reliable.
+- Gene/symbol input can be reliable when alias resolution is unique.
+- Free-text name input is more variable and should be reviewed via `withheld_for_review.tsv` and optionally `review_queue.tsv`.
+
 Run mapping (mixed protein + metabolite inputs):
 
 ```bash
