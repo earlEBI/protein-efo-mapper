@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.parse
+import urllib.error
 import urllib.request
 import time
 import xml.etree.ElementTree as ET
@@ -326,14 +327,18 @@ METABOLITE_NOISE_RE = re.compile(r"^[\[\](){},.:;+*/\\|=_-]+$")
 METABOLITE_CHEBI_INLINE_RE = re.compile(r"CHEBI[:_](\\d{1,7})", re.IGNORECASE)
 METABOLITE_HMDB_INLINE_RE = re.compile(r"HMDB[:_]?([0-9]{3,})", re.IGNORECASE)
 METABOLITE_KEGG_INLINE_RE = re.compile(r"(?:CPD:|COMPOUND:|KEGG[:_])([CD]\\d{5})", re.IGNORECASE)
-DEFAULT_ANALYTE_CACHE = Path(__file__).resolve().parents[1] / "references" / "analyte_to_efo_cache.tsv"
-DEFAULT_TERM_CACHE = Path(__file__).resolve().parents[1] / "references" / "efo_measurement_terms_cache.tsv"
-DEFAULT_INDEX = Path(__file__).resolve().parents[1] / "references" / "measurement_index.json"
-DEFAULT_UNIPROT_ALIASES = Path(__file__).resolve().parents[1] / "references" / "uniprot_aliases.tsv"
-DEFAULT_UNIPROT_ALIASES_LIGHT = Path(__file__).resolve().parents[1] / "references" / "uniprot_aliases_light.tsv"
-DEFAULT_METABOLITE_ALIASES = Path(__file__).resolve().parents[1] / "references" / "metabolite_aliases.tsv"
-DEFAULT_METABOLITE_DOWNLOAD_DIR = Path(__file__).resolve().parents[1] / "references" / "metabolite_downloads"
-DEFAULT_HMDB_LOCAL_DIR = Path(__file__).resolve().parents[1] / "references" / "hmdb_source"
+SCRIPT_RUNTIME_PATH = Path(globals().get("SCRIPT_PATH", __file__)).resolve()
+SKILL_DIR = SCRIPT_RUNTIME_PATH.parents[1]
+REPO_ROOT = SCRIPT_RUNTIME_PATH.parents[3]
+
+DEFAULT_ANALYTE_CACHE = SKILL_DIR / "references" / "analyte_to_efo_cache.tsv"
+DEFAULT_TERM_CACHE = SKILL_DIR / "references" / "efo_measurement_terms_cache.tsv"
+DEFAULT_INDEX = SKILL_DIR / "references" / "measurement_index.json"
+DEFAULT_UNIPROT_ALIASES = SKILL_DIR / "references" / "uniprot_aliases.tsv"
+DEFAULT_UNIPROT_ALIASES_LIGHT = SKILL_DIR / "references" / "uniprot_aliases_light.tsv"
+DEFAULT_METABOLITE_ALIASES = SKILL_DIR / "references" / "metabolite_aliases.tsv"
+DEFAULT_METABOLITE_DOWNLOAD_DIR = SKILL_DIR / "references" / "metabolite_downloads"
+DEFAULT_HMDB_LOCAL_DIR = SKILL_DIR / "references" / "hmdb_source"
 DEFAULT_HMDB_LOCAL_FILENAMES = (
     "structures.sdf",
     "structures.sdf.gz",
@@ -344,12 +349,10 @@ DEFAULT_HMDB_XML_URL = "https://github.com/earlEBI/analyte-efo-mapper/releases/l
 DEFAULT_CHEBI_NAMES_URL = "https://ftp.ebi.ac.uk/pub/databases/chebi/flat_files/names.tsv.gz"
 DEFAULT_KEGG_CONV_URL = "https://rest.kegg.jp/conv/chebi/compound"
 DEFAULT_EFO_OBO_URL = "https://github.com/EBISPOT/efo/releases/latest/download/efo.obo"
-DEFAULT_EFO_OBO_LOCAL = Path(__file__).resolve().parents[1] / "references" / "efo.obo"
-DEFAULT_EFO_OBO_BUNDLED_URL = (
-    "https://github.com/earlEBI/analyte-efo-mapper/releases/latest/download/efo.obo.gz"
-)
-DEFAULT_TRAIT_CACHE = Path(__file__).resolve().parents[1] / "references" / "trait_mapping_cache.tsv"
-LEGACY_TRAIT_CACHE = Path(__file__).resolve().parents[3] / "final_output" / "code-EFO-mappings_final_mapping_cache.tsv"
+DEFAULT_EFO_OBO_LOCAL = SKILL_DIR / "references" / "efo.obo"
+DEFAULT_EFO_OBO_BUNDLED_URL = DEFAULT_EFO_OBO_URL
+DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
+LEGACY_TRAIT_CACHE = REPO_ROOT / "final_output" / "code-EFO-mappings_final_mapping_cache.tsv"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
 DEFAULT_MATRIX_PRIORITY = ["plasma", "blood", "serum"]
 DEFAULT_MEASUREMENT_CONTEXT = "blood"
@@ -2725,6 +2728,11 @@ def ensure_efo_obo_available(
             )
         return efo_obo_path, "local-gz"
 
+    # If caller passed a missing/relative custom path, prefer the repository's
+    # bundled local OBO before attempting any network download.
+    if efo_obo_path != DEFAULT_EFO_OBO_LOCAL and looks_like_obo(DEFAULT_EFO_OBO_LOCAL):
+        return DEFAULT_EFO_OBO_LOCAL, "local-default"
+
     url = normalize(bundled_url)
     if not url:
         raise FileNotFoundError(
@@ -2734,7 +2742,22 @@ def ensure_efo_obo_available(
     fallback_name = f"{efo_obo_path.name}.gz"
     download_name = filename_from_url(url, fallback_name)
     download_path = efo_obo_path.parent / download_name
-    download_to_file(url, download_path, timeout=timeout)
+    try:
+        download_to_file(url, download_path, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            "Failed to download bundled EFO OBO "
+            f"(url={url}, http_status={exc.code}). "
+            f"Provide a valid local file via --efo-obo (current: {efo_obo_path}) "
+            "or override --efo-obo-bundled-url."
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            "Failed to download bundled EFO OBO "
+            f"(url={url}, reason={exc.reason}). "
+            f"Provide a valid local file via --efo-obo (current: {efo_obo_path}) "
+            "or override --efo-obo-bundled-url."
+        ) from exc
     if not download_path.exists() or download_path.stat().st_size <= 0:
         raise ValueError(f"Downloaded EFO OBO bundle is empty: {download_path}")
 
