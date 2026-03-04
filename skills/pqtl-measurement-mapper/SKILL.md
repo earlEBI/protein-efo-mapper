@@ -224,6 +224,9 @@ Disease/phenotype mapping (cache + efo.obo fallback):
   --efo-obo skills/pqtl-measurement-mapper/references/efo.obo \
   --min-score 0.82 \
   --review-output final_output/traits_review.tsv \
+  --stream-output \
+  --flush-every 10 \
+  --memoize-queries \
   --progress
 ```
 

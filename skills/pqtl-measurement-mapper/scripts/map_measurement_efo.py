@@ -1791,16 +1791,28 @@ def pick_seed_tokens(tokens: set[str], token_freq: Counter[str], max_tokens: int
     return items[:max_tokens]
 
 
+@lru_cache(maxsize=300_000)
+def _trait_similarity_candidate_profile(candidate_text: str) -> tuple[str, frozenset[str]]:
+    cnorm = normalize_trait_text_for_similarity(candidate_text)
+    if not cnorm:
+        return "", frozenset()
+    return cnorm, frozenset(informative_trait_tokens(cnorm))
+
+
+@lru_cache(maxsize=1_000_000)
+def _sequence_ratio(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def trait_similarity_score(query: str, query_toks: set[str], candidate_text: str) -> float:
     qnorm = normalize_trait_text_for_similarity(query)
-    cnorm = normalize_trait_text_for_similarity(candidate_text)
+    cnorm, c_toks_frozen = _trait_similarity_candidate_profile(candidate_text)
     if not qnorm or not cnorm:
         return 0.0
     if trait_negation_mismatch(qnorm, cnorm):
         return 0.0
-    c_toks = informative_trait_tokens(cnorm)
-    overlap = len(query_toks & c_toks) / max(len(query_toks), 1)
-    seq = difflib.SequenceMatcher(None, qnorm, cnorm).ratio()
+    overlap = len(query_toks & c_toks_frozen) / max(len(query_toks), 1)
+    seq = _sequence_ratio(qnorm, cnorm)
     substring_bonus = 0.1 if len(cnorm) >= 6 and (cnorm in qnorm or qnorm in cnorm) else 0.0
     return min(1.0, 0.6 * overlap + 0.4 * seq + substring_bonus)
 
@@ -1904,6 +1916,21 @@ def trait_candidate_prefix_rank(candidate_id: str) -> int:
     return best
 
 
+TRAIT_OUTPUT_FIELDS = [
+    "input_query",
+    "input_type",
+    "input_icd10",
+    "input_phecode",
+    "mapped_trait_id",
+    "mapped_trait_label",
+    "confidence",
+    "matched_via",
+    "validation",
+    "evidence",
+    "provenance",
+]
+
+
 def map_trait_queries(
     query_inputs: list[dict[str, str]],
     *,
@@ -1916,6 +1943,10 @@ def map_trait_queries(
     min_score: float,
     force_map_best: bool,
     show_progress: bool,
+    row_callback: Any | None = None,
+    collect_rows: bool = True,
+    memoize_queries: bool = True,
+    query_cache_max_entries: int = 200_000,
 ) -> list[dict[str, str]]:
     records: list[TraitCacheRecord] = trait_cache_index["records"]
     icd10_index: dict[str, list[int]] = trait_cache_index["icd10_index"]
@@ -1938,6 +1969,7 @@ def map_trait_queries(
         return record.mapped_ids, record.mapped_labels
 
     rows: list[dict[str, str]] = []
+    query_result_cache: dict[tuple[str, str, str, str], tuple[dict[str, str], ...]] = {}
     progress = ProgressReporter(total=len(query_inputs), enabled=show_progress)
 
     via_rank = {
@@ -1970,12 +2002,25 @@ def map_trait_queries(
         if not query:
             query = icd10 or phecode
 
+        cache_key = (query, input_type, icd10, phecode)
+        if memoize_queries and cache_key in query_result_cache:
+            cached_rows = query_result_cache[cache_key]
+            for cached in cached_rows:
+                row = dict(cached)
+                if row_callback is not None:
+                    row_callback(row)
+                if collect_rows:
+                    rows.append(row)
+            progress.update()
+            continue
+
         query_norm = norm_key(query)
         query_match_norm = normalize_trait_text_for_similarity(query)
         query_tokens = informative_trait_tokens(query_match_norm or query_norm)
         has_ontology_exact = bool(query_norm and ontology_exact_index.get(query_norm))
         candidates: list[Candidate] = []
         best_any: list[Candidate] = []
+        generated_rows: list[dict[str, str]] = []
 
         if icd10 and icd10 in icd10_index:
             matched_records = [records[idx] for idx in icd10_index[icd10]]
@@ -2169,7 +2214,7 @@ def map_trait_queries(
             emitted = [best_any[0]]
 
         if not emitted:
-            rows.append(
+            generated_rows.append(
                 {
                     "input_query": query,
                     "input_type": input_type,
@@ -2184,80 +2229,74 @@ def map_trait_queries(
                     "provenance": "",
                 }
             )
-            progress.update()
-            continue
+        else:
+            for candidate in emitted:
+                validated = candidate.is_validated and candidate.score >= min_score
+                validation = "validated" if validated else "review_required"
+                source_file = (
+                    trait_cache_path.name if candidate.matched_via.startswith("cache_") else efo_obo_path.name
+                )
+                mapped_ids = "|".join(
+                    format_ontology_id_for_output(part)
+                    for part in split_multi_ids(candidate.efo_id)
+                )
+                if not mapped_ids:
+                    mapped_ids = format_ontology_id_for_output(candidate.efo_id)
+                mapped_labels = normalize(candidate.label)
+                matched_on = (
+                    "ICD10"
+                    if candidate.matched_via == "cache_exact_icd10"
+                    else "PheCode"
+                    if candidate.matched_via == "cache_exact_phecode"
+                    else "Reported trait"
+                    if candidate.matched_via.startswith("cache_")
+                    else "EFO/OBO label or synonym"
+                )
+                primary_input_value = icd10 if input_type == "icd10" else phecode if input_type == "phecode" else query
+                provenance = make_trait_provenance(
+                    method=candidate.matched_via,
+                    input_type=input_type,
+                    input_value=primary_input_value,
+                    matched_on=matched_on,
+                    mapped_ids=mapped_ids,
+                    mapped_labels=mapped_labels,
+                    source_file=source_file,
+                    score=candidate.score,
+                    validated=validated,
+                )
+                generated_rows.append(
+                    {
+                        "input_query": query,
+                        "input_type": input_type,
+                        "input_icd10": icd10,
+                        "input_phecode": phecode,
+                        "mapped_trait_id": mapped_ids,
+                        "mapped_trait_label": mapped_labels,
+                        "confidence": f"{max(0.0, min(1.0, candidate.score)):.3f}",
+                        "matched_via": candidate.matched_via,
+                        "validation": validation,
+                        "evidence": candidate.evidence,
+                        "provenance": provenance,
+                    }
+                )
 
-        for candidate in emitted:
-            validated = candidate.is_validated and candidate.score >= min_score
-            validation = "validated" if validated else "review_required"
-            source_file = (
-                trait_cache_path.name if candidate.matched_via.startswith("cache_") else efo_obo_path.name
-            )
-            mapped_ids = "|".join(
-                format_ontology_id_for_output(part)
-                for part in split_multi_ids(candidate.efo_id)
-            )
-            if not mapped_ids:
-                mapped_ids = format_ontology_id_for_output(candidate.efo_id)
-            mapped_labels = normalize(candidate.label)
-            matched_on = (
-                "ICD10"
-                if candidate.matched_via == "cache_exact_icd10"
-                else "PheCode"
-                if candidate.matched_via == "cache_exact_phecode"
-                else "Reported trait"
-                if candidate.matched_via.startswith("cache_")
-                else "EFO/OBO label or synonym"
-            )
-            primary_input_value = icd10 if input_type == "icd10" else phecode if input_type == "phecode" else query
-            provenance = make_trait_provenance(
-                method=candidate.matched_via,
-                input_type=input_type,
-                input_value=primary_input_value,
-                matched_on=matched_on,
-                mapped_ids=mapped_ids,
-                mapped_labels=mapped_labels,
-                source_file=source_file,
-                score=candidate.score,
-                validated=validated,
-            )
-            rows.append(
-                {
-                    "input_query": query,
-                    "input_type": input_type,
-                    "input_icd10": icd10,
-                    "input_phecode": phecode,
-                    "mapped_trait_id": mapped_ids,
-                    "mapped_trait_label": mapped_labels,
-                    "confidence": f"{max(0.0, min(1.0, candidate.score)):.3f}",
-                    "matched_via": candidate.matched_via,
-                    "validation": validation,
-                    "evidence": candidate.evidence,
-                    "provenance": provenance,
-                }
-            )
+        if memoize_queries and len(query_result_cache) < max(0, query_cache_max_entries):
+            query_result_cache[cache_key] = tuple(dict(row) for row in generated_rows)
+
+        for row in generated_rows:
+            if row_callback is not None:
+                row_callback(dict(row))
+            if collect_rows:
+                rows.append(dict(row))
         progress.update()
 
     return rows
 
 
 def write_trait_tsv(rows: list[dict[str, str]], path: Path) -> None:
-    fields = [
-        "input_query",
-        "input_type",
-        "input_icd10",
-        "input_phecode",
-        "mapped_trait_id",
-        "mapped_trait_label",
-        "confidence",
-        "matched_via",
-        "validation",
-        "evidence",
-        "provenance",
-    ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=TRAIT_OUTPUT_FIELDS, delimiter="\t", extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -2266,6 +2305,80 @@ def write_trait_review_tsv(rows: list[dict[str, str]], path: Path) -> int:
     review_rows = [row for row in rows if row.get("validation") == "review_required"]
     write_trait_tsv(review_rows, path)
     return len(review_rows)
+
+
+class TraitMapStreamingWriter:
+    """Write trait-map rows incrementally so partial output survives interruptions."""
+
+    def __init__(self, *, output_path: Path, review_path: Path | None, flush_every: int) -> None:
+        self.output_path = output_path
+        self.review_path = review_path
+        self.flush_every = max(1, int(flush_every))
+        self.output_handle: Any | None = None
+        self.review_handle: Any | None = None
+        self.output_writer: Any | None = None
+        self.review_writer: Any | None = None
+        self.rows_written = 0
+        self.review_rows_written = 0
+        self._pending_writes = 0
+
+    def __enter__(self) -> "TraitMapStreamingWriter":
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.output_handle = self.output_path.open("w", encoding="utf-8", newline="")
+        self.output_writer = csv.DictWriter(
+            self.output_handle,
+            fieldnames=TRAIT_OUTPUT_FIELDS,
+            delimiter="\t",
+            extrasaction="ignore",
+        )
+        self.output_writer.writeheader()
+
+        if self.review_path is not None:
+            self.review_path.parent.mkdir(parents=True, exist_ok=True)
+            self.review_handle = self.review_path.open("w", encoding="utf-8", newline="")
+            self.review_writer = csv.DictWriter(
+                self.review_handle,
+                fieldnames=TRAIT_OUTPUT_FIELDS,
+                delimiter="\t",
+                extrasaction="ignore",
+            )
+            self.review_writer.writeheader()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+    def write_row(self, row: dict[str, str]) -> None:
+        if self.output_writer is None:
+            raise RuntimeError("TraitMapStreamingWriter is not open")
+        self.output_writer.writerow(row)
+        self.rows_written += 1
+
+        if self.review_writer is not None and row.get("validation") == "review_required":
+            self.review_writer.writerow(row)
+            self.review_rows_written += 1
+
+        self._pending_writes += 1
+        if self._pending_writes >= self.flush_every:
+            self.flush()
+
+    def flush(self) -> None:
+        if self.output_handle is not None:
+            self.output_handle.flush()
+        if self.review_handle is not None:
+            self.review_handle.flush()
+        self._pending_writes = 0
+
+    def close(self) -> None:
+        self.flush()
+        if self.review_handle is not None:
+            self.review_handle.close()
+            self.review_handle = None
+            self.review_writer = None
+        if self.output_handle is not None:
+            self.output_handle.close()
+            self.output_handle = None
+            self.output_writer = None
 
 
 def load_term_cache(path: Path) -> list[dict[str, Any]]:
@@ -7561,6 +7674,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional TSV path for rows with validation=review_required",
     )
     p_trait.add_argument(
+        "--stream-output",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write trait-map rows incrementally while processing (default: on)",
+    )
+    p_trait.add_argument(
+        "--flush-every",
+        type=int,
+        default=50,
+        help=(
+            "When --stream-output is on, flush output files every N written rows "
+            "(lower is safer for interruptions, default: 50)"
+        ),
+    )
+    p_trait.add_argument(
+        "--memoize-queries",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reuse mapping results for duplicate normalized trait inputs (default: on)",
+    )
+    p_trait.add_argument(
+        "--query-cache-max-entries",
+        type=int,
+        default=200000,
+        help="Maximum duplicate-query memoization entries (default: 200000)",
+    )
+    p_trait.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -8071,26 +8211,69 @@ def main() -> int:
                     "no obsolete/unresolved ontology IDs in cache rows"
                 )
 
-            rows = map_trait_queries(
-                query_inputs,
-                trait_cache_index=trait_cache_index,
-                ontology_index=ontology_index,
-                trait_cache_resolution=cache_resolution,
-                trait_cache_path=trait_cache_path,
-                efo_obo_path=efo_obo_path,
-                top_k=max(1, args.top_k),
-                min_score=max(0.0, min(1.0, args.min_score)),
-                force_map_best=bool(args.force_map_best),
-                show_progress=bool(args.progress),
-            )
-            write_trait_tsv(rows, Path(args.output))
-            if args.review_output:
-                review_count = write_trait_review_tsv(rows, Path(args.review_output))
-                print(f"[OK] wrote {review_count} review rows to {args.review_output}")
-            print(f"[OK] wrote {len(rows)} rows to {args.output}")
+            output_path = Path(args.output)
+            review_output_path = Path(args.review_output) if args.review_output else None
+            flush_every = max(1, int(args.flush_every))
+            memoize_queries = bool(args.memoize_queries)
+            query_cache_max_entries = max(0, int(args.query_cache_max_entries))
+
+            if bool(args.stream_output):
+                with TraitMapStreamingWriter(
+                    output_path=output_path,
+                    review_path=review_output_path,
+                    flush_every=flush_every,
+                ) as streaming_writer:
+                    map_trait_queries(
+                        query_inputs,
+                        trait_cache_index=trait_cache_index,
+                        ontology_index=ontology_index,
+                        trait_cache_resolution=cache_resolution,
+                        trait_cache_path=trait_cache_path,
+                        efo_obo_path=efo_obo_path,
+                        top_k=max(1, args.top_k),
+                        min_score=max(0.0, min(1.0, args.min_score)),
+                        force_map_best=bool(args.force_map_best),
+                        show_progress=bool(args.progress),
+                        row_callback=streaming_writer.write_row,
+                        collect_rows=False,
+                        memoize_queries=memoize_queries,
+                        query_cache_max_entries=query_cache_max_entries,
+                    )
+                    total_rows = streaming_writer.rows_written
+                    review_count = streaming_writer.review_rows_written
+            else:
+                rows = map_trait_queries(
+                    query_inputs,
+                    trait_cache_index=trait_cache_index,
+                    ontology_index=ontology_index,
+                    trait_cache_resolution=cache_resolution,
+                    trait_cache_path=trait_cache_path,
+                    efo_obo_path=efo_obo_path,
+                    top_k=max(1, args.top_k),
+                    min_score=max(0.0, min(1.0, args.min_score)),
+                    force_map_best=bool(args.force_map_best),
+                    show_progress=bool(args.progress),
+                    memoize_queries=memoize_queries,
+                    query_cache_max_entries=query_cache_max_entries,
+                )
+                write_trait_tsv(rows, output_path)
+                total_rows = len(rows)
+                review_count = 0
+                if review_output_path is not None:
+                    review_count = write_trait_review_tsv(rows, review_output_path)
+
+            if review_output_path is not None:
+                print(f"[OK] wrote {review_count} review rows to {review_output_path}")
+            print(f"[OK] wrote {total_rows} rows to {output_path}")
             return 0
 
         raise ValueError(f"Unsupported command: {args.command}")
+    except KeyboardInterrupt:
+        print(
+            "[WARN] Interrupted by user. Partial output files may already contain processed rows.",
+            file=sys.stderr,
+        )
+        return 130
     except Exception as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
