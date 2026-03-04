@@ -221,6 +221,7 @@ Disease/phenotype mapping (cache + efo.obo fallback):
   --input data/traits.tsv \
   --output final_output/traits_mapped.tsv \
   --trait-cache skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv \
+  --ukb-field-catalog references/ukb/fieldsum.txt \
   --efo-obo skills/pqtl-measurement-mapper/references/efo.obo \
   --min-score 0.82 \
   --review-output final_output/traits_review.tsv \
