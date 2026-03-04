@@ -225,12 +225,29 @@ LIPID_PANEL_PREFIX_RE = re.compile(
 LIPID_PANEL_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bapo[-\s]?a1\b", re.IGNORECASE), "apolipoprotein a 1"),
     (re.compile(r"\bapo[-\s]?a2\b", re.IGNORECASE), "apolipoprotein a 2"),
+    (re.compile(r"\bapolipoprotein\s+a[-\s]?1\b", re.IGNORECASE), "apolipoprotein a-i"),
+    (re.compile(r"\bapolipoprotein\s+a[-\s]?2\b", re.IGNORECASE), "apolipoprotein a-ii"),
     (re.compile(r"\bapo[-\s]?b100\b", re.IGNORECASE), "apolipoprotein b-100"),
     (re.compile(r"\bapo[-\s]?b\b", re.IGNORECASE), "apolipoprotein b"),
     (re.compile(r"\bapob\b", re.IGNORECASE), "apolipoprotein b"),
+    (
+        re.compile(
+            r"\b(apolipoprotein\s+(?:a[-\s]?(?:i{1,3}|[12])|b(?:[-\s]?100)?))\s+in\s+(?:all\s+)?(?:(?:very\s+small|small|medium|large|very\s+large|extremely\s+large)\s+)?(?:vldl|ldl|hdl|idl)\b",
+            re.IGNORECASE,
+        ),
+        r"\1",
+    ),
+    (
+        re.compile(
+            r"\b(?:total\s+)?apolipoprotein\s+b(?:[-\s]?100)?\s+particle\s+(?:number|concentration)\b",
+            re.IGNORECASE,
+        ),
+        "apolipoprotein b measurement",
+    ),
     (re.compile(r"\bcholesterol esters\b", re.IGNORECASE), "cholesteryl esters"),
     (re.compile(r"\bce\b", re.IGNORECASE), "cholesteryl esters"),
     (re.compile(r"\bch\b", re.IGNORECASE), "cholesterol"),
+    (re.compile(r"\btriglycerides\b", re.IGNORECASE), "triglyceride"),
     (re.compile(r"\bmufa\b", re.IGNORECASE), "monounsaturated fatty acids"),
     (re.compile(r"\bpufa\b", re.IGNORECASE), "polyunsaturated fatty acids"),
     (re.compile(r"\bufa\b", re.IGNORECASE), "unsaturated fatty acids"),
@@ -259,6 +276,10 @@ LIPID_PANEL_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bufa\s*/\s*pufa\b", re.IGNORECASE),
         "unsaturated fatty acids to polyunsaturated fatty acids ratio",
     ),
+    (re.compile(r"\bacetoacetic acid\b", re.IGNORECASE), "acetoacetate"),
+    (re.compile(r"\bformic acid\b", re.IGNORECASE), "formate"),
+    (re.compile(r"\bcitric acid\b", re.IGNORECASE), "citric acid/isocitric acid"),
+    (re.compile(r"\bdihydrothymine\b", re.IGNORECASE), "5,6-dihydrothymine"),
     (re.compile(r"\bacetic acid\b", re.IGNORECASE), "acetate"),
     (re.compile(r"\bin all (vldl|ldl|hdl|idl)\b", re.IGNORECASE), r"in \1"),
     (re.compile(r"\bextremely large (vldl|ldl|hdl)\b", re.IGNORECASE), r"very large \1"),
@@ -276,6 +297,15 @@ LIPID_MEASUREMENT_VARIANT_RE = re.compile(
 )
 PROTEIN_CUE_RE = re.compile(
     r"\b(?:apolipoprotein|apo[-\s]?[ab][0-9]{0,3}|protein|receptor|subunit|chain)\b",
+    re.IGNORECASE,
+)
+METABOLITE_CUE_RE = re.compile(
+    r"\b(?:"
+    r"cholesterol|cholesteryl|triglyceride(?:s)?|phospholipid(?:s)?|"
+    r"fatty acid(?:s)?|acetoacetate|acetoacetic|formate|formic|citric|dihydrothymine|"
+    r"hdl|ldl|vldl|idl|chylomicron(?:s)?|mufa|pufa|ufa|sfa|"
+    r"glucose|lactate|pyruvate|ketone"
+    r")\b",
     re.IGNORECASE,
 )
 METABOLITE_CONCEPT_ALIAS_EXCLUDE = {
@@ -359,6 +389,8 @@ DEFAULT_MEASUREMENT_CONTEXT = "blood"
 # Token-retrieved candidates are noisier than exact/synonym matches. Keep them
 # out of auto-validated output unless confidence remains reasonably high.
 TOKEN_SUBJECT_EXACT_AUTO_VALIDATE_MIN_SCORE = 0.70
+TOKEN_SEMANTIC_EXACT_AUTO_VALIDATE_MIN_SCORE = 0.60
+NEEDS_NEW_TERM_MATCH_TAG = "needs-new-term"
 UNIPROT_ENTRY_URL = "https://rest.uniprot.org/uniprotkb/{acc}.json"
 HTTP_USER_AGENT = "pqtl-measurement-mapper/1.0"
 MEASUREMENT_CONTEXT_PATTERNS = {
@@ -804,6 +836,10 @@ def lipid_panel_query_variants(value: str) -> tuple[str, ...]:
 
 def query_has_protein_cue(value: str) -> bool:
     return bool(PROTEIN_CUE_RE.search(normalize(value)))
+
+
+def query_has_metabolite_cue(value: str) -> bool:
+    return bool(METABOLITE_CUE_RE.search(normalize(value)))
 
 
 @lru_cache(maxsize=300_000)
@@ -5281,7 +5317,7 @@ def detect_entity_route(
     # but clearly names a protein analyte (for example Apo-A1/Apo-B100).
     if query_has_protein_cue(query) and resolved_accessions:
         return "protein"
-    if query_has_protein_cue(query) and normalize_input_type(input_type) == "metabolite_name":
+    if query_has_protein_cue(query):
         return "protein"
     if is_protein_like_input_type(input_type):
         return "protein"
@@ -5294,6 +5330,8 @@ def detect_entity_route(
     if resolved_accessions:
         return "protein"
     if resolved_metabolites:
+        return "metabolite"
+    if query_has_metabolite_cue(query):
         return "metabolite"
     return "protein"
 
@@ -5648,23 +5686,31 @@ def candidates_from_index(
         if ok and not identity_ok(efo_id, label, syns, merged, nums, subject_terms):
             ok = False
         if ok and route == "metabolite":
-            candidate_descriptor = metabolite_descriptor_tag(" ".join([label] + syns[:10]))
+            candidate_text = " ".join([label] + syns[:10])
+            candidate_descriptor = metabolite_descriptor_tag(candidate_text)
+            candidate_classes = lipoprotein_class_tags(candidate_text)
+            candidate_sizes = lipoprotein_size_tags(candidate_text)
             if query_metabolite_descriptor:
                 if query_metabolite_descriptor == "cholesterol":
                     if candidate_descriptor != "cholesterol":
                         ok = False
                 elif candidate_descriptor != query_metabolite_descriptor:
                     ok = False
+            if ok and not query_lipoprotein_classes and candidate_classes:
+                # For unqualified metabolite queries (for example "cholesterol levels"),
+                # avoid auto-promoting lipoprotein subclass terms by default.
+                ok = False
             if ok and query_lipoprotein_classes:
-                candidate_classes = lipoprotein_class_tags(" ".join([label] + syns[:10]))
                 if not candidate_classes or candidate_classes.isdisjoint(query_lipoprotein_classes):
                     ok = False
             if ok and query_lipoprotein_classes:
-                candidate_sizes = lipoprotein_size_tags(" ".join([label] + syns[:10]))
                 if query_all_lipoprotein_scope and candidate_sizes:
                     ok = False
                 if query_lipoprotein_sizes:
-                    if not candidate_sizes or candidate_sizes.isdisjoint(query_lipoprotein_sizes):
+                    # If query asks for a specific size, allow exact size matches.
+                    # When no size exists on the candidate (class-level term), keep it
+                    # as a fallback rather than dropping the class-consistent term.
+                    if candidate_sizes and candidate_sizes.isdisjoint(query_lipoprotein_sizes):
                         ok = False
             if ok and has_metabolite_profiles and not query_has_chain_signature and has_lipid_chain_signature(merged):
                 # Prevent generic analyte names from auto-mapping to specific
@@ -5883,12 +5929,47 @@ def candidates_from_index(
             score = min(1.0, max(0.0, score))
             if score < 0.30:
                 continue
-            semantic_exact = (
-                route == "metabolite"
-                and bool(query_metabolite_descriptor)
-                and bool(query_lipoprotein_classes)
-                and score >= 0.95
-            )
+            semantic_exact = False
+            needs_new_term = False
+            if route == "metabolite":
+                candidate_text = " ".join([label] + syns[:10])
+                candidate_descriptor = metabolite_descriptor_tag(candidate_text)
+                candidate_classes = lipoprotein_class_tags(candidate_text)
+                candidate_sizes = lipoprotein_size_tags(candidate_text)
+
+                descriptor_ok = True
+                if query_metabolite_descriptor:
+                    if query_metabolite_descriptor == "cholesterol":
+                        descriptor_ok = candidate_descriptor == "cholesterol"
+                    else:
+                        descriptor_ok = candidate_descriptor == query_metabolite_descriptor
+
+                if query_lipoprotein_classes:
+                    class_ok = bool(candidate_classes and not candidate_classes.isdisjoint(query_lipoprotein_classes))
+                else:
+                    class_ok = not candidate_classes
+
+                size_ok = True
+                if query_all_lipoprotein_scope and candidate_sizes:
+                    size_ok = False
+                if query_lipoprotein_sizes:
+                    # Accept class-level fallback when candidate has no explicit size.
+                    size_ok = (not candidate_sizes) or bool(candidate_sizes & query_lipoprotein_sizes)
+
+                if descriptor_ok and class_ok and size_ok:
+                    size_fallback_without_size = bool(
+                        query_lipoprotein_sizes and query_lipoprotein_classes and not candidate_sizes
+                    )
+                    # Keep semantic auto-validation conservative but usable for
+                    # normalized metabolite/lipoprotein phrasing variants.
+                    if size_fallback_without_size:
+                        # Missing size-specific ontology term; allow class-level fallback
+                        # when descriptor/class semantics are already aligned.
+                        min_semantic_score = 0.60
+                        needs_new_term = True
+                    else:
+                        min_semantic_score = 0.85 if query_lipoprotein_classes else 0.90
+                    semantic_exact = score >= min_semantic_score
             merge_candidate(
                 candidates,
                 Candidate(
@@ -5900,6 +5981,7 @@ def candidates_from_index(
                         + ("-subject-exact" if exact_rank else "")
                         + ("-concept-validated" if route == "metabolite" and has_metabolite_profiles else "")
                         + ("-semantic-exact" if semantic_exact else "")
+                        + (f"-{NEEDS_NEW_TERM_MATCH_TAG}" if needs_new_term else "")
                     ),
                     evidence=f"token retrieval + lexical score using: {term}",
                     is_validated=True,
@@ -5952,13 +6034,18 @@ def map_one(
     def auto_validates(cand: Candidate) -> bool:
         if not cand.is_validated:
             return False
+        if NEEDS_NEW_TERM_MATCH_TAG in cand.matched_via:
+            return False
         if cand.matched_via.startswith("local-term-token"):
             has_subject_exact = "subject-exact" in cand.matched_via
             has_concept_validation = "concept-validated" in cand.matched_via
             has_semantic_exact = "semantic-exact" in cand.matched_via
             if not has_subject_exact and not has_concept_validation and not has_semantic_exact:
                 return False
-            if cand.score < TOKEN_SUBJECT_EXACT_AUTO_VALIDATE_MIN_SCORE:
+            if has_semantic_exact:
+                if cand.score < TOKEN_SEMANTIC_EXACT_AUTO_VALIDATE_MIN_SCORE:
+                    return False
+            elif cand.score < TOKEN_SUBJECT_EXACT_AUTO_VALIDATE_MIN_SCORE:
                 return False
         return True
 
@@ -5985,6 +6072,23 @@ def map_one(
             ]
         if withheld:
             best = withheld[0]
+            if NEEDS_NEW_TERM_MATCH_TAG in best.matched_via:
+                return [
+                    {
+                        "input_query": query,
+                        "mapped_efo_id": "",
+                        "mapped_label": "",
+                        "confidence": "0.0",
+                        "matched_via": "withheld-needs-new-term",
+                        "validation": "not_mapped",
+                        "input_type": input_type_norm,
+                        "evidence": (
+                            f"reason_code=needs_new_term; candidate {format_ontology_id_for_output(best.efo_id)} "
+                            f"is a class-level fallback for a size-qualified query (score={best.score:.3f}, "
+                            f"matched_via={best.matched_via})"
+                        ),
+                    }
+                ]
             return [
                 {
                     "input_query": query,
@@ -6324,6 +6428,16 @@ def infer_review_reason(
     if strict_candidates:
         best = strict_candidates[0]
         if best.score >= min_score:
+            if NEEDS_NEW_TERM_MATCH_TAG in best.matched_via:
+                return (
+                    "needs_new_term",
+                    (
+                        f"best candidate {format_ontology_id_for_output(best.efo_id)} scored {best.score:.3f} but "
+                        "drops required size granularity; request a new ontology term"
+                    ),
+                    resolved_identity,
+                    strict_candidates,
+                )
             return (
                 "manual_validation_required",
                 (
@@ -6478,6 +6592,10 @@ def review_action(reason_code: str) -> tuple[str, str]:
         "manual_validation_required": (
             "manual_review",
             "Candidate exists but was withheld from auto-validation; confirm identity manually.",
+        ),
+        "needs_new_term": (
+            "request_new_efo_term",
+            "Closest candidate loses required granularity (for example lipoprotein size); request a new ontology term.",
         ),
         "unresolved_name_strict_mode": (
             "resolve_identifier",
@@ -6741,6 +6859,8 @@ def write_withheld_triage_tsv(
         reader = csv.DictReader(handle, delimiter="\t")
         for row in reader:
             if normalize(row.get("suggestion_rank") or "") != "1":
+                continue
+            if normalize(row.get("reason_code") or "") == "needs_new_term":
                 continue
             input_rows.append(row)
 
@@ -7587,7 +7707,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--review-output",
         help=(
             "Optional TSV path for candidates withheld from auto-validation "
-            "(reason_code=manual_validation_required)"
+            "(reason_code in {manual_validation_required, needs_new_term})"
         ),
     )
     p_map.add_argument(
@@ -8075,7 +8195,7 @@ def main() -> int:
                     name_mode=args.name_mode,
                     entity_type=entity_type,
                     top_n=max(1, args.review_top_n),
-                    reason_code_filter={"manual_validation_required"},
+                    reason_code_filter={"manual_validation_required", "needs_new_term"},
                 )
                 print(f"[OK] wrote {review_rows} withheld review rows to {review_output_path}")
             if args.review_queue_output:
