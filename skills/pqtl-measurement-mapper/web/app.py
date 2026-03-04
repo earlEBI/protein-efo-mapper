@@ -332,7 +332,7 @@ def home() -> str:
       padding: 7px 9px;
       background: #f8fcff;
     }
-    pre {
+    #logs {
       margin: 0;
       background: #0c1f2b;
       color: #cde8f2;
@@ -344,6 +344,32 @@ def home() -> str:
       padding: 12px;
       font-size: 0.79rem;
       line-height: 1.45;
+    }
+    .help {
+      margin-top: 12px;
+    }
+    .help p {
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .help strong {
+      color: var(--ink);
+    }
+    .cmd {
+      margin: 6px 0 10px;
+      background: #0c1f2b;
+      color: #cde8f2;
+      border-radius: 10px;
+      border: 1px solid #19435a;
+      overflow: auto;
+      padding: 10px 12px;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      white-space: pre;
+    }
+    .cmd code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, \"Courier New\", monospace;
     }
     .err { color: var(--danger); }
   </style>
@@ -414,6 +440,19 @@ def home() -> str:
         <div class=\"status\" id=\"jobMeta\"></div>
       </section>
     </div>
+
+    <section class=\"card help\">
+      <h3 style=\"margin:0 0 8px;font-size:1rem;\">Update / Pull Fixes</h3>
+      <p>Use this when a new mapper fix is pushed to GitHub.</p>
+      <p><strong>Standard update</strong></p>
+      <div class=\"cmd\"><code>git fetch origin
+git pull --rebase origin main</code></div>
+      <p><strong>If you have local uncommitted changes</strong></p>
+      <div class=\"cmd\"><code>git stash
+git pull --rebase origin main
+git stash pop</code></div>
+      <p>If you are not on <code>main</code>, replace it with your current branch.</p>
+    </section>
   </div>
 
 <script>
