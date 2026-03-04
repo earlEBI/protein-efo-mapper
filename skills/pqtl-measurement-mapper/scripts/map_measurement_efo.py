@@ -3852,6 +3852,17 @@ def merge_candidate(store: dict[str, Candidate], cand: Candidate) -> None:
     if cand.is_validated and not current.is_validated:
         store[cand.efo_id] = cand
         return
+    if cand.is_validated == current.is_validated:
+        current_is_token = current.matched_via.startswith("local-term-token")
+        cand_is_token = cand.matched_via.startswith("local-term-token")
+        # Keep explicit/exact match evidence over token-retrieved evidence for
+        # the same ontology ID. Token paths are noisier and can otherwise
+        # downgrade a stable exact hit into a review-only candidate.
+        if current_is_token and not cand_is_token:
+            store[cand.efo_id] = cand
+            return
+        if cand_is_token and not current_is_token:
+            return
     if cand.score > current.score:
         store[cand.efo_id] = cand
         return
