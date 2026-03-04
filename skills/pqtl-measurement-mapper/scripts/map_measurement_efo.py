@@ -843,11 +843,19 @@ def lipid_panel_query_variants(value: str) -> tuple[str, ...]:
 
 
 def query_has_protein_cue(value: str) -> bool:
-    return bool(PROTEIN_CUE_RE.search(normalize(value)))
+    normalized = normalize(value)
+    if PROTEIN_CUE_RE.search(normalized):
+        return True
+    folded = normalize_lipid_panel_phrase(normalized)
+    return bool(folded and PROTEIN_CUE_RE.search(folded))
 
 
 def query_has_metabolite_cue(value: str) -> bool:
-    return bool(METABOLITE_CUE_RE.search(normalize(value)))
+    normalized = normalize(value)
+    if METABOLITE_CUE_RE.search(normalized):
+        return True
+    folded = normalize_lipid_panel_phrase(normalized)
+    return bool(folded and METABOLITE_CUE_RE.search(folded))
 
 
 @lru_cache(maxsize=300_000)
@@ -6070,11 +6078,7 @@ def candidates_from_index(
         is_metabolite_id_input or not ambiguous_met_alias_resolution
     )
     allow_ratio_terms = query_requests_ratio(query)
-    query_apolipoprotein_subtypes = (
-        apolipoprotein_subtype_tags(normalize_lipid_panel_phrase(query) or query)
-        if route == "protein"
-        else frozenset()
-    )
+    query_apolipoprotein_subtypes = apolipoprotein_subtype_tags(normalize_lipid_panel_phrase(query) or query)
     query_protein_discriminator_tags = (
         protein_discriminator_tags(normalize_lipid_panel_phrase(query) or query)
         if route == "protein"
@@ -6151,8 +6155,8 @@ def candidates_from_index(
                 if query_apolipoprotein_subtypes:
                     candidate_apolipoprotein_subtypes = apolipoprotein_subtype_tags(candidate_text)
                     if (
-                        candidate_apolipoprotein_subtypes
-                        and candidate_apolipoprotein_subtypes.isdisjoint(query_apolipoprotein_subtypes)
+                        not candidate_apolipoprotein_subtypes
+                        or candidate_apolipoprotein_subtypes.isdisjoint(query_apolipoprotein_subtypes)
                     ):
                         identity_cache[efo_id] = False
                         return False
@@ -6243,6 +6247,15 @@ def candidates_from_index(
             ok = False
         if ok and not identity_ok(efo_id, label, syns, merged, nums, subject_terms):
             ok = False
+        if ok and query_apolipoprotein_subtypes:
+            candidate_apolipoprotein_subtypes = apolipoprotein_subtype_tags(" ".join([label] + syns[:10]))
+            if (
+                not candidate_apolipoprotein_subtypes
+                or candidate_apolipoprotein_subtypes.isdisjoint(query_apolipoprotein_subtypes)
+            ):
+                # Enforce subtype consistency for Apo-family queries regardless
+                # of protein/metabolite routing.
+                ok = False
         if ok and route == "metabolite":
             candidate_text = " ".join([label] + syns[:10])
             candidate_descriptor = metabolite_descriptor_tag(candidate_text)
