@@ -6595,6 +6595,7 @@ def map_one(
     entity_type: str = "auto",
 ) -> list[dict[str, str]]:
     query = normalize(query)
+    query_apolipoprotein_subtypes = apolipoprotein_subtype_tags(normalize_lipid_panel_phrase(query) or query)
     input_type_norm = normalize_input_type(input_type)
     candidates = candidates_from_index(
         query,
@@ -6609,8 +6610,16 @@ def map_one(
     )
     eligible = [c for c in candidates if c.score >= min_score]
 
+    def apolipoprotein_subtype_consistent(cand: Candidate) -> bool:
+        if not query_apolipoprotein_subtypes:
+            return True
+        candidate_tags = apolipoprotein_subtype_tags(cand.label)
+        return bool(candidate_tags and (candidate_tags & query_apolipoprotein_subtypes))
+
     def auto_validates(cand: Candidate) -> bool:
         if not cand.is_validated:
+            return False
+        if not apolipoprotein_subtype_consistent(cand):
             return False
         if NEEDS_NEW_TERM_MATCH_TAG in cand.matched_via:
             return False
