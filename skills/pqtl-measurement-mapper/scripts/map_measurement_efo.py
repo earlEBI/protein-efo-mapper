@@ -2224,6 +2224,7 @@ def map_trait_queries(
     ukb_category_titles: dict[str, str] | None,
     ukb_category_parents: dict[str, tuple[str, ...]] | None,
     ukb_category_to_fields: dict[str, tuple[str, ...]] | None,
+    ukb_field_to_category: dict[str, str] | None,
     top_k: int,
     min_score: float,
     force_map_best: bool,
@@ -2249,12 +2250,14 @@ def map_trait_queries(
     ukb_category_titles = ukb_category_titles or {}
     ukb_category_parents = ukb_category_parents or {}
     ukb_category_to_fields = ukb_category_to_fields or {}
+    ukb_field_to_category = ukb_field_to_category or {}
     ukb_category_title_norms = {
         category_id: norm_key(title)
         for category_id, title in ukb_category_titles.items()
         if " " in norm_key(title) and len(norm_key(title)) >= 12
     }
     cache_resolution = trait_cache_resolution or {}
+    category_mapping_only_after_other_methods = True
 
     def resolve_record(record: TraitCacheRecord) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
         if cache_resolution:
@@ -2265,6 +2268,8 @@ def map_trait_queries(
 
     rows: list[dict[str, str]] = []
     query_result_cache: dict[tuple[str, str, str, str], tuple[dict[str, str], ...]] = {}
+    ukb_category_fallback_cache: dict[tuple[str, ...], tuple[Candidate, ...]] = {}
+    ukb_field_fallback_cache: dict[str, tuple[Candidate, ...]] = {}
     progress = ProgressReporter(total=len(query_inputs), enabled=show_progress)
 
     via_rank = {
@@ -2282,6 +2287,139 @@ def map_trait_queries(
         "efo_obo_exact_ukb_category": 4,
         "efo_obo_fuzzy": 5,
     }
+
+    def build_ukb_category_fallback_candidates(fallback_key: tuple[str, ...]) -> tuple[Candidate, ...]:
+        if not fallback_key:
+            return ()
+        cached_fallback = ukb_category_fallback_cache.get(fallback_key)
+        if cached_fallback is not None:
+            return cached_fallback
+
+        fallback_candidates: list[Candidate] = []
+        fallback_text_keys: list[str] = []
+        fallback_category_field_ids: set[str] = set()
+
+        for category_id in fallback_key:
+            category_title = normalize(ukb_category_titles.get(category_id, ""))
+            path_titles = ukb_category_path_titles(
+                category_id,
+                category_titles=ukb_category_titles,
+                category_parents=ukb_category_parents,
+            )
+            for variant in ukb_category_query_variants(category_id, category_title, path_titles):
+                key = norm_key(variant)
+                if key and key not in fallback_text_keys:
+                    fallback_text_keys.append(key)
+            # Include direct parent-path titles (for example "physical activity measurement")
+            # so technical UKB child fields can still map at the broader phenotype level.
+            for title in path_titles:
+                key = norm_key(title)
+                if key and key not in fallback_text_keys:
+                    fallback_text_keys.append(key)
+            for field_id in ukb_category_to_fields.get(category_id, ()):
+                field_id_norm = normalize(field_id)
+                if field_id_norm:
+                    fallback_category_field_ids.add(field_id_norm)
+
+        if fallback_category_field_ids:
+            matched_record_idxs: list[int] = []
+            seen_rec_idxs: set[int] = set()
+            for field_id in sorted(fallback_category_field_ids):
+                for rec_idx in ukb_field_index.get(field_id, []):
+                    if rec_idx in seen_rec_idxs:
+                        continue
+                    seen_rec_idxs.add(rec_idx)
+                    matched_record_idxs.append(rec_idx)
+            if matched_record_idxs:
+                matched_records = [records[idx] for idx in matched_record_idxs]
+                ukb_category_candidates = collapse_trait_cache_candidates(
+                    matched_records,
+                    method="cache_exact_ukb_category",
+                    score=0.962,
+                    matched_on="UKB category field set (fallback)",
+                    validated_if_unique=True,
+                    record_resolver=resolve_record,
+                )
+                if len(ukb_category_candidates) == 1:
+                    fallback_candidates.extend(ukb_category_candidates)
+
+        if not fallback_candidates and fallback_text_keys:
+            matched_record_idxs = []
+            seen_rec_idxs: set[int] = set()
+            for key in fallback_text_keys:
+                for rec_idx in text_exact_index.get(key, []):
+                    if rec_idx in seen_rec_idxs:
+                        continue
+                    seen_rec_idxs.add(rec_idx)
+                    matched_record_idxs.append(rec_idx)
+            if matched_record_idxs:
+                matched_records = [records[idx] for idx in matched_record_idxs]
+                ukb_category_title_candidates = collapse_trait_cache_candidates(
+                    matched_records,
+                    method="cache_exact_ukb_category_title",
+                    score=0.955,
+                    matched_on="UKB category title/path text (fallback)",
+                    validated_if_unique=False,
+                    record_resolver=resolve_record,
+                )
+                if len(ukb_category_title_candidates) == 1:
+                    fallback_candidates.extend(ukb_category_title_candidates)
+
+        if not fallback_candidates and fallback_text_keys:
+            exact_term_ids: set[str] = set()
+            for key in fallback_text_keys:
+                exact_term_ids |= ontology_exact_index.get(key, set())
+            if exact_term_ids:
+                ordered = sorted(
+                    exact_term_ids,
+                    key=lambda tid: (
+                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        tid,
+                    ),
+                )
+                for term_id in ordered[: max(top_k, 5)]:
+                    term = ontology_terms[term_id]
+                    fallback_candidates.append(
+                        Candidate(
+                            efo_id=term.term_id,
+                            label=term.label,
+                            score=0.90 if len(ordered) == 1 else 0.86,
+                            matched_via="efo_obo_exact_ukb_category",
+                            evidence="exact label/synonym match in efo.obo (via UKB category fallback)",
+                            is_validated=False,
+                        )
+                    )
+
+        cached = tuple(fallback_candidates)
+        ukb_category_fallback_cache[fallback_key] = cached
+        return cached
+
+    should_precompute_ukb_field_fallback = bool(ukb_field_to_category) and any(
+        (
+            extract_ukb_field_ids(normalize(item.get("query", "")))
+            or extract_ukb_category_ids(normalize(item.get("query", "")))
+            or re.fullmatch(r"(?:f)?[0-9]{1,7}", norm_key(normalize(item.get("query", "")))) is not None
+        )
+        for item in query_inputs
+    )
+    if should_precompute_ukb_field_fallback:
+        precompute_category_ids = sorted(
+            {
+                category_id
+                for category_id in (normalize(raw) for raw in ukb_field_to_category.values())
+                if category_id
+            }
+        )
+        for category_id in precompute_category_ids:
+            build_ukb_category_fallback_candidates((category_id,))
+        for field_id, category_id in ukb_field_to_category.items():
+            fid = normalize(field_id)
+            cid = normalize(category_id)
+            if not fid or not cid:
+                continue
+            precomputed = ukb_category_fallback_cache.get((cid,), ())
+            if precomputed:
+                ukb_field_fallback_cache[fid] = precomputed
 
     for item in query_inputs:
         query = normalize(item.get("query", ""))
@@ -2306,6 +2444,12 @@ def map_trait_queries(
 
         query_norm_hint = norm_key(query)
         ukb_field_ids = extract_ukb_field_ids(query)
+        if not ukb_field_ids:
+            numeric_field_match = re.fullmatch(r"(?:f)?([0-9]{1,7})", query_norm_hint)
+            if numeric_field_match:
+                maybe_field_id = normalize(numeric_field_match.group(1))
+                if maybe_field_id and (maybe_field_id in ukb_field_titles or maybe_field_id in ukb_field_to_category):
+                    ukb_field_ids = (maybe_field_id,)
         ukb_category_ids = extract_ukb_category_ids(query)
         if not ukb_category_ids and query_norm_hint and ukb_category_title_norms:
             inferred_category_ids = tuple(
@@ -2374,10 +2518,6 @@ def map_trait_queries(
         has_ontology_exact = bool(query_norm and ontology_exact_index.get(query_norm))
         if not has_ontology_exact and ukb_exact_text_keys:
             has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_exact_text_keys)
-        if not has_ontology_exact and ukb_category_exact_text_keys:
-            has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_category_exact_text_keys)
-        if not has_ontology_exact and ukb_category_field_exact_text_keys:
-            has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_category_field_exact_text_keys)
 
         fuzzy_query_norm = query_match_norm
         fuzzy_query_tokens = query_tokens
@@ -2436,7 +2576,7 @@ def map_trait_queries(
                 if len(ukb_field_candidates) == 1:
                     candidates.extend(ukb_field_candidates)
 
-        if ukb_category_field_ids:
+        if (not category_mapping_only_after_other_methods) and ukb_category_field_ids:
             matched_record_idxs = []
             seen_rec_idxs: set[int] = set()
             for ukb_field_id in sorted(ukb_category_field_ids):
@@ -2495,7 +2635,7 @@ def map_trait_queries(
                 if len(ukb_title_candidates) == 1:
                     candidates.extend(ukb_title_candidates)
 
-        if ukb_category_exact_text_keys:
+        if (not category_mapping_only_after_other_methods) and ukb_category_exact_text_keys:
             matched_record_idxs = []
             seen_rec_idxs: set[int] = set()
             for key in ukb_category_exact_text_keys:
@@ -2517,7 +2657,7 @@ def map_trait_queries(
                 if len(ukb_category_title_candidates) == 1:
                     candidates.extend(ukb_category_title_candidates)
 
-        if ukb_category_field_exact_text_keys:
+        if (not category_mapping_only_after_other_methods) and ukb_category_field_exact_text_keys:
             matched_record_idxs = []
             seen_rec_idxs: set[int] = set()
             for key in ukb_category_field_exact_text_keys:
@@ -2595,28 +2735,15 @@ def map_trait_queries(
                     )
                 )
 
-        if not candidates and (
-            query_norm or ukb_exact_text_keys or ukb_category_exact_text_keys or ukb_category_field_exact_text_keys
-        ):
+        if not candidates and (query_norm or ukb_exact_text_keys):
             exact_term_ids: set[str] = set()
             matched_via_ukb_title = False
-            matched_via_ukb_category = False
             if query_norm:
                 exact_term_ids |= ontology_exact_index.get(query_norm, set())
             for key in ukb_exact_text_keys:
                 term_ids = ontology_exact_index.get(key, set())
                 if term_ids:
                     matched_via_ukb_title = True
-                    exact_term_ids |= term_ids
-            for key in ukb_category_exact_text_keys:
-                term_ids = ontology_exact_index.get(key, set())
-                if term_ids:
-                    matched_via_ukb_category = True
-                    exact_term_ids |= term_ids
-            for key in ukb_category_field_exact_text_keys:
-                term_ids = ontology_exact_index.get(key, set())
-                if term_ids:
-                    matched_via_ukb_category = True
                     exact_term_ids |= term_ids
             if exact_term_ids:
                 ordered = sorted(
@@ -2636,20 +2763,12 @@ def map_trait_queries(
                             matched_via=(
                                 "efo_obo_exact_ukb_field_title"
                                 if matched_via_ukb_title
-                                else (
-                                    "efo_obo_exact_ukb_category"
-                                    if matched_via_ukb_category
-                                    else "efo_obo_exact"
-                                )
+                                else "efo_obo_exact"
                             ),
                             evidence=(
                                 "exact label/synonym match in efo.obo (via UKB field title)"
                                 if matched_via_ukb_title
-                                else (
-                                    "exact label/synonym match in efo.obo (via UKB category context)"
-                                    if matched_via_ukb_category
-                                    else "exact label/synonym match in efo.obo"
-                                )
+                                else "exact label/synonym match in efo.obo"
                             ),
                             is_validated=len(ordered) == 1,
                         )
@@ -2706,6 +2825,38 @@ def map_trait_queries(
                         is_validated=False,
                     )
                 )
+
+        if not candidates and (ukb_field_ids or ukb_category_ids):
+            fallback_candidates: list[Candidate] = []
+            seen_fallback_keys: set[tuple[str, str, str]] = set()
+            for field_id in ukb_field_ids:
+                for candidate in ukb_field_fallback_cache.get(field_id, ()):
+                    dedup_key = (candidate.efo_id, candidate.label, candidate.matched_via)
+                    if dedup_key in seen_fallback_keys:
+                        continue
+                    seen_fallback_keys.add(dedup_key)
+                    fallback_candidates.append(candidate)
+
+            if not fallback_candidates:
+                fallback_category_ids: list[str] = []
+                seen_category_ids: set[str] = set()
+                for category_id in ukb_category_ids:
+                    cid = normalize(category_id)
+                    if cid and cid not in seen_category_ids:
+                        seen_category_ids.add(cid)
+                        fallback_category_ids.append(cid)
+                for field_id in ukb_field_ids:
+                    category_id = normalize(ukb_field_to_category.get(field_id, ""))
+                    if category_id and category_id not in seen_category_ids:
+                        seen_category_ids.add(category_id)
+                        fallback_category_ids.append(category_id)
+
+                fallback_key = tuple(sorted(fallback_category_ids))
+                if fallback_key:
+                    fallback_candidates.extend(build_ukb_category_fallback_candidates(fallback_key))
+
+            if fallback_candidates:
+                candidates.extend(fallback_candidates)
 
         deduped: dict[tuple[str, str, str], Candidate] = {}
         for candidate in candidates:
@@ -2773,6 +2924,8 @@ def map_trait_queries(
                     if candidate.matched_via == "cache_exact_ukb_category_title"
                     else "UKB category child field title"
                     if candidate.matched_via == "cache_exact_ukb_category_field_title"
+                    else "UKB category fallback"
+                    if candidate.matched_via == "efo_obo_exact_ukb_category"
                     else "Reported trait"
                     if candidate.matched_via.startswith("cache_")
                     else "EFO/OBO label or synonym"
@@ -5872,6 +6025,35 @@ def detect_entity_route(
     return "protein"
 
 
+def has_useful_external_identity(
+    *,
+    query: str,
+    route: str,
+    resolved_accessions: list[str],
+    resolved_metabolites: list[str],
+    index: dict[str, Any],
+) -> bool:
+    if route == "protein":
+        if any(canonical_accession(v) for v in query_variants(query)):
+            return True
+        return bool(resolved_accessions)
+
+    if route == "metabolite":
+        if any(canonical_metabolite_id(v) for v in query_variants(query)):
+            return True
+        concept_index = index.get("metabolite_concept_index", {})
+        for concept_id in resolved_metabolites:
+            concept_meta = concept_index.get(concept_id) or {}
+            if not isinstance(concept_meta, dict):
+                continue
+            for met_id in concept_meta.get("ids") or []:
+                if canonical_metabolite_id(met_id):
+                    return True
+        return False
+
+    return False
+
+
 def concept_subject_terms(concept_ids: list[str], index: dict[str, Any]) -> tuple[frozenset[str], ...]:
     concept_index = index.get("metabolite_concept_index", {})
     profiles: list[frozenset[str]] = []
@@ -6067,6 +6249,10 @@ def candidates_from_index(
         resolved_accessions=resolved_accessions,
         resolved_metabolites=resolved_metabolites,
     )
+    if normalize_entity_type(entity_type) == "metabolite" and query_has_protein_cue(query):
+        # Metabolite-only mode is intended for true metabolite rows; fail closed
+        # on protein-like analytes so users can rerun in auto/protein mode.
+        return []
     is_accession_input = any(canonical_accession(v) for v in query_variants(query))
     is_metabolite_id_input = any(canonical_metabolite_id(v) for v in query_variants(query))
     is_symbol_input = bool(symbol_query_key(query) or uniprot_mnemonic_symbol_keys(query, index))
@@ -6597,6 +6783,28 @@ def map_one(
     query = normalize(query)
     query_apolipoprotein_subtypes = apolipoprotein_subtype_tags(normalize_lipid_panel_phrase(query) or query)
     input_type_norm = normalize_input_type(input_type)
+    resolved_accessions, _used_alias_resolution, _ambiguous_alias_resolution = resolve_query_accessions(
+        query,
+        index,
+        input_type=input_type_norm,
+    )
+    resolved_metabolites, _used_met_alias_resolution, _ambiguous_met_alias_resolution = resolve_query_metabolite_concepts(
+        query, index
+    )
+    route = detect_entity_route(
+        query=query,
+        input_type=input_type_norm,
+        forced_entity_type=entity_type,
+        resolved_accessions=resolved_accessions,
+        resolved_metabolites=resolved_metabolites,
+    )
+    has_external_identity = has_useful_external_identity(
+        query=query,
+        route=route,
+        resolved_accessions=resolved_accessions,
+        resolved_metabolites=resolved_metabolites,
+        index=index,
+    )
     candidates = candidates_from_index(
         query,
         index,
@@ -6660,6 +6868,24 @@ def map_one(
         if withheld:
             best = withheld[0]
             if NEEDS_NEW_TERM_MATCH_TAG in best.matched_via:
+                if not has_external_identity:
+                    return [
+                        {
+                            "input_query": query,
+                            "mapped_efo_id": "",
+                            "mapped_label": "",
+                            "confidence": "0.0",
+                            "matched_via": "withheld-broad-term-suggestion",
+                            "validation": "not_mapped",
+                            "input_type": input_type_norm,
+                            "evidence": (
+                                f"reason_code=suggest_broad_term_mapping; candidate "
+                                f"{format_ontology_id_for_output(best.efo_id)} ({best.label}) "
+                                "is the broad-term fallback, but no stable external identifier "
+                                "was available to justify new-term request"
+                            ),
+                        }
+                    ]
                 return [
                     {
                         "input_query": query,
@@ -6689,6 +6915,19 @@ def map_one(
                         f"candidate withheld from auto-validation: {format_ontology_id_for_output(best.efo_id)} "
                         f"(score={best.score:.3f}, matched_via={best.matched_via})"
                     ),
+                }
+            ]
+        if normalize_entity_type(entity_type) == "metabolite" and query_has_protein_cue(query):
+            return [
+                {
+                    "input_query": query,
+                    "mapped_efo_id": "",
+                    "mapped_label": "",
+                    "confidence": "0.0",
+                    "matched_via": "blocked-protein-like-query",
+                    "validation": "not_mapped",
+                    "input_type": input_type_norm,
+                    "evidence": "metabolite-only mode blocked protein-like query; rerun with --entity-type auto",
                 }
             ]
         if force_map_best and fallback_efo_id:
@@ -6994,7 +7233,21 @@ def infer_review_reason(
         resolved_accessions=resolved_accessions,
         resolved_metabolites=resolved_metabolites,
     )
+    if normalize_entity_type(entity_type) == "metabolite" and query_has_protein_cue(query):
+        return (
+            "metabolite_mode_blocked_protein_like_query",
+            "metabolite-only mode blocked a protein-like analyte name; rerun in auto mode",
+            resolved_accessions,
+            [],
+        )
     resolved_identity = resolved_accessions if route == "protein" else resolved_metabolites
+    has_external_identity = has_useful_external_identity(
+        query=query,
+        route=route,
+        resolved_accessions=resolved_accessions,
+        resolved_metabolites=resolved_metabolites,
+        index=index,
+    )
     is_accession_input = any(canonical_accession(v) for v in query_variants(query))
     is_metabolite_input = any(canonical_metabolite_id(v) for v in query_variants(query))
     used_resolution = used_alias_resolution if route == "protein" else used_met_alias_resolution
@@ -7016,6 +7269,16 @@ def infer_review_reason(
         best = strict_candidates[0]
         if best.score >= min_score:
             if NEEDS_NEW_TERM_MATCH_TAG in best.matched_via:
+                if not has_external_identity:
+                    return (
+                        "suggest_broad_term_mapping",
+                        (
+                            f"best candidate {format_ontology_id_for_output(best.efo_id)} scored {best.score:.3f} but "
+                            "no stable external identifier was available; prefer broad-term mapping"
+                        ),
+                        resolved_identity,
+                        strict_candidates,
+                    )
                 return (
                     "needs_new_term",
                     (
@@ -7183,6 +7446,14 @@ def review_action(reason_code: str) -> tuple[str, str]:
         "needs_new_term": (
             "request_new_efo_term",
             "Closest candidate loses required granularity (for example lipoprotein size); request a new ontology term.",
+        ),
+        "suggest_broad_term_mapping": (
+            "map_broad_term",
+            "No stable external identifier (UniProt/HMDB/ChEBI/KEGG) was available; use broad-term mapping.",
+        ),
+        "metabolite_mode_blocked_protein_like_query": (
+            "rerun_auto_mode",
+            "Protein-like analyte was blocked in metabolite-only mode; rerun with entity-type=auto.",
         ),
         "unresolved_name_strict_mode": (
             "resolve_identifier",
@@ -7447,7 +7718,8 @@ def write_withheld_triage_tsv(
         for row in reader:
             if normalize(row.get("suggestion_rank") or "") != "1":
                 continue
-            if normalize(row.get("reason_code") or "") == "needs_new_term":
+            reason_code = normalize(row.get("reason_code") or "")
+            if reason_code in {"needs_new_term", "suggest_broad_term_mapping"}:
                 continue
             input_rows.append(row)
 
@@ -8241,7 +8513,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "Entity mapping mode. auto routes per query; protein uses UniProt identity gating; "
-            "metabolite uses metabolite-concept identity gating."
+            "metabolite uses metabolite-concept identity gating and blocks protein-like queries."
         ),
     )
     p_map.add_argument(
@@ -8299,7 +8571,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--review-output",
         help=(
             "Optional TSV path for candidates withheld from auto-validation "
-            "(reason_code in {manual_validation_required, needs_new_term})"
+            "(reason_code in {manual_validation_required, needs_new_term, "
+            "suggest_broad_term_mapping, metabolite_mode_blocked_protein_like_query})"
         ),
     )
     p_map.add_argument(
@@ -8795,7 +9068,12 @@ def main() -> int:
                     name_mode=args.name_mode,
                     entity_type=entity_type,
                     top_n=max(1, args.review_top_n),
-                    reason_code_filter={"manual_validation_required", "needs_new_term"},
+                    reason_code_filter={
+                        "manual_validation_required",
+                        "needs_new_term",
+                        "suggest_broad_term_mapping",
+                        "metabolite_mode_blocked_protein_like_query",
+                    },
                 )
                 print(f"[OK] wrote {review_rows} withheld review rows to {review_output_path}")
             if args.review_queue_output:
@@ -8936,19 +9214,38 @@ def main() -> int:
             ukb_category_catalog_path = pick_ukb_metadata_path("category.txt")
             ukb_category_tree_path = pick_ukb_metadata_path("catbrowse.txt")
 
-            _ukb_field_to_category, ukb_category_to_fields = load_ukb_field_category_index(ukb_field_metadata_path)
+            ukb_field_to_category, ukb_category_to_fields = load_ukb_field_category_index(ukb_field_metadata_path)
             ukb_category_titles = load_ukb_category_title_index(ukb_category_catalog_path)
             ukb_category_parents = load_ukb_category_parent_index(ukb_category_tree_path)
+            metadata_field_titles = load_ukb_field_title_index(ukb_field_metadata_path)
+            merged_field_titles = 0
+            for field_id, title in metadata_field_titles.items():
+                if field_id in ukb_field_titles:
+                    continue
+                ukb_field_titles[field_id] = title
+                merged_field_titles += 1
 
             if ukb_field_metadata_path is not None and ukb_field_metadata_path.exists():
                 print(
                     f"[OK] loaded UKB field metadata with {len(ukb_category_to_fields)} category groups "
                     f"from {ukb_field_metadata_path}"
                 )
+                if merged_field_titles > 0:
+                    print(
+                        f"[OK] augmented UKB field title index with {merged_field_titles} extra titles "
+                        f"from {ukb_field_metadata_path}"
+                    )
             elif ukb_category_query_rows > 0:
                 print(
                     "[WARN] input contains UKB category queries but UKB field metadata was not found; "
                     f"checked path: {ukb_field_metadata_path}"
+                )
+
+            if ukb_field_to_category:
+                fields_with_titles = sum(1 for field_id in ukb_field_to_category if field_id in ukb_field_titles)
+                print(
+                    "[OK] UKB field title coverage: "
+                    f"{fields_with_titles}/{len(ukb_field_to_category)} fields"
                 )
 
             if ukb_category_titles:
@@ -9038,6 +9335,7 @@ def main() -> int:
                         ukb_category_titles=ukb_category_titles,
                         ukb_category_parents=ukb_category_parents,
                         ukb_category_to_fields=ukb_category_to_fields,
+                        ukb_field_to_category=ukb_field_to_category,
                         top_k=max(1, args.top_k),
                         min_score=max(0.0, min(1.0, args.min_score)),
                         force_map_best=bool(args.force_map_best),
@@ -9061,6 +9359,7 @@ def main() -> int:
                     ukb_category_titles=ukb_category_titles,
                     ukb_category_parents=ukb_category_parents,
                     ukb_category_to_fields=ukb_category_to_fields,
+                    ukb_field_to_category=ukb_field_to_category,
                     top_k=max(1, args.top_k),
                     min_score=max(0.0, min(1.0, args.min_score)),
                     force_map_best=bool(args.force_map_best),

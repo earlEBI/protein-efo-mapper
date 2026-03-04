@@ -110,6 +110,8 @@ def run_mapping_job(job_id: str) -> None:
             str(job.options.get("workers", 8)),
             "--measurement-context",
             str(job.options.get("measurement_context", "blood")),
+            "--entity-type",
+            str(job.options.get("entity_type", "auto")),
             "--matrix-priority",
             str(job.options.get("matrix_priority", "plasma,blood,serum")),
             "--progress",
@@ -405,6 +407,13 @@ def home() -> str:
             </div>
           </div>
 
+          <label>Entity Type</label>
+          <select name=\"entity_type\">
+            <option value=\"auto\" selected>auto (Recommended for mixed panels)</option>
+            <option value=\"protein\">protein</option>
+            <option value=\"metabolite\">metabolite (Advanced: metabolite-only rows; protein-like rows are blocked)</option>
+          </select>
+
           <div class=\"row\">
             <div>
               <label>Top K</label>
@@ -586,6 +595,7 @@ def create_job(
     min_score: float = Form(0.55),
     matrix_priority: str = Form("plasma,blood,serum"),
     measurement_context: str = Form("blood"),
+    entity_type: str = Form("auto"),
     auto_enrich: bool = Form(True),
     cache_writeback: bool = Form(False),
     force_map_best: bool = Form(False),
@@ -597,6 +607,9 @@ def create_job(
     ext = Path(file.filename).suffix.lower()
     if ext not in {".txt", ".tsv", ".csv", ".list", ".tab"}:
         raise HTTPException(status_code=400, detail="Unsupported file type")
+    entity_type_clean = (entity_type or "").strip().lower() or "auto"
+    if entity_type_clean not in {"auto", "protein", "metabolite"}:
+        raise HTTPException(status_code=400, detail="Invalid entity_type")
 
     job_id = uuid.uuid4().hex[:12]
     job_dir = JOB_ROOT / job_id
@@ -624,6 +637,7 @@ def create_job(
             "min_score": max(0.0, float(min_score)),
             "matrix_priority": matrix_priority.strip() or "plasma,blood,serum",
             "measurement_context": measurement_context.strip() or "blood",
+            "entity_type": entity_type_clean,
             "auto_enrich": bool(auto_enrich),
             "cache_writeback": bool(cache_writeback),
             "force_map_best": bool(force_map_best),
