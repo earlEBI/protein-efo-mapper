@@ -288,6 +288,9 @@ LIPID_PANEL_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bparticle number\b", re.IGNORECASE), "particle concentration"),
     (re.compile(r"\ball all\b", re.IGNORECASE), "all"),
     (re.compile(r"\bn-acetylglycoproteins[12]\b", re.IGNORECASE), "n-acetylglycoproteins"),
+    (re.compile(r"\bmeasurement levels?\b", re.IGNORECASE), "measurement"),
+    (re.compile(r"\blevels?\s+measurement\b", re.IGNORECASE), "measurement"),
+    (re.compile(r"\bmeasurements\b", re.IGNORECASE), "measurement"),
 )
 LIPID_MEASUREMENT_VARIANT_RE = re.compile(
     r"^(?:"
