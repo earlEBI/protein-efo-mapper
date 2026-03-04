@@ -444,15 +444,11 @@ def home() -> str:
     <section class=\"card help\">
       <h3 style=\"margin:0 0 8px;font-size:1rem;\">Update / Pull Fixes</h3>
       <p>Run mapper commands from the repo root with <code>analyte-efo-mapper ...</code>.</p>
-      <p><strong>Upgrade flow (most cases)</strong></p>
-      <div class=\"cmd\"><code>git fetch origin
+      <p><strong>Upgrade flow (single safe default)</strong></p>
+      <div class=\"cmd\"><code>git stash push -u -m \"pre-upgrade\"
 git pull --rebase origin main
+git stash pop || true
 python -m pip install -e .</code></div>
-      <p><strong>If you have local uncommitted changes</strong></p>
-      <div class=\"cmd\"><code>git stash
-git pull --rebase origin main
-python -m pip install -e .
-git stash pop</code></div>
       <p><strong>After mapper/cache changes</strong></p>
       <div class=\"cmd\"><code>analyte-efo-mapper index-build</code></div>
       <p>Restart this web app after update so the new code and index are loaded.</p>

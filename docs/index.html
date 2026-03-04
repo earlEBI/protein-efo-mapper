@@ -497,16 +497,10 @@ analyte-efo-mapper setup-bundled-caches</pre>
         Run all mapper commands with <code>analyte-efo-mapper ...</code>.
       </div>
       <div class="note">
-        Upgrade flow (clean working tree):<br>
-        <code>git fetch origin</code><br>
+        Upgrade flow (single safe default):<br>
+        <code>git stash push -u -m "pre-upgrade"</code><br>
         <code>git pull --rebase origin main</code><br>
-        <code>python -m pip install -e .</code>
-      </div>
-      <div class="note">
-        Upgrade flow (if you have local uncommitted changes):<br>
-        <code>git stash</code><br>
-        <code>git pull --rebase origin main</code><br>
-        <code>git stash pop</code><br>
+        <code>git stash pop || true</code><br>
         <code>python -m pip install -e .</code>
       </div>
     </section>
