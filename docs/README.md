@@ -32,6 +32,10 @@ Bundled offline caches used by setup:
 - `skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv` (protein alias cache)
 - `skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv` (metabolite HMDB-derived alias cache)
 - `skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv` (disease/phenotype trait cache)
+- `references/ukb/fieldsum.txt` (UKB data-field title catalog)
+- `references/ukb/field.txt` (UKB field metadata including main category IDs)
+- `references/ukb/category.txt` (UKB category labels)
+- `references/ukb/catbrowse.txt` (UKB category parent/child tree)
 
 These are local repository files; setup does not download these caches from the internet.
 Trait mapping also needs `skills/pqtl-measurement-mapper/references/efo.obo`. If missing, `setup-bundled-caches`
@@ -45,6 +49,10 @@ Cache provenance and refresh/build path:
 - `uniprot_aliases_light.tsv`: generated locally by `setup-bundled-caches` (or `uniprot-alias-build-light`), optional online enrichment via `uniprot-alias-enrich`.
 - `metabolite_aliases.tsv`: bundled HMDB-derived alias cache in repo; can be rebuilt from your pinned HMDB SDF via `metabolite-alias-build`.
 - `trait_mapping_cache.tsv`: bundled curated disease/phenotype cache in repo.
+- `references/ukb/fieldsum.txt`: bundled UKB field title catalog used by `trait-map`.
+- `references/ukb/field.txt`: bundled UKB field metadata used by `trait-map` for category-aware matching.
+- `references/ukb/category.txt`: bundled UKB category label catalog used by `trait-map` when category IDs/titles appear in input.
+- `references/ukb/catbrowse.txt`: bundled UKB category tree used to resolve category-path context in `trait-map`.
 - `efo_measurement_terms_cache.tsv`: bundled measurement-term cache in repo; can be rebuilt from OBO via `refresh-efo-cache`.
 - `measurement_index.json`: local compiled index built from caches by `setup-bundled-caches` or `index-build`.
 - `efo.obo`: local ontology file used by `trait-map` for fallback and obsolete-ID checks.
@@ -79,8 +87,9 @@ CLI command and upgrade:
 - Run commands via:
   - `analyte-efo-mapper ...`
 - Upgrade after new GitHub changes:
-  - `git pull origin main`
+  - `git pull --rebase origin main`
   - `python -m pip install -e .`
+  - `analyte-efo-mapper setup-bundled-caches`
 
 Quick Start (5 lines):
 
@@ -93,7 +102,7 @@ analyte-efo-mapper map \
 ```
 
 This writes your main results to `final_output/analytes_efo.tsv` and triaged withheld candidates to `final_output/withheld_for_review_triage.tsv`.
-`setup-bundled-caches` is offline/local by default and validates bundled caches.
+`setup-bundled-caches` is offline/local by default and validates bundled caches, including bundled UKB field/category dictionaries.
 If you add `--uniprot-light-enrich-gene-ids`, setup will also perform optional online UniProt backfill.
 
 Disease/phenotype trait mapping mode (optional):
@@ -116,6 +125,7 @@ analyte-efo-mapper trait-map \
 Notes:
 - This mode is cache-first (curated trait cache), then falls back to `efo.obo`.
 - Input can include free-text trait, ICD10, and/or PheCode columns.
+- UKB-aware trait context uses bundled `references/ukb/fieldsum.txt`, `field.txt`, `category.txt`, and `catbrowse.txt` when available.
 - Output includes a per-row `provenance` field suitable for curation notes tabs.
 - Before mapping, trait cache IDs are checked against `efo.obo`; obsolete IDs are remapped via `replaced_by` (or single `consider`) where possible, and unresolved IDs are warned and excluded from auto output.
 

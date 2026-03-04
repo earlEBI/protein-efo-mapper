@@ -444,11 +444,19 @@ def home() -> str:
     <section class=\"card help\">
       <h3 style=\"margin:0 0 8px;font-size:1rem;\">Update / Pull Fixes</h3>
       <p>Run mapper commands from the repo root with <code>analyte-efo-mapper ...</code>.</p>
-      <p><strong>Upgrade flow (single safe default)</strong></p>
-      <div class=\"cmd\"><code>git stash push -u -m \"pre-upgrade\"
+      <p><strong>Upgrade / pull latest (external-user flow)</strong></p>
+      <div class=\"cmd\"><code>git pull --rebase origin main
+python -m pip install -e .
+analyte-efo-mapper setup-bundled-caches</code></div>
+      <p>Bundled UKB dictionaries used by trait mode:
+      <code>references/ukb/fieldsum.txt</code>, <code>references/ukb/field.txt</code>,
+      <code>references/ukb/category.txt</code>, <code>references/ukb/catbrowse.txt</code>.</p>
+      <p><strong>If you have local uncommitted changes</strong></p>
+      <div class=\"cmd\"><code>git stash
 git pull --rebase origin main
-git stash pop || true
-python -m pip install -e .</code></div>
+python -m pip install -e .
+analyte-efo-mapper setup-bundled-caches
+git stash pop</code></div>
       <p><strong>After mapper/cache changes</strong></p>
       <div class=\"cmd\"><code>analyte-efo-mapper index-build</code></div>
       <p>Restart this web app after update so the new code and index are loaded.</p>

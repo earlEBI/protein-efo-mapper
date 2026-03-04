@@ -473,7 +473,12 @@ analyte-efo-mapper setup-bundled-caches</pre>
         Next: edit <code>data/analytes.tsv</code> with your own IDs (UniProt, gene symbol, gene ID, protein name, or metabolite IDs/names).
       </div>
       <div class="note">
-        The final command in each setup block validates bundled protein/metabolite/trait caches and builds the local index without internet downloads.
+        The final command in each setup block validates bundled protein/metabolite/trait caches, validates bundled UKB field/category dictionaries, and builds the local index without internet downloads.
+      </div>
+      <div class="note">
+        Bundled UKB dictionaries used by trait mode live at
+        <code>references/ukb/fieldsum.txt</code>, <code>references/ukb/field.txt</code>,
+        <code>references/ukb/category.txt</code>, and <code>references/ukb/catbrowse.txt</code>.
       </div>
       <div class="note">
         Trait mode requires <code>skills/pqtl-measurement-mapper/references/efo.obo</code>. If missing, setup/trait-map can auto-provision it from your pinned bundled URL (recommended: repo release asset <code>efo.obo.gz</code>).
@@ -497,11 +502,10 @@ analyte-efo-mapper setup-bundled-caches</pre>
         Run all mapper commands with <code>analyte-efo-mapper ...</code>.
       </div>
       <div class="note">
-        Upgrade flow (single safe default):<br>
-        <code>git stash push -u -m "pre-upgrade"</code><br>
+        Upgrade / pull latest (external-user flow):<br>
         <code>git pull --rebase origin main</code><br>
-        <code>git stash pop || true</code><br>
-        <code>python -m pip install -e .</code>
+        <code>python -m pip install -e .</code><br>
+        <code>analyte-efo-mapper setup-bundled-caches</code>
       </div>
     </section>
 
