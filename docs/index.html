@@ -494,7 +494,20 @@ analyte-efo-mapper setup-bundled-caches</pre>
         <code>analyte-efo-mapper uniprot-alias-enrich --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv --workers 8</code>
       </div>
       <div class="note">
-        Run all mapper commands with <code>analyte-efo-mapper ...</code>. Upgrade flow: <code>git pull</code> then <code>python -m pip install -e .</code>.
+        Run all mapper commands with <code>analyte-efo-mapper ...</code>.
+      </div>
+      <div class="note">
+        Upgrade flow (clean working tree):<br>
+        <code>git fetch origin</code><br>
+        <code>git pull --rebase origin main</code><br>
+        <code>python -m pip install -e .</code>
+      </div>
+      <div class="note">
+        Upgrade flow (if you have local uncommitted changes):<br>
+        <code>git stash</code><br>
+        <code>git pull --rebase origin main</code><br>
+        <code>git stash pop</code><br>
+        <code>python -m pip install -e .</code>
       </div>
     </section>
 
