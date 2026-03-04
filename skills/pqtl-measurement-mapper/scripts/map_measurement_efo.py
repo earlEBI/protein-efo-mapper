@@ -225,6 +225,8 @@ LIPID_PANEL_PREFIX_RE = re.compile(
 LIPID_PANEL_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bapo[-\s]?a1\b", re.IGNORECASE), "apolipoprotein a 1"),
     (re.compile(r"\bapo[-\s]?a2\b", re.IGNORECASE), "apolipoprotein a 2"),
+    # Handle common OCR/Unicode confusables for ApoB (B/8/beta/Cyrillic Ve).
+    (re.compile(r"\bapo[-\s]?(?:8|β|Β|в|В|ß)\b", re.IGNORECASE), "apolipoprotein b"),
     (re.compile(r"\bapolipoprotein\s+a[-\s]?1\b", re.IGNORECASE), "apolipoprotein a-i"),
     (re.compile(r"\bapolipoprotein\s+a[-\s]?2\b", re.IGNORECASE), "apolipoprotein a-ii"),
     (re.compile(r"\bapo[-\s]?b100\b", re.IGNORECASE), "apolipoprotein b-100"),
@@ -384,6 +386,9 @@ DEFAULT_EFO_OBO_BUNDLED_URL = DEFAULT_EFO_OBO_URL
 DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
 LEGACY_TRAIT_CACHE = REPO_ROOT / "final_output" / "code-EFO-mappings_final_mapping_cache.tsv"
 DEFAULT_UKB_FIELD_CATALOG = REPO_ROOT / "references" / "ukb" / "fieldsum.txt"
+DEFAULT_UKB_FIELD_METADATA = REPO_ROOT / "references" / "ukb" / "field.txt"
+DEFAULT_UKB_CATEGORY_CATALOG = REPO_ROOT / "references" / "ukb" / "category.txt"
+DEFAULT_UKB_CATEGORY_TREE = REPO_ROOT / "references" / "ukb" / "catbrowse.txt"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
 DEFAULT_MATRIX_PRIORITY = ["plasma", "blood", "serum"]
 DEFAULT_MEASUREMENT_CONTEXT = "blood"
@@ -498,6 +503,7 @@ TRAIT_NEGATION_CUES = {
 }
 TRAIT_MULTI_CONNECTOR_RE = re.compile(r"(?:\b(?:and|or|vs|versus)\b|/|\\|,)")
 UKB_DATA_FIELD_RE = re.compile(r"\bUKB(?:\s*data)?\s*field\s*(\d{1,7})\b", re.IGNORECASE)
+UKB_CATEGORY_RE = re.compile(r"\bcategory\s*[:#\-\(\)\[\] ]*(\d{1,7})\b", re.IGNORECASE)
 TRAIT_MULTI_HINT_TOKENS = {
     "combined",
     "pleiotropy",
@@ -912,7 +918,10 @@ def apolipoprotein_subtype_tags(value: str) -> frozenset[str]:
         tags.add("a1")
     if re.search(r"\b(?:apo[-\s]?a2|apoa2|apolipoprotein\s+a[-\s]?(?:2|ii))\b", text):
         tags.add("a2")
-    if re.search(r"\b(?:apo[-\s]?b(?:100)?|apob|apolipoprotein\s+b(?:[-\s]?100)?)\b", text):
+    if re.search(
+        r"\b(?:apo[-\s]?(?:b(?:100)?|8|β|Β|в|В|ß)|apob|apolipoprotein\s+b(?:[-\s]?100)?)\b",
+        text,
+    ):
         tags.add("b")
     return frozenset(tags)
 
@@ -1384,6 +1393,132 @@ def ukb_title_query_variants(field_id: str, title: str) -> tuple[str, ...]:
     return tuple(deduped)
 
 
+@lru_cache(maxsize=200_000)
+def extract_ukb_category_ids(text: str) -> tuple[str, ...]:
+    key = normalize(text)
+    if not key:
+        return ()
+    category_ids: list[str] = []
+    for match in UKB_CATEGORY_RE.findall(key):
+        category_id = normalize(match)
+        if category_id and category_id not in category_ids:
+            category_ids.append(category_id)
+    return tuple(category_ids)
+
+
+def ukb_category_query_variants(category_id: str, title: str, path_titles: tuple[str, ...]) -> tuple[str, ...]:
+    cid = normalize(category_id)
+    clean_title = normalize(title)
+    clean_path = tuple(normalize(item) for item in path_titles if normalize(item))
+
+    variants: list[str] = []
+    if clean_title:
+        variants.append(clean_title)
+    if clean_path:
+        variants.append(" ".join(clean_path))
+        variants.append(" > ".join(clean_path))
+    if cid and clean_title:
+        variants.append(f"Category {cid} {clean_title}")
+        variants.append(f"Category {cid}: {clean_title}")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        key = normalize(variant)
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(key)
+    return tuple(deduped)
+
+
+def ukb_category_path_titles(
+    category_id: str,
+    *,
+    category_titles: dict[str, str],
+    category_parents: dict[str, tuple[str, ...]],
+    max_depth: int = 12,
+) -> tuple[str, ...]:
+    cid = normalize(category_id)
+    if not cid:
+        return ()
+    seen: set[str] = set()
+    chain: list[str] = []
+    current = cid
+    depth = 0
+    while current and depth < max_depth and current not in seen:
+        seen.add(current)
+        chain.append(current)
+        parents = category_parents.get(current, ())
+        current = parents[0] if parents else ""
+        depth += 1
+    chain.reverse()
+    return tuple(normalize(category_titles.get(cat_id, "")) for cat_id in chain if normalize(category_titles.get(cat_id, "")))
+
+
+def load_ukb_field_category_index(path: Path | None) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    if path is None or not path.exists():
+        return {}, {}
+
+    field_to_category: dict[str, str] = {}
+    category_to_fields: dict[str, list[str]] = {}
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                field_id = normalize(row.get("field_id", ""))
+                category_id = normalize(row.get("main_category", ""))
+                if not field_id or not category_id:
+                    continue
+                field_to_category[field_id] = category_id
+                if field_id not in category_to_fields.setdefault(category_id, []):
+                    category_to_fields[category_id].append(field_id)
+    except OSError:
+        return {}, {}
+
+    frozen_category_to_fields = {cat: tuple(field_ids) for cat, field_ids in category_to_fields.items()}
+    return field_to_category, frozen_category_to_fields
+
+
+def load_ukb_category_title_index(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+
+    titles: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                category_id = normalize(row.get("category_id", ""))
+                title = normalize(row.get("title", ""))
+                if not category_id or not title:
+                    continue
+                titles[category_id] = title
+    except OSError:
+        return {}
+    return titles
+
+
+def load_ukb_category_parent_index(path: Path | None) -> dict[str, tuple[str, ...]]:
+    if path is None or not path.exists():
+        return {}
+
+    parents: dict[str, list[str]] = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                parent_id = normalize(row.get("parent_id", ""))
+                child_id = normalize(row.get("child_id", ""))
+                if not parent_id or not child_id:
+                    continue
+                if parent_id not in parents.setdefault(child_id, []):
+                    parents[child_id].append(parent_id)
+    except OSError:
+        return {}
+
+    return {child_id: tuple(parent_ids) for child_id, parent_ids in parents.items()}
+
+
 def normalize_negation_target(token: str) -> str:
     tok = norm_key(token)
     if len(tok) <= 3:
@@ -1647,6 +1782,12 @@ def load_trait_cache_index(path: Path) -> dict[str, Any]:
                 phecode_index.setdefault(phecode, []).append(rec_idx)
 
             ukb_ids = set(extract_ukb_field_ids(reported_trait)) | set(extract_ukb_field_ids(lookup_text))
+            explicit_ukb_field = normalize(row.get("UKBB data field") or row.get("UKB data field") or "")
+            if explicit_ukb_field and explicit_ukb_field not in {"-", "NA", "N/A"}:
+                if re.fullmatch(r"\d{1,7}", explicit_ukb_field):
+                    ukb_ids.add(explicit_ukb_field)
+                else:
+                    ukb_ids |= set(extract_ukb_field_ids(explicit_ukb_field))
             for ukb_field_id in ukb_ids:
                 ukb_field_index.setdefault(ukb_field_id, []).append(rec_idx)
 
@@ -2069,6 +2210,9 @@ def map_trait_queries(
     trait_cache_path: Path,
     efo_obo_path: Path,
     ukb_field_titles: dict[str, str] | None,
+    ukb_category_titles: dict[str, str] | None,
+    ukb_category_parents: dict[str, tuple[str, ...]] | None,
+    ukb_category_to_fields: dict[str, tuple[str, ...]] | None,
     top_k: int,
     min_score: float,
     force_map_best: bool,
@@ -2091,6 +2235,14 @@ def map_trait_queries(
     ontology_token_index: dict[str, set[str]] = ontology_index["token_index"]
     ontology_token_freq: Counter[str] = ontology_index["token_freq"]
     ukb_field_titles = ukb_field_titles or {}
+    ukb_category_titles = ukb_category_titles or {}
+    ukb_category_parents = ukb_category_parents or {}
+    ukb_category_to_fields = ukb_category_to_fields or {}
+    ukb_category_title_norms = {
+        category_id: norm_key(title)
+        for category_id, title in ukb_category_titles.items()
+        if " " in norm_key(title) and len(norm_key(title)) >= 12
+    }
     cache_resolution = trait_cache_resolution or {}
 
     def resolve_record(record: TraitCacheRecord) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
@@ -2110,9 +2262,13 @@ def map_trait_queries(
         "cache_exact_text": 2,
         "cache_exact_ukb_field": 2,
         "cache_exact_ukb_field_title": 2,
+        "cache_exact_ukb_category": 2,
+        "cache_exact_ukb_category_title": 2,
+        "cache_exact_ukb_category_field_title": 2,
         "cache_fuzzy_text": 3,
         "efo_obo_exact": 4,
         "efo_obo_exact_ukb_field_title": 4,
+        "efo_obo_exact_ukb_category": 4,
         "efo_obo_fuzzy": 5,
     }
 
@@ -2137,7 +2293,18 @@ def map_trait_queries(
         if not query:
             query = icd10 or phecode
 
+        query_norm_hint = norm_key(query)
         ukb_field_ids = extract_ukb_field_ids(query)
+        ukb_category_ids = extract_ukb_category_ids(query)
+        if not ukb_category_ids and query_norm_hint and ukb_category_title_norms:
+            inferred_category_ids = tuple(
+                category_id
+                for category_id, title_norm in ukb_category_title_norms.items()
+                if title_norm and title_norm in query_norm_hint
+            )
+            if inferred_category_ids:
+                ukb_category_ids = inferred_category_ids
+
         ukb_exact_text_keys: list[str] = []
         ukb_primary_title = ""
         for ukb_field_id in ukb_field_ids:
@@ -2150,6 +2317,33 @@ def map_trait_queries(
                 key = norm_key(variant)
                 if key and key not in ukb_exact_text_keys:
                     ukb_exact_text_keys.append(key)
+
+        ukb_category_exact_text_keys: list[str] = []
+        ukb_category_field_exact_text_keys: list[str] = []
+        ukb_category_field_ids: set[str] = set()
+        for category_id in ukb_category_ids:
+            category_title = normalize(ukb_category_titles.get(category_id, ""))
+            path_titles = ukb_category_path_titles(
+                category_id,
+                category_titles=ukb_category_titles,
+                category_parents=ukb_category_parents,
+            )
+            for variant in ukb_category_query_variants(category_id, category_title, path_titles):
+                key = norm_key(variant)
+                if key and key not in ukb_category_exact_text_keys:
+                    ukb_category_exact_text_keys.append(key)
+            for field_id in ukb_category_to_fields.get(category_id, ()):
+                field_id_norm = normalize(field_id)
+                if not field_id_norm:
+                    continue
+                ukb_category_field_ids.add(field_id_norm)
+                field_title = normalize(ukb_field_titles.get(field_id_norm, ""))
+                if not field_title:
+                    continue
+                for variant in ukb_title_query_variants(field_id_norm, field_title):
+                    key = norm_key(variant)
+                    if key and key not in ukb_category_field_exact_text_keys:
+                        ukb_category_field_exact_text_keys.append(key)
 
         cache_key = (query, input_type, icd10, phecode)
         if memoize_queries and cache_key in query_result_cache:
@@ -2169,6 +2363,10 @@ def map_trait_queries(
         has_ontology_exact = bool(query_norm and ontology_exact_index.get(query_norm))
         if not has_ontology_exact and ukb_exact_text_keys:
             has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_exact_text_keys)
+        if not has_ontology_exact and ukb_category_exact_text_keys:
+            has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_category_exact_text_keys)
+        if not has_ontology_exact and ukb_category_field_exact_text_keys:
+            has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_category_field_exact_text_keys)
 
         fuzzy_query_norm = query_match_norm
         fuzzy_query_tokens = query_tokens
@@ -2227,6 +2425,30 @@ def map_trait_queries(
                 if len(ukb_field_candidates) == 1:
                     candidates.extend(ukb_field_candidates)
 
+        if ukb_category_field_ids:
+            matched_record_idxs = []
+            seen_rec_idxs: set[int] = set()
+            for ukb_field_id in sorted(ukb_category_field_ids):
+                for rec_idx in ukb_field_index.get(ukb_field_id, []):
+                    if rec_idx in seen_rec_idxs:
+                        continue
+                    seen_rec_idxs.add(rec_idx)
+                    matched_record_idxs.append(rec_idx)
+            if matched_record_idxs:
+                matched_records = [records[idx] for idx in matched_record_idxs]
+                ukb_category_candidates = collapse_trait_cache_candidates(
+                    matched_records,
+                    method="cache_exact_ukb_category",
+                    score=0.982,
+                    matched_on="UKB category field set",
+                    validated_if_unique=True,
+                    record_resolver=resolve_record,
+                )
+                # Category IDs can include multiple child fields with different
+                # trait mappings; only auto-accept the unambiguous case.
+                if len(ukb_category_candidates) == 1:
+                    candidates.extend(ukb_category_candidates)
+
         if query_norm and query_norm in text_exact_index:
             matched_records = [records[idx] for idx in text_exact_index[query_norm]]
             candidates.extend(
@@ -2261,6 +2483,50 @@ def map_trait_queries(
                 )
                 if len(ukb_title_candidates) == 1:
                     candidates.extend(ukb_title_candidates)
+
+        if ukb_category_exact_text_keys:
+            matched_record_idxs = []
+            seen_rec_idxs: set[int] = set()
+            for key in ukb_category_exact_text_keys:
+                for rec_idx in text_exact_index.get(key, []):
+                    if rec_idx in seen_rec_idxs:
+                        continue
+                    seen_rec_idxs.add(rec_idx)
+                    matched_record_idxs.append(rec_idx)
+            if matched_record_idxs:
+                matched_records = [records[idx] for idx in matched_record_idxs]
+                ukb_category_title_candidates = collapse_trait_cache_candidates(
+                    matched_records,
+                    method="cache_exact_ukb_category_title",
+                    score=0.972,
+                    matched_on="UKB category title text",
+                    validated_if_unique=True,
+                    record_resolver=resolve_record,
+                )
+                if len(ukb_category_title_candidates) == 1:
+                    candidates.extend(ukb_category_title_candidates)
+
+        if ukb_category_field_exact_text_keys:
+            matched_record_idxs = []
+            seen_rec_idxs: set[int] = set()
+            for key in ukb_category_field_exact_text_keys:
+                for rec_idx in text_exact_index.get(key, []):
+                    if rec_idx in seen_rec_idxs:
+                        continue
+                    seen_rec_idxs.add(rec_idx)
+                    matched_record_idxs.append(rec_idx)
+            if matched_record_idxs:
+                matched_records = [records[idx] for idx in matched_record_idxs]
+                ukb_category_field_title_candidates = collapse_trait_cache_candidates(
+                    matched_records,
+                    method="cache_exact_ukb_category_field_title",
+                    score=0.974,
+                    matched_on="UKB category child field title text",
+                    validated_if_unique=True,
+                    record_resolver=resolve_record,
+                )
+                if len(ukb_category_field_title_candidates) == 1:
+                    candidates.extend(ukb_category_field_title_candidates)
 
         if not candidates and fuzzy_query_tokens and not has_ontology_exact:
             seed_tokens = pick_seed_tokens(fuzzy_query_tokens, cache_token_freq, max_tokens=6)
@@ -2318,15 +2584,28 @@ def map_trait_queries(
                     )
                 )
 
-        if not candidates and (query_norm or ukb_exact_text_keys):
+        if not candidates and (
+            query_norm or ukb_exact_text_keys or ukb_category_exact_text_keys or ukb_category_field_exact_text_keys
+        ):
             exact_term_ids: set[str] = set()
             matched_via_ukb_title = False
+            matched_via_ukb_category = False
             if query_norm:
                 exact_term_ids |= ontology_exact_index.get(query_norm, set())
             for key in ukb_exact_text_keys:
                 term_ids = ontology_exact_index.get(key, set())
                 if term_ids:
                     matched_via_ukb_title = True
+                    exact_term_ids |= term_ids
+            for key in ukb_category_exact_text_keys:
+                term_ids = ontology_exact_index.get(key, set())
+                if term_ids:
+                    matched_via_ukb_category = True
+                    exact_term_ids |= term_ids
+            for key in ukb_category_field_exact_text_keys:
+                term_ids = ontology_exact_index.get(key, set())
+                if term_ids:
+                    matched_via_ukb_category = True
                     exact_term_ids |= term_ids
             if exact_term_ids:
                 ordered = sorted(
@@ -2343,11 +2622,23 @@ def map_trait_queries(
                             efo_id=term.term_id,
                             label=term.label,
                             score=0.93 if len(ordered) == 1 else 0.88,
-                            matched_via="efo_obo_exact_ukb_field_title" if matched_via_ukb_title else "efo_obo_exact",
+                            matched_via=(
+                                "efo_obo_exact_ukb_field_title"
+                                if matched_via_ukb_title
+                                else (
+                                    "efo_obo_exact_ukb_category"
+                                    if matched_via_ukb_category
+                                    else "efo_obo_exact"
+                                )
+                            ),
                             evidence=(
                                 "exact label/synonym match in efo.obo (via UKB field title)"
                                 if matched_via_ukb_title
-                                else "exact label/synonym match in efo.obo"
+                                else (
+                                    "exact label/synonym match in efo.obo (via UKB category context)"
+                                    if matched_via_ukb_category
+                                    else "exact label/synonym match in efo.obo"
+                                )
                             ),
                             is_validated=len(ordered) == 1,
                         )
@@ -2465,6 +2756,12 @@ def map_trait_queries(
                     if candidate.matched_via == "cache_exact_ukb_field"
                     else "UKB field title"
                     if candidate.matched_via == "cache_exact_ukb_field_title"
+                    else "UKB category"
+                    if candidate.matched_via == "cache_exact_ukb_category"
+                    else "UKB category title"
+                    if candidate.matched_via == "cache_exact_ukb_category_title"
+                    else "UKB category child field title"
+                    if candidate.matched_via == "cache_exact_ukb_category_field_title"
                     else "Reported trait"
                     if candidate.matched_via.startswith("cache_")
                     else "EFO/OBO label or synonym"
@@ -8556,6 +8853,9 @@ def main() -> int:
             if not query_inputs:
                 raise ValueError("No usable trait queries found in input")
             ukb_query_rows = sum(1 for row in query_inputs if extract_ukb_field_ids(row.get("query", "")))
+            ukb_category_query_rows = sum(
+                1 for row in query_inputs if extract_ukb_category_ids(row.get("query", ""))
+            )
 
             trait_cache_path = Path(args.trait_cache)
             trait_cache_path, seeded = seed_default_trait_cache_if_needed(trait_cache_path)
@@ -8589,6 +8889,73 @@ def main() -> int:
                 print(
                     "[WARN] input contains UKB data-field queries but UKB field catalog was not found; "
                     f"checked path: {ukb_catalog_path}"
+                )
+
+            ukb_roots: list[Path] = []
+            if ukb_catalog_path is not None:
+                ukb_roots.append(ukb_catalog_path.parent)
+            default_ukb_root = DEFAULT_UKB_FIELD_CATALOG.parent
+            if default_ukb_root not in ukb_roots:
+                ukb_roots.append(default_ukb_root)
+
+            def pick_ukb_metadata_path(filename: str) -> Path | None:
+                for root in ukb_roots:
+                    candidate = root / filename
+                    if candidate.exists():
+                        return candidate
+                if ukb_roots:
+                    return ukb_roots[0] / filename
+                return None
+
+            ukb_field_metadata_path = pick_ukb_metadata_path("field.txt")
+            ukb_category_catalog_path = pick_ukb_metadata_path("category.txt")
+            ukb_category_tree_path = pick_ukb_metadata_path("catbrowse.txt")
+
+            _ukb_field_to_category, ukb_category_to_fields = load_ukb_field_category_index(ukb_field_metadata_path)
+            ukb_category_titles = load_ukb_category_title_index(ukb_category_catalog_path)
+            ukb_category_parents = load_ukb_category_parent_index(ukb_category_tree_path)
+
+            if ukb_field_metadata_path is not None and ukb_field_metadata_path.exists():
+                print(
+                    f"[OK] loaded UKB field metadata with {len(ukb_category_to_fields)} category groups "
+                    f"from {ukb_field_metadata_path}"
+                )
+            elif ukb_category_query_rows > 0:
+                print(
+                    "[WARN] input contains UKB category queries but UKB field metadata was not found; "
+                    f"checked path: {ukb_field_metadata_path}"
+                )
+
+            if ukb_category_titles:
+                print(
+                    f"[OK] loaded UKB category catalog with {len(ukb_category_titles)} titles "
+                    f"from {ukb_category_catalog_path}"
+                )
+            elif ukb_category_query_rows > 0:
+                print(
+                    "[WARN] input contains UKB category queries but UKB category catalog was not found; "
+                    f"checked path: {ukb_category_catalog_path}"
+                )
+                print(
+                    "[WARN] download with: "
+                    "curl -sS -L 'https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=3' "
+                    f"-o {DEFAULT_UKB_CATEGORY_CATALOG}"
+                )
+
+            if ukb_category_parents:
+                print(
+                    f"[OK] loaded UKB category tree with {len(ukb_category_parents)} child links "
+                    f"from {ukb_category_tree_path}"
+                )
+            elif ukb_category_query_rows > 0:
+                print(
+                    "[WARN] input contains UKB category queries but UKB category tree was not found; "
+                    f"checked path: {ukb_category_tree_path}"
+                )
+                print(
+                    "[WARN] download with: "
+                    "curl -sS -L 'https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=13' "
+                    f"-o {DEFAULT_UKB_CATEGORY_TREE}"
                 )
             cache_resolution, cache_qc_stats, cache_qc_issues = build_trait_cache_term_resolution(
                 trait_cache_index,
@@ -8643,6 +9010,9 @@ def main() -> int:
                         trait_cache_path=trait_cache_path,
                         efo_obo_path=efo_obo_path,
                         ukb_field_titles=ukb_field_titles,
+                        ukb_category_titles=ukb_category_titles,
+                        ukb_category_parents=ukb_category_parents,
+                        ukb_category_to_fields=ukb_category_to_fields,
                         top_k=max(1, args.top_k),
                         min_score=max(0.0, min(1.0, args.min_score)),
                         force_map_best=bool(args.force_map_best),
@@ -8663,6 +9033,9 @@ def main() -> int:
                     trait_cache_path=trait_cache_path,
                     efo_obo_path=efo_obo_path,
                     ukb_field_titles=ukb_field_titles,
+                    ukb_category_titles=ukb_category_titles,
+                    ukb_category_parents=ukb_category_parents,
+                    ukb_category_to_fields=ukb_category_to_fields,
                     top_k=max(1, args.top_k),
                     min_score=max(0.0, min(1.0, args.min_score)),
                     force_map_best=bool(args.force_map_best),
