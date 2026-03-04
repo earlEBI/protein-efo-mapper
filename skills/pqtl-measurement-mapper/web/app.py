@@ -443,14 +443,19 @@ def home() -> str:
 
     <section class=\"card help\">
       <h3 style=\"margin:0 0 8px;font-size:1rem;\">Update / Pull Fixes</h3>
-      <p>Use this when a new mapper fix is pushed to GitHub.</p>
-      <p><strong>Standard update</strong></p>
+      <p>Run mapper commands from the repo root with <code>analyte-efo-mapper ...</code>.</p>
+      <p><strong>Upgrade flow (most cases)</strong></p>
       <div class=\"cmd\"><code>git fetch origin
-git pull --rebase origin main</code></div>
+git pull --rebase origin main
+python -m pip install -e .</code></div>
       <p><strong>If you have local uncommitted changes</strong></p>
       <div class=\"cmd\"><code>git stash
 git pull --rebase origin main
+python -m pip install -e .
 git stash pop</code></div>
+      <p><strong>After mapper/cache changes</strong></p>
+      <div class=\"cmd\"><code>analyte-efo-mapper index-build</code></div>
+      <p>Restart this web app after update so the new code and index are loaded.</p>
       <p>If you are not on <code>main</code>, replace it with your current branch.</p>
     </section>
   </div>
