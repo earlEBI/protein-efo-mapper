@@ -22,6 +22,34 @@ If local UKB metadata files are missing, setup downloads the official UKB metada
 If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.  
 The compiled `measurement_index.json` is generated locally during setup; it is not required in Git history.
 
+### Fresh Machine Install
+
+For a clean machine starting from GitHub:
+
+```bash
+git clone https://github.com/earlEBI/analyte-efo-mapper.git
+cd analyte-efo-mapper
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+
+analyte-efo-mapper setup-bundled-caches
+analyte-efo-mapper cache-status --strict
+```
+
+What setup does on a fresh clone:
+
+- uses the bundled core caches already tracked in the repo
+- downloads missing official UKB metadata files when needed
+- refreshes or reuses the MONDO ICD10 cache
+- builds the ICD10 label cache when missing
+- generates the local `skills/pqtl-measurement-mapper/references/measurement_index.json`
+
+After that, normal `map` and `trait-map` runs are local/offline unless you explicitly request online refresh behavior.
+
 Map analytes:
 
 ```bash
