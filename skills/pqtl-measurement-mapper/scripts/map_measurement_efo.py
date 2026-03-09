@@ -12940,64 +12940,82 @@ def main() -> int:
             uniprot_aliases = load_uniprot_aliases(uniprot_alias_index_path)
             metabolite_alias_records = load_metabolite_alias_records(metabolite_alias_path)
             if bool(args.build_ukb_field_supplement):
-                supplement_stats = build_ukb_field_supplement_cache(
-                    output_path=ukb_field_supplement_cache_path,
-                    trait_cache_path=trait_cache_path,
-                    efo_obo_path=efo_obo_setup_path,
-                    ukb_field_catalog_path=ukb_setup_catalog_path,
-                    ukb_field_metadata_path=ukb_field_metadata_path,
-                    ukb_category_catalog_path=ukb_category_catalog_path,
-                    ukb_category_tree_path=ukb_category_tree_path,
-                )
-                print(
-                    f"[OK] built UKB supplemental trait cache at {ukb_field_supplement_cache_path} "
-                    f"(fields_total={supplement_stats.get('total_fields', 0)}, "
-                    f"base_covered={supplement_stats.get('base_covered_fields', 0)}, "
-                    f"supplement_rows={supplement_stats.get('supplement_rows', 0)}, "
-                    f"field_title_cache_exact={supplement_stats.get('method_field_title_cache_exact', 0)}, "
-                    f"field_title_ontology_exact={supplement_stats.get('method_field_title_ontology_exact', 0)}, "
-                    f"field_title_ontology_fuzzy={supplement_stats.get('method_field_title_ontology_fuzzy', 0)}, "
-                    f"category_cache_unique={supplement_stats.get('method_category_cache_unique', 0)}, "
-                    f"category_text_exact={supplement_stats.get('method_category_text_exact', 0)}, "
-                    f"category_ontology_exact={supplement_stats.get('method_category_ontology_exact', 0)}, "
-                    f"generic_disease={supplement_stats.get('method_generic_disease', 0)}, "
-                    f"generic_measurement={supplement_stats.get('method_generic_measurement', 0)})"
-                )
+                if (
+                    ukb_field_supplement_cache_path.exists()
+                    and ukb_field_supplement_cache_path.stat().st_size > 0
+                ):
+                    print(
+                        f"[OK] using existing UKB supplemental trait cache at "
+                        f"{ukb_field_supplement_cache_path}"
+                    )
+                else:
+                    supplement_stats = build_ukb_field_supplement_cache(
+                        output_path=ukb_field_supplement_cache_path,
+                        trait_cache_path=trait_cache_path,
+                        efo_obo_path=efo_obo_setup_path,
+                        ukb_field_catalog_path=ukb_setup_catalog_path,
+                        ukb_field_metadata_path=ukb_field_metadata_path,
+                        ukb_category_catalog_path=ukb_category_catalog_path,
+                        ukb_category_tree_path=ukb_category_tree_path,
+                    )
+                    print(
+                        f"[OK] built UKB supplemental trait cache at {ukb_field_supplement_cache_path} "
+                        f"(fields_total={supplement_stats.get('total_fields', 0)}, "
+                        f"base_covered={supplement_stats.get('base_covered_fields', 0)}, "
+                        f"supplement_rows={supplement_stats.get('supplement_rows', 0)}, "
+                        f"field_title_cache_exact={supplement_stats.get('method_field_title_cache_exact', 0)}, "
+                        f"field_title_ontology_exact={supplement_stats.get('method_field_title_ontology_exact', 0)}, "
+                        f"field_title_ontology_fuzzy={supplement_stats.get('method_field_title_ontology_fuzzy', 0)}, "
+                        f"category_cache_unique={supplement_stats.get('method_category_cache_unique', 0)}, "
+                        f"category_text_exact={supplement_stats.get('method_category_text_exact', 0)}, "
+                        f"category_ontology_exact={supplement_stats.get('method_category_ontology_exact', 0)}, "
+                        f"generic_disease={supplement_stats.get('method_generic_disease', 0)}, "
+                        f"generic_measurement={supplement_stats.get('method_generic_measurement', 0)})"
+                    )
 
             if bool(args.build_icd10_supplement):
-                icd10_supplement_stats = build_icd10_supplement_cache(
-                    output_path=icd10_supplement_cache_path,
-                    trait_cache_path=trait_cache_path,
-                    efo_obo_path=efo_obo_setup_path,
-                    mondo_sssom_cache_path=mondo_sssom_cache_path,
-                    mondo_sssom_url=args.icd10_mondo_sssom_url,
-                    mondo_download_timeout=float(args.icd10_mondo_download_timeout),
-                )
-                print(
-                    f"[OK] built ICD10 supplemental trait cache at {icd10_supplement_cache_path} "
-                    f"(codes_total={icd10_supplement_stats.get('total_codes', 0)}, "
-                    f"base_covered={icd10_supplement_stats.get('base_covered_codes', 0)}, "
-                    f"supplement_rows={icd10_supplement_stats.get('supplement_rows', 0)}, "
-                    f"from_efo_obo_xref={icd10_supplement_stats.get('method_efo_obo_xref', 0)}, "
-                    f"from_mondo_sssom={icd10_supplement_stats.get('method_mondo_sssom', 0)}, "
-                    f"from_both={icd10_supplement_stats.get('method_mondo_sssom_efo_obo_xref', 0)}, "
-                    f"mondo_cache_source={icd10_supplement_stats.get('mondo_cache_source', 'none')}, "
-                    f"mondo_mapping_codes={icd10_supplement_stats.get('mondo_mapping_codes', 0)}, "
-                    f"mondo_downloaded={icd10_supplement_stats.get('mondo_downloaded', False)}, "
-                    f"mondo_codes_added={icd10_supplement_stats.get('mondo_codes_added', 0)}, "
-                    f"mondo_terms_not_in_efo={icd10_supplement_stats.get('mondo_terms_not_in_efo', 0)})"
-                )
-                if icd10_supplement_stats.get("mondo_download_error"):
-                    if icd10_supplement_stats.get("mondo_cache_used"):
-                        print(
-                            "[WARN] MONDO SSSOM live refresh failed; using local cached MONDO mappings. "
-                            f"reason={icd10_supplement_stats.get('mondo_download_error')}"
-                        )
-                    else:
-                        print(
-                            "[WARN] MONDO SSSOM mappings unavailable; ICD10 supplement built from EFO ICD10 xrefs only. "
-                            f"reason={icd10_supplement_stats.get('mondo_download_error')}"
-                        )
+                if (
+                    icd10_supplement_cache_path.exists()
+                    and icd10_supplement_cache_path.stat().st_size > 0
+                ):
+                    print(
+                        f"[OK] using existing ICD10 supplemental trait cache at "
+                        f"{icd10_supplement_cache_path}"
+                    )
+                else:
+                    icd10_supplement_stats = build_icd10_supplement_cache(
+                        output_path=icd10_supplement_cache_path,
+                        trait_cache_path=trait_cache_path,
+                        efo_obo_path=efo_obo_setup_path,
+                        mondo_sssom_cache_path=mondo_sssom_cache_path,
+                        mondo_sssom_url=args.icd10_mondo_sssom_url,
+                        mondo_download_timeout=float(args.icd10_mondo_download_timeout),
+                    )
+                    print(
+                        f"[OK] built ICD10 supplemental trait cache at {icd10_supplement_cache_path} "
+                        f"(codes_total={icd10_supplement_stats.get('total_codes', 0)}, "
+                        f"base_covered={icd10_supplement_stats.get('base_covered_codes', 0)}, "
+                        f"supplement_rows={icd10_supplement_stats.get('supplement_rows', 0)}, "
+                        f"from_efo_obo_xref={icd10_supplement_stats.get('method_efo_obo_xref', 0)}, "
+                        f"from_mondo_sssom={icd10_supplement_stats.get('method_mondo_sssom', 0)}, "
+                        f"from_both={icd10_supplement_stats.get('method_mondo_sssom_efo_obo_xref', 0)}, "
+                        f"mondo_cache_source={icd10_supplement_stats.get('mondo_cache_source', 'none')}, "
+                        f"mondo_mapping_codes={icd10_supplement_stats.get('mondo_mapping_codes', 0)}, "
+                        f"mondo_downloaded={icd10_supplement_stats.get('mondo_downloaded', False)}, "
+                        f"mondo_codes_added={icd10_supplement_stats.get('mondo_codes_added', 0)}, "
+                        f"mondo_terms_not_in_efo={icd10_supplement_stats.get('mondo_terms_not_in_efo', 0)})"
+                    )
+                    if icd10_supplement_stats.get("mondo_download_error"):
+                        if icd10_supplement_stats.get("mondo_cache_used"):
+                            print(
+                                "[WARN] MONDO SSSOM live refresh failed; using local cached MONDO mappings. "
+                                f"reason={icd10_supplement_stats.get('mondo_download_error')}"
+                            )
+                        else:
+                            print(
+                                "[WARN] MONDO SSSOM mappings unavailable; ICD10 supplement built from EFO ICD10 xrefs only. "
+                                f"reason={icd10_supplement_stats.get('mondo_download_error')}"
+                            )
 
             if bool(args.build_icd10_label_cache):
                 existing_icd10_labels = load_icd10_label_cache(icd10_label_cache_path)

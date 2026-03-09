@@ -6,8 +6,15 @@ final_output/
 data/
 # Generated/downloaded mapper artifacts. Fresh clones recreate or download these via setup.
 skills/pqtl-measurement-mapper/references/measurement_index.json
-references/ukb/
-references/icd10/
+references/ukb/*
+!references/ukb/field.txt
+!references/ukb/fieldsum.txt
+!references/ukb/category.txt
+!references/ukb/catbrowse.txt
+!references/ukb/field_trait_supplement_cache.tsv
+references/icd10/*
+!references/icd10/icd10_label_index.tsv
+!references/icd10/icd10_trait_supplement_cache.tsv
 skills/pqtl-measurement-mapper/references/efo.obo
 skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv
 monthly_curation/outputs/

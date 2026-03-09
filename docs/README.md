@@ -17,7 +17,7 @@ analyte-efo-mapper setup-bundled-caches
 analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-`setup-bundled-caches` refreshes MONDO ICD10 mappings and uses them for ICD10 supplement generation in setup.  
+`setup-bundled-caches` reuses the bundled UKB and ICD10 side caches when present, and only rebuilds or downloads missing pieces.  
 If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.  
 If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.  
 The compiled `measurement_index.json` is generated locally during setup; it is not required in Git history.
@@ -43,8 +43,9 @@ analyte-efo-mapper cache-status --strict
 What setup does on a fresh clone:
 
 - uses the bundled core caches already tracked in the repo
+- uses the bundled UKB field context, UKB supplement cache, and ICD10 side caches when present
 - downloads missing official UKB metadata files when needed
-- refreshes or reuses the MONDO ICD10 cache
+- refreshes or reuses the MONDO ICD10 cache only when the ICD10 supplement must be rebuilt
 - builds the ICD10 label cache when missing
 - generates the local `skills/pqtl-measurement-mapper/references/measurement_index.json`
 
