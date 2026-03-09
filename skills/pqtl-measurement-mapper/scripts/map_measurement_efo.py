@@ -3,6 +3,8 @@
 
 Architecture:
 - setup-bundled-caches: validate/use bundled local caches and build local index (offline-first)
+- cache-status: audit presence/missing state for setup caches/index
+- icd10-label-cache-build: build an official ICD10 label cache from CMS tabular-order releases
 - index-build: build a local JSON index from cache/reference files
 - map: map protein/metabolite query files using local index only (fast, scalable)
 - trait-map: map disease/phenotype traits via curated trait cache + efo.obo fallback
@@ -14,6 +16,7 @@ import argparse
 import csv
 import difflib
 import gzip
+import hashlib
 import html
 import json
 import re
@@ -356,6 +359,16 @@ CHEBI_ID_RE = re.compile(r"^CHEBI[:_](\d{1,7})$", re.IGNORECASE)
 KEGG_ID_RE = re.compile(r"^(?:KEGG[:_])?(?:CPD:|DR:)?([CD]\d{5})$", re.IGNORECASE)
 EFO_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
 ALLOWED_ONTOLOGY_ID_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
+MONDO_CURIE_RE = re.compile(r"MONDO[:_]\d+", re.IGNORECASE)
+ICD10_CODE_HEAD_RE = r"[A-TV-Z][0-9][0-9A-Z]"
+ICD10_XREF_RE = re.compile(
+    rf"(?:ICD10(?:CM|WHO)?)[_:]({ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}})?)",
+    re.IGNORECASE,
+)
+ICD10_XREF_URL_RE = re.compile(
+    rf"/ICD10(?:CM|WHO)?/({ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}})?)",
+    re.IGNORECASE,
+)
 MULTI_ID_SEP_RE = re.compile(r"[;|]")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 METABOLITE_NOISE_RE = re.compile(r"^[\[\](){},.:;+*/\\|=_-]+$")
@@ -392,9 +405,47 @@ DEFAULT_UKB_FIELD_CATALOG = REPO_ROOT / "references" / "ukb" / "fieldsum.txt"
 DEFAULT_UKB_FIELD_METADATA = REPO_ROOT / "references" / "ukb" / "field.txt"
 DEFAULT_UKB_CATEGORY_CATALOG = REPO_ROOT / "references" / "ukb" / "category.txt"
 DEFAULT_UKB_CATEGORY_TREE = REPO_ROOT / "references" / "ukb" / "catbrowse.txt"
+DEFAULT_UKB_FIELD_CATALOG_URL = "https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=16"
+DEFAULT_UKB_FIELD_METADATA_URL = "https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=1"
+DEFAULT_UKB_CATEGORY_CATALOG_URL = "https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=3"
+DEFAULT_UKB_CATEGORY_TREE_URL = "https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=13"
+DEFAULT_UKB_FIELD_SUPPLEMENT_CACHE = REPO_ROOT / "references" / "ukb" / "field_trait_supplement_cache.tsv"
+DEFAULT_ICD10_SUPPLEMENT_CACHE = REPO_ROOT / "references" / "icd10" / "icd10_trait_supplement_cache.tsv"
+DEFAULT_ICD10_LABEL_CACHE = REPO_ROOT / "references" / "icd10" / "icd10_label_index.tsv"
+DEFAULT_MONDO_SSSOM_CACHE = REPO_ROOT / "references" / "icd10" / "mondo.sssom.tsv"
+DEFAULT_ICD10_LABEL_SOURCE_URL = "https://www.cms.gov/files/zip/2026-code-descriptions-tabular-order.zip"
+DEFAULT_MONDO_SSSOM_URL = "https://purl.obolibrary.org/obo/mondo/mappings/mondo.sssom.tsv"
+DEFAULT_SETUP_CACHE_MANIFEST = REPO_ROOT / "final_output" / "analyte_mapper_cache_manifest.json"
+DEFAULT_SETUP_CACHE_STATUS = REPO_ROOT / "final_output" / "analyte_mapper_cache_status.json"
+DEFAULT_CATALOG_QC_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_qc.tsv"
+DEFAULT_CATALOG_HIGH_CONF_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_high_confidence.tsv"
+DEFAULT_CATALOG_TO_ADD_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_high_confidence_to_add.tsv"
+DEFAULT_CATALOG_SUMMARY_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_qc_summary.json"
+DEFAULT_CATALOG_REFRESH_STATE_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_refresh_state.json"
+DEFAULT_TRAIT_QC_RISK_SUFFIX = "_qc_risk.tsv"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
 DEFAULT_MATRIX_PRIORITY = ["plasma", "blood", "serum"]
 DEFAULT_MEASUREMENT_CONTEXT = "blood"
+CACHE_REQUIREMENT_BY_NAME = {
+    "index": "required",
+    "term_cache": "required",
+    "analyte_cache": "required",
+    "uniprot_aliases_source": "required",
+    "uniprot_aliases_index": "required",
+    "metabolite_aliases": "required",
+    "trait_cache": "required",
+    "ukb_field_catalog": "required",
+    "ukb_field_metadata": "required",
+    "ukb_category_catalog": "required",
+    "ukb_category_tree": "required",
+    "ukb_field_supplement_cache": "required",
+    "icd10_supplement_cache": "required",
+    "icd10_label_cache": "recommended",
+    "efo_obo": "required",
+    "mondo_sssom_cache": "recommended",
+    "hmdb_source_dir": "optional",
+    "metabolite_download_dir": "optional",
+}
 # Token-retrieved candidates are noisier than exact/synonym matches. Keep them
 # out of auto-validated output unless confidence remains reasonably high.
 TOKEN_SUBJECT_EXACT_AUTO_VALIDATE_MIN_SCORE = 0.70
@@ -457,6 +508,28 @@ TRAIT_INPUT_TYPE_COLUMNS = [
     "id_type",
     "type",
 ]
+TRAIT_CODE_COLUMNS = [
+    "code",
+    "trait_code",
+    "field_code",
+    "field_id",
+    "ukb_field_id",
+    "icd10_code",
+]
+TRAIT_DATA_TYPE_COLUMNS = [
+    "data_type",
+    "code_type",
+    "source_type",
+]
+TRAIT_SCALE_COLUMNS = [
+    "trait_scale",
+    "scale",
+    "binary_quantitative",
+    "binary/quantitative",
+    "binary / quantitative",
+    "outcome_scale",
+    "outcome_type",
+]
 TRAIT_INPUT_TYPE_ALIASES = {
     "": "auto",
     "auto": "auto",
@@ -471,6 +544,40 @@ TRAIT_INPUT_TYPE_ALIASES = {
     "icd": "icd10",
     "phecode": "phecode",
     "phe": "phecode",
+    "ukb_field": "ukb_field",
+    "ukb data field": "ukb_field",
+    "ukb-data-field": "ukb_field",
+}
+TRAIT_SCALE_ALIASES = {
+    "": "auto",
+    "auto": "auto",
+    "any": "auto",
+    "unspecified": "auto",
+    "unknown": "auto",
+    "binary": "binary",
+    "case_control": "binary",
+    "case-control": "binary",
+    "casecontrol": "binary",
+    "disease": "binary",
+    "qualitative": "binary",
+    "categorical": "binary",
+    "quantitative": "quantitative",
+    "continuous": "quantitative",
+    "measurement": "quantitative",
+    "numeric": "quantitative",
+    "quant": "quantitative",
+}
+TRAIT_DATA_TYPE_ALIASES = {
+    "": "auto",
+    "auto": "auto",
+    "ukb_data_field": "ukb_field",
+    "ukb_field": "ukb_field",
+    "ukb data field": "ukb_field",
+    "icd10": "icd10",
+    "icd_10": "icd10",
+    "icd-10": "icd10",
+    "phecode": "phecode",
+    "phe_code": "phecode",
 }
 TRAIT_STOP_TOKENS = {
     "disease",
@@ -497,16 +604,100 @@ TRAIT_STOP_TOKENS = {
     "data",
     "field",
 }
+TRAIT_SYNONYM_SCOPE_RANK = {
+    "LABEL": 4,
+    "EXACT": 3,
+    "NARROW": 2,
+    "RELATED": 1,
+    "BROAD": 0,
+}
+TRAIT_OVERSPECIFICITY_HINT_TOKENS = {
+    "carcinoma",
+    "adenocarcinoma",
+    "sarcoma",
+    "lymphoma",
+    "leukemia",
+    "leukaemia",
+    "melanoma",
+    "neuroblastoma",
+    "glioma",
+    "small",
+    "large",
+    "cell",
+    "squamous",
+    "invasive",
+    "metastatic",
+    "familial",
+    "hereditary",
+    "primary",
+    "secondary",
+    "acute",
+    "chronic",
+    "stage",
+    "grade",
+}
+TRAIT_NON_DISEASE_ENTITY_PREFIXES = {
+    "UBERON",
+    "CHEBI",
+    "PR",
+    "GO",
+    "CL",
+    "HANCESTRO",
+    "GSSO",
+    "PATO",
+    "OBA",
+}
+TRAIT_LOCATION_NONSPECIFIC_TOKENS = {
+    "unspecified",
+    "unknown",
+    "other",
+    "nos",
+    "arthrosis",
+    "osteoarthritis",
+    "arthritis",
+    "disorder",
+    "disease",
+    "syndrome",
+    "condition",
+    "diagnosis",
+}
+TRAIT_WEAK_FUZZY_TOKENS = {
+    "incompetence",
+    "insufficiency",
+    "insufficient",
+    "unspecified",
+    "unknown",
+    "other",
+    "nos",
+    "condition",
+    "conditions",
+    "disorder",
+    "disease",
+    "syndrome",
+    "phenotype",
+    "trait",
+    "traits",
+    "status",
+    "case",
+    "cases",
+}
+TRAIT_PIPE_RIGHT_WEAK_TOKENS = TRAIT_WEAK_FUZZY_TOKENS | {
+    "inconclusive",
+}
 TRAIT_NEGATION_CUES = {
     "non",
     "without",
     "never",
     "no",
+    "not",
+    "none",
     "minus",
 }
 TRAIT_MULTI_CONNECTOR_RE = re.compile(r"(?:\b(?:and|or|vs|versus)\b|/|\\|,)")
 UKB_DATA_FIELD_RE = re.compile(r"\bUKB(?:\s*data)?\s*field\s*(\d{1,7})\b", re.IGNORECASE)
 UKB_CATEGORY_RE = re.compile(r"\bcategory\s*[:#\-\(\)\[\] ]*(\d{1,7})\b", re.IGNORECASE)
+UKB_HASHED_TRAIT_RE = re.compile(r"^\s*(\d{1,7})#(.+)$")
+STRICT_ICD10_CODE_RE = re.compile(rf"^{ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}})?$", re.IGNORECASE)
 TRAIT_MULTI_HINT_TOKENS = {
     "combined",
     "pleiotropy",
@@ -522,10 +713,62 @@ TRAIT_CANONICAL_SIMILARITY_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\blow\s+density\s+lipoprotein\b"), "ldl"),
     (re.compile(r"\bnon\s+very\s+low\s+density\s+lipoprotein\b"), "non vldl"),
     (re.compile(r"\bvery\s+low\s+density\s+lipoprotein\b"), "vldl"),
+    (re.compile(r"\bintermediate\s+density\s+lipoprotein\b"), "idl"),
     (re.compile(r"\bhdl\s*c\b"), "hdl"),
     (re.compile(r"\bldl\s*c\b"), "ldl"),
     (re.compile(r"\bvldl\s*c\b"), "vldl"),
+    (re.compile(r"\bidl\s*c\b"), "idl"),
+    (re.compile(r"\bconcentration\s+of\s+idl\s+particles?\b"), "idl measurement"),
+    (re.compile(r"\b(?:average|avg)\s+heart\s+rate\b"), "heart rate"),
+    (re.compile(r"\b(?:average|avg)\s+pulse\s+rate\b"), "heart rate"),
 )
+TRAIT_STRICT_MODIFIER_TOKENS = {"free"}
+TRAIT_QUERY_NOISE_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\(\s*qc(?:['`’]?d)?\s*\)", re.IGNORECASE), " "),
+    (re.compile(r"\(\s*gene\s*[- ]?based\s+burden\s*\)", re.IGNORECASE), " "),
+    (re.compile(r"\bgene\s*[- ]?based\s+burden\b", re.IGNORECASE), " "),
+    (re.compile(r"\(\s*unknown\s+primary\s*\)", re.IGNORECASE), " "),
+    (re.compile(r"\+\s*/\s*-?\s*", re.IGNORECASE), " with or without "),
+    (re.compile(r"\+\s*\|\s*-\s*", re.IGNORECASE), " with or without "),
+    (re.compile(r"\bqc(?:['`’]?d)\b", re.IGNORECASE), " "),
+    (re.compile(r"^\s*nmr\s+", re.IGNORECASE), " "),
+)
+TRAIT_NEGATION_FLAG_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bnone\s+of\s+the\s+above\b", re.IGNORECASE),
+    re.compile(r"\bnone\b", re.IGNORECASE),
+    re.compile(r"\bno\b", re.IGNORECASE),
+    re.compile(r"\bnot\b", re.IGNORECASE),
+    re.compile(r"\bwithout\b", re.IGNORECASE),
+    re.compile(r"\babsence\s+of\b", re.IGNORECASE),
+)
+TRAIT_NONINFORMATIVE_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bnone\s+of\s+the\s+above\b", re.IGNORECASE),
+    re.compile(r"^\s*none\b", re.IGNORECASE),
+    re.compile(r"^\s*no\s+(?:known\s+|reported\s+)?(?:medical\s+)?(?:condition|disease|diagnosis)\b", re.IGNORECASE),
+)
+UKB_FIELD_SUPPLEMENT_PUBLICATION = "UKBFieldSupplement_v1"
+UKB_FIELD_SUPPLEMENT_GENERIC_DISEASE_ID = "EFO_0000408"
+UKB_FIELD_SUPPLEMENT_GENERIC_DISEASE_LABEL = "disease"
+UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_ID = "EFO_0001444"
+UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_LABEL = "measurement"
+ICD10_SUPPLEMENT_PUBLICATION = "ICD10Supplement_v1"
+TRAIT_CACHE_COLUMNS = [
+    "UKBB data field",
+    "ICD10",
+    "PheCode",
+    "Lookup text",
+    "Curated reported trait",
+    "main ontology URI(s)",
+    "main ontology label(s)",
+    "Publication",
+    "User submitted trait",
+    "qc_status",
+    "qc_resolution_modes",
+    "qc_label_match_modes",
+    "qc_unresolved_ids",
+    "final_update_applied",
+    "final_update_reason",
+]
 DISEASE_HINT_TOKENS = {
     "disease",
     "disorder",
@@ -546,6 +789,13 @@ DISEASE_HINT_TOKENS = {
     "diabetes",
     "asthma",
     "eczema",
+    "allergy",
+    "allergic",
+    "hypersensitivity",
+    "anaphylaxis",
+    "adenoma",
+    "metastatic",
+    "neoplasm",
     "depression",
     "anxiety",
     "phobia",
@@ -553,6 +803,16 @@ DISEASE_HINT_TOKENS = {
     "paresis",
     "palsy",
 }
+UKB_DISEASE_CATEGORY_PHRASES = (
+    "medical condition",
+    "medical conditions",
+    "hospital",
+    "cause of death",
+    "cancer",
+    "disease",
+    "disorder",
+    "diagnosis",
+)
 DISEASE_SUFFIX_HINTS = (
     "itis",
     "osis",
@@ -566,6 +826,56 @@ DISEASE_SUFFIX_HINTS = (
     "paresis",
     "plasia",
 )
+MEASUREMENT_HINT_TOKENS = {
+    "measurement",
+    "amount",
+    "concentration",
+    "level",
+    "levels",
+    "ratio",
+    "percentage",
+    "percent",
+    "count",
+    "size",
+    "diameter",
+    "fraction",
+    "abundance",
+}
+GENERIC_TRAIT_LABEL_KEYS = {
+    "disease",
+    "disorder",
+    "condition",
+    "abnormality",
+    "phenotype",
+    "syndrome",
+    "medical procedure",
+    "measurement",
+}
+TRAIT_QC_RISK_FIELDS = [
+    "input_row_id",
+    "input_query",
+    "input_source_data_type",
+    "input_type",
+    "mapped_trait_id",
+    "mapped_trait_label",
+    "validation",
+    "matched_via",
+    "confidence",
+    "specificity_loss_flag",
+    "specificity_loss_notes",
+    "risk_reasons",
+    "evidence",
+]
+ICD10_PARENT_FALLBACK_METHODS = {
+    "cache_parent_icd10",
+    "cache_parent_icd10_supplement",
+    "efo_obo_parent_icd10_xref",
+}
+ICD10_PARENT_FALLBACK_METHOD_KEYS = {
+    "cache_parent_icd10",
+    "cache_parent_icd10_supplement",
+    "efo_obo_parent_icd10_xref",
+}
 TRAIT_PREFERRED_PREFIX_ORDER = {
     "EFO": 0,
     "MONDO": 1,
@@ -589,6 +899,9 @@ class Candidate:
     matched_via: str
     evidence: str
     is_validated: bool
+    roundtrip_status: str = "not_applicable"
+    roundtrip_accessions: tuple[str, ...] = ()
+    roundtrip_symbols: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -609,6 +922,8 @@ class TraitCacheRecord:
     mapped_ids: tuple[str, ...]
     mapped_labels: tuple[str, ...]
     publication: str
+    is_ukb_field_supplement: bool
+    is_icd10_supplement: bool
 
 
 @dataclass(frozen=True)
@@ -616,6 +931,11 @@ class TraitOntologyTerm:
     term_id: str
     label: str
     synonyms: tuple[str, ...]
+    label_key: str = ""
+    exact_synonym_keys: frozenset[str] = frozenset()
+    narrow_synonym_keys: frozenset[str] = frozenset()
+    related_synonym_keys: frozenset[str] = frozenset()
+    broad_synonym_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1280,19 +1600,115 @@ def normalize_trait_input_type(value: str) -> str:
     return TRAIT_INPUT_TYPE_ALIASES.get(key, "auto")
 
 
+@lru_cache(maxsize=50_000)
+def normalize_trait_scale(value: str) -> str:
+    key = norm_key(value).replace("-", "_").replace(" ", "_")
+    return TRAIT_SCALE_ALIASES.get(key, "auto")
+
+
+@lru_cache(maxsize=50_000)
+def normalize_trait_data_type(value: str) -> str:
+    key = norm_key(value).replace("-", "_").replace(" ", "_")
+    return TRAIT_DATA_TYPE_ALIASES.get(key, "auto")
+
+
 @lru_cache(maxsize=200_000)
 def normalize_icd10_code(value: str) -> str:
     token = normalize(value).upper()
     if not token:
         return ""
     token = token.replace("ICD-10", "ICD10").replace("ICD 10", "ICD10")
-    match = re.search(r"\b([A-TV-Z][0-9]{2}(?:\.[0-9A-Z]{1,4})?)\b", token)
-    if match:
-        return match.group(1)
+
+    def compact_to_strict(raw: str) -> str:
+        compact = normalize(raw).upper().replace("ICD10", "").replace(" ", "")
+        compact = compact.strip("()[]{}")
+        if STRICT_ICD10_CODE_RE.fullmatch(compact):
+            return compact
+        # Common compact form in union-style strings, for example A071 -> A07.1
+        compact_match = re.fullmatch(rf"({ICD10_CODE_HEAD_RE})([0-9A-Z]{{1,4}})", compact)
+        if compact_match:
+            return f"{compact_match.group(1)}.{compact_match.group(2)}"
+        return ""
+
+    # Parse tokenized segments first so mixed strings like Union#A071#A07.1
+    # resolve to the most specific strict code.
+    segmented_candidates: list[str] = []
+    for raw_part in re.split(r"[\s,;|#/\\]+", token):
+        code = compact_to_strict(raw_part)
+        if code:
+            segmented_candidates.append(code)
+    if segmented_candidates:
+        segmented_candidates.sort(key=lambda item: ("." not in item, -len(item), item))
+        return segmented_candidates[0]
+
+    strict_match = re.search(rf"\b({ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}})?)\b", token)
+    if strict_match:
+        return strict_match.group(1)
+
+    compact_match = re.search(rf"\b({ICD10_CODE_HEAD_RE}[0-9A-Z]{{1,4}})\b", token)
+    if compact_match:
+        compact_code = compact_to_strict(compact_match.group(1))
+        if compact_code:
+            return compact_code
+
     if ":" in token:
         token = token.split(":", 1)[0]
     token = token.replace("ICD10", "").strip().replace(" ", "")
     return token
+
+
+def is_strict_icd10_code(value: str) -> bool:
+    token = normalize(value).upper()
+    return bool(token and STRICT_ICD10_CODE_RE.fullmatch(token))
+
+
+@lru_cache(maxsize=500_000)
+def icd10_parent_fallback_codes(value: str) -> tuple[str, ...]:
+    token = normalize_icd10_code(value)
+    if not is_strict_icd10_code(token):
+        return ()
+
+    variants: list[str] = []
+    if "." in token:
+        head, tail = token.split(".", 1)
+        for width in range(len(tail) - 1, 0, -1):
+            parent = f"{head}.{tail[:width]}"
+            if parent != token and is_strict_icd10_code(parent) and parent not in variants:
+                variants.append(parent)
+        if head != token and is_strict_icd10_code(head) and head not in variants:
+            variants.append(head)
+    return tuple(variants)
+
+
+@lru_cache(maxsize=500_000)
+def extract_icd10_code_from_xref(value: str) -> str:
+    raw = normalize(value)
+    if not raw:
+        return ""
+    decoded = urllib.parse.unquote(raw)
+    for pattern in (ICD10_XREF_RE, ICD10_XREF_URL_RE):
+        match = pattern.search(decoded)
+        if match:
+            code = normalize_icd10_code(match.group(1))
+            if code:
+                return code
+    return ""
+
+
+@lru_cache(maxsize=500_000)
+def extract_mondo_id(value: str) -> str:
+    raw = normalize(value)
+    if not raw:
+        return ""
+    direct = canonicalize_trait_ontology_id(raw)
+    if trait_ontology_prefix(direct) == "MONDO":
+        return direct
+    decoded = urllib.parse.unquote(raw)
+    match = MONDO_CURIE_RE.search(decoded)
+    if not match:
+        return ""
+    token = canonicalize_trait_ontology_id(match.group(0))
+    return token if trait_ontology_prefix(token) == "MONDO" else ""
 
 
 @lru_cache(maxsize=200_000)
@@ -1304,6 +1720,15 @@ def normalize_phecode(value: str) -> str:
     if match:
         return match.group(1)
     return token.replace(" ", "")
+
+
+@lru_cache(maxsize=200_000)
+def looks_like_phecode_token(value: str) -> bool:
+    raw = normalize(value).upper()
+    if not raw:
+        return False
+    raw = raw.replace("PHECODE", "").replace("PHE", "").strip(" :#-")
+    return bool(re.fullmatch(r"[0-9]{1,4}(?:\.[0-9A-Z]{1,4})?", raw))
 
 
 @lru_cache(maxsize=200_000)
@@ -1362,13 +1787,105 @@ def informative_trait_tokens(text: str) -> set[str]:
     return filtered or toks
 
 
-def normalize_trait_text_for_similarity(text: str) -> str:
+def trait_nonweak_tokens(tokens: set[str]) -> set[str]:
+    return {
+        tok
+        for tok in tokens
+        if tok
+        and tok not in TRAIT_STOP_TOKENS
+        and tok not in TRAIT_WEAK_FUZZY_TOKENS
+    }
+
+
+def trait_anchor_tokens(tokens: set[str]) -> set[str]:
+    anchors: set[str] = set()
+    for tok in trait_nonweak_tokens(tokens):
+        if len(tok) < 4:
+            continue
+        if tok in DISEASE_HINT_TOKENS:
+            continue
+        if tok in TRAIT_LOCATION_NONSPECIFIC_TOKENS:
+            continue
+        anchors.add(tok)
+    return anchors
+
+
+@lru_cache(maxsize=300_000)
+def trim_trailing_weak_trait_tokens(text: str) -> str:
     key = norm_key(text)
+    if not key:
+        return ""
+    toks = [tok for tok in re.findall(r"[a-z0-9]+", key) if tok]
+    while toks and toks[-1] in TRAIT_PIPE_RIGHT_WEAK_TOKENS:
+        toks.pop()
+    return " ".join(toks)
+
+
+@lru_cache(maxsize=300_000)
+def strip_trait_query_noise(text: str) -> str:
+    clean = normalize(text)
+    if not clean:
+        return ""
+    for pattern, replacement in TRAIT_QUERY_NOISE_SUBS:
+        clean = pattern.sub(replacement, clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return normalize(clean)
+
+
+@lru_cache(maxsize=300_000)
+def trait_query_exact_norm_variants(text: str) -> tuple[str, ...]:
+    variants: list[str] = []
+    for candidate in (norm_key(text), norm_key(strip_trait_query_noise(text))):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+        paren_stripped = normalize(re.sub(r"\([^)]*\)", " ", candidate))
+        paren_norm = norm_key(paren_stripped)
+        if paren_norm and paren_norm not in variants:
+            variants.append(paren_norm)
+        trimmed = trim_trailing_weak_trait_tokens(candidate)
+        if trimmed and trimmed not in variants:
+            variants.append(trimmed)
+        if "|" in candidate:
+            for part in candidate.split("|"):
+                part_norm = norm_key(part)
+                if part_norm and part_norm not in variants:
+                    variants.append(part_norm)
+                part_trimmed = trim_trailing_weak_trait_tokens(part_norm)
+                if part_trimmed and part_trimmed not in variants:
+                    variants.append(part_trimmed)
+    return tuple(variants)
+
+
+@lru_cache(maxsize=300_000)
+def normalize_trait_text_for_similarity(text: str) -> str:
+    key = norm_key(strip_trait_query_noise(text))
     if not key:
         return ""
     for pattern, replacement in TRAIT_CANONICAL_SIMILARITY_SUBS:
         key = pattern.sub(replacement, key)
     return re.sub(r"\s+", " ", key).strip()
+
+
+@lru_cache(maxsize=300_000)
+def trait_has_negation(text: str) -> bool:
+    raw = normalize(text)
+    if not raw:
+        return False
+    clean = normalize_trait_text_for_similarity(raw) or norm_key(raw)
+    if not clean:
+        return False
+    # "with or without X" is an inclusive clinical expression, not a strict
+    # negation cue that should block validation.
+    clean = re.sub(r"\bwith\s+or\s+without\b", " ", clean, flags=re.IGNORECASE)
+    return any(pattern.search(clean) for pattern in TRAIT_NEGATION_FLAG_PATTERNS)
+
+
+@lru_cache(maxsize=300_000)
+def trait_is_noninformative_negation(text: str) -> bool:
+    raw = normalize(text)
+    if not raw:
+        return False
+    return any(pattern.search(raw) for pattern in TRAIT_NONINFORMATIVE_NEGATION_PATTERNS)
 
 
 @lru_cache(maxsize=200_000)
@@ -1382,6 +1899,105 @@ def extract_ukb_field_ids(text: str) -> tuple[str, ...]:
         if field_id and field_id not in field_ids:
             field_ids.append(field_id)
     return tuple(field_ids)
+
+
+@lru_cache(maxsize=200_000)
+def parse_ukb_hashed_trait_text(text: str) -> tuple[str, str, str]:
+    """Parse common UKB coded trait strings like `20002#1425#cerebral aneurysm`.
+
+    Returns `(field_id, code, label)` with empty strings when a component is not
+    present or the pattern does not match.
+    """
+    raw = normalize(text)
+    if not raw:
+        return ("", "", "")
+    match = UKB_HASHED_TRAIT_RE.match(raw)
+    if not match:
+        return ("", "", "")
+    field_id = normalize(match.group(1))
+    remainder = normalize(match.group(2))
+    if not field_id or not remainder:
+        return ("", "", "")
+
+    parts = [normalize(part) for part in remainder.split("#")]
+
+    def clean_label(raw_label: str, parsed_field_id: str) -> str:
+        label = normalize(raw_label)
+        if not label:
+            return ""
+        label = re.sub(r"\+\s*/\s*-?\s*", " with or without ", label, flags=re.IGNORECASE)
+        label = re.sub(r"\+\s*\|\s*-\s*", " with or without ", label, flags=re.IGNORECASE)
+        label = re.sub(
+            rf"\s*\(UKB(?:\s*data)?\s*field\s*(?:{re.escape(parsed_field_id)}|[0-9]{{1,7}})\)\s*$",
+            "",
+            label,
+            flags=re.IGNORECASE,
+        )
+        label = re.sub(rf"^\s*{ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}})?\s+", "", label, flags=re.IGNORECASE)
+        label = re.sub(rf"^\s*{ICD10_CODE_HEAD_RE}[0-9A-Z]{{1,4}}\s+", "", label, flags=re.IGNORECASE)
+        label = re.sub(r"\bdvt\b", "deep venous thrombosis", label, flags=re.IGNORECASE)
+        if "|" in label:
+            pipe_parts = [normalize(part) for part in label.split("|") if normalize(part)]
+            if pipe_parts:
+                # UKB coded disease labels often use `|` as alias-ish separators
+                # (for example "aortic regurgitation | incompetence"). Keep the
+                # clinical anchor phrase and only drop a weak trailing segment.
+                right_tokens = set(tokenize(norm_key(pipe_parts[-1])))
+                right_is_weak = bool(right_tokens) and right_tokens.issubset(TRAIT_PIPE_RIGHT_WEAK_TOKENS)
+                if right_is_weak and len(pipe_parts) > 1:
+                    kept = [part for part in pipe_parts[:-1] if part]
+                    label = " ".join(kept) if kept else pipe_parts[0]
+                else:
+                    label = " ".join(pipe_parts)
+            else:
+                label = label.replace("|", " ")
+        return normalize(label)
+
+    if len(parts) == 1:
+        return (field_id, "", clean_label(parts[0], field_id))
+
+    code = normalize(parts[0])
+    label = clean_label("#".join(parts[1:]), field_id)
+    return (field_id, code, label)
+
+
+@lru_cache(maxsize=300_000)
+def parse_icd10_labeled_trait_text(text: str) -> tuple[str, str]:
+    """Parse text snippets that embed ICD10 code + label.
+
+    Examples:
+    - `Union#M2571#M25.71 Osteophyte (Shoulder region)`
+    - `40001#I269#I26.9 Pulmonary embolism without mention of acute cor pulmonale`
+    """
+    raw = normalize(text)
+    if not raw:
+        return ("", "")
+
+    candidates: list[str] = [raw]
+    if "#" in raw:
+        last_segment = normalize(raw.rsplit("#", 1)[-1])
+        if last_segment:
+            candidates.insert(0, last_segment)
+
+    for segment in candidates:
+        clean = normalize(segment)
+        if not clean:
+            continue
+        strict_match = re.match(rf"^\s*({ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}})?)\s+(.+)$", clean, re.IGNORECASE)
+        if strict_match:
+            code = normalize_icd10_code(strict_match.group(1))
+            label = normalize(strict_match.group(2))
+            if is_strict_icd10_code(code) and label:
+                return code, label
+            continue
+        compact_match = re.match(rf"^\s*({ICD10_CODE_HEAD_RE}[0-9A-Z]{{1,4}})\s+(.+)$", clean, re.IGNORECASE)
+        if compact_match:
+            code = normalize_icd10_code(compact_match.group(1))
+            label = normalize(compact_match.group(2))
+            if is_strict_icd10_code(code) and label:
+                return code, label
+
+    return ("", "")
 
 
 def ukb_title_query_variants(field_id: str, title: str) -> tuple[str, ...]:
@@ -1618,6 +2234,128 @@ def has_disease_hint(text: str) -> bool:
     return any(tok.endswith(DISEASE_SUFFIX_HINTS) for tok in toks)
 
 
+def has_ukb_disease_context(text: str) -> bool:
+    key = norm_key(text)
+    if not key:
+        return False
+    if has_disease_hint(key):
+        return True
+    return any(phrase in key for phrase in UKB_DISEASE_CATEGORY_PHRASES)
+
+
+def is_generic_trait_label(label: str) -> bool:
+    key = norm_key(label)
+    if not key:
+        return True
+    if key in GENERIC_TRAIT_LABEL_KEYS:
+        return True
+    toks = [tok for tok in tokenize(key) if tok not in TRAIT_STOP_TOKENS]
+    if len(toks) <= 1 and any(tok in GENERIC_TRAIT_LABEL_KEYS for tok in toks):
+        return True
+    return False
+
+
+def trait_query_label_overlap_ratio(query_text: str, label_text: str) -> float:
+    query_norm = normalize_trait_text_for_similarity(query_text)
+    label_norm = normalize_trait_text_for_similarity(label_text)
+    query_tokens = informative_trait_tokens(query_norm)
+    label_tokens = informative_trait_tokens(label_norm)
+    if not query_tokens or not label_tokens:
+        return 0.0
+    return len(query_tokens & label_tokens) / max(1, len(query_tokens))
+
+
+def trait_nonweak_overlap(query_text: str, label_text: str) -> set[str]:
+    query_norm = normalize_trait_text_for_similarity(query_text)
+    label_norm = normalize_trait_text_for_similarity(label_text)
+    query_tokens = informative_trait_tokens(query_norm)
+    label_tokens = informative_trait_tokens(label_norm)
+    if not query_tokens or not label_tokens:
+        return set()
+    overlap = query_tokens & label_tokens
+    return trait_nonweak_tokens(overlap)
+
+
+def trait_has_anchor_overlap(query_text: str, label_text: str) -> bool:
+    query_norm = normalize_trait_text_for_similarity(query_text)
+    label_norm = normalize_trait_text_for_similarity(label_text)
+    query_tokens = informative_trait_tokens(query_norm)
+    label_tokens = informative_trait_tokens(label_norm)
+    if not query_tokens or not label_tokens:
+        return False
+    query_anchors = trait_anchor_tokens(query_tokens)
+    label_anchors = trait_anchor_tokens(label_tokens)
+    if not query_anchors or not label_anchors:
+        return False
+    return not query_anchors.isdisjoint(label_anchors)
+
+
+def trait_location_hint_tokens(text: str) -> set[str]:
+    norm = normalize_trait_text_for_similarity(text)
+    if not norm:
+        return set()
+    tokens = informative_trait_tokens(norm)
+    hints: set[str] = set()
+    for tok in tokens:
+        if len(tok) < 3:
+            continue
+        if tok.isdigit():
+            continue
+        if re.fullmatch(r"[a-tv-z][0-9]{2,4}", tok):
+            continue
+        if tok in TRAIT_STOP_TOKENS:
+            continue
+        if tok in DISEASE_HINT_TOKENS:
+            continue
+        if tok in TRAIT_LOCATION_NONSPECIFIC_TOKENS:
+            continue
+        hints.add(tok)
+    return hints
+
+
+def trait_specificity_loss_flag(
+    *,
+    query_text: str,
+    icd10: str,
+    matched_via: str,
+    mapped_id_text: str,
+    mapped_label_text: str,
+    ontology_terms: dict[str, TraitOntologyTerm],
+) -> tuple[str, str]:
+    method_key = norm_key(matched_via)
+    if method_key not in ICD10_PARENT_FALLBACK_METHOD_KEYS:
+        return "no", ""
+
+    strict_icd10 = normalize_icd10_code(icd10)
+    if not strict_icd10 or "." not in strict_icd10:
+        return "no", ""
+
+    input_location_tokens = trait_location_hint_tokens(query_text)
+    if not input_location_tokens:
+        return "no", ""
+
+    mapped_location_tokens: set[str] = set()
+    mapped_ids = [canonicalize_trait_ontology_id(part) for part in split_multi_ids(mapped_id_text)]
+    mapped_ids = [item for item in mapped_ids if item]
+    mapped_labels = split_multi_labels(mapped_label_text, expected_n=len(mapped_ids))
+
+    if not mapped_ids:
+        mapped_location_tokens |= trait_location_hint_tokens(mapped_label_text)
+    else:
+        for idx, mapped_id in enumerate(mapped_ids):
+            label_text = normalize(mapped_labels[idx] if idx < len(mapped_labels) else "")
+            term = ontology_terms.get(mapped_id)
+            if label_text:
+                mapped_location_tokens |= trait_location_hint_tokens(label_text)
+            if term is not None and term.label:
+                mapped_location_tokens |= trait_location_hint_tokens(term.label)
+
+    if input_location_tokens.isdisjoint(mapped_location_tokens):
+        token_preview = "|".join(sorted(input_location_tokens)[:4])
+        return "yes", f"location detail in input not represented by mapped term ({token_preview})"
+    return "no", ""
+
+
 def load_ukb_field_title_index(path: Path | None) -> dict[str, str]:
     if path is None or not path.exists():
         return {}
@@ -1637,9 +2375,10 @@ def load_ukb_field_title_index(path: Path | None) -> dict[str, str]:
     return field_titles
 
 
-def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
+def load_trait_query_inputs(path: Path, *, default_trait_scale: str = "auto") -> list[dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Input file not found: {path}")
+    default_scale_norm = normalize_trait_scale(default_trait_scale)
 
     suffix = path.suffix.lower()
     if suffix in {".txt", ".list"}:
@@ -1652,7 +2391,10 @@ def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
                 {
                     "row_id": str(idx),
                     "query": query,
-                    "input_type": "trait_text",
+                    "input_type": "auto",
+                    "trait_scale": default_scale_norm,
+                    "source_code": "",
+                    "source_data_type": "",
                     "icd10": "",
                     "phecode": "",
                 }
@@ -1677,7 +2419,10 @@ def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
                 {
                     "row_id": str(idx),
                     "query": query,
-                    "input_type": "trait_text",
+                    "input_type": "auto",
+                    "trait_scale": default_scale_norm,
+                    "source_code": "",
+                    "source_data_type": "",
                     "icd10": "",
                     "phecode": "",
                 }
@@ -1691,6 +2436,9 @@ def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
     icd_field = next((field_lookup[name] for name in TRAIT_ICD10_COLUMNS if name in field_lookup), None)
     phe_field = next((field_lookup[name] for name in TRAIT_PHECODE_COLUMNS if name in field_lookup), None)
     type_field = next((field_lookup[name] for name in TRAIT_INPUT_TYPE_COLUMNS if name in field_lookup), None)
+    scale_field = next((field_lookup[name] for name in TRAIT_SCALE_COLUMNS if name in field_lookup), None)
+    code_field = next((field_lookup[name] for name in TRAIT_CODE_COLUMNS if name in field_lookup), None)
+    data_type_field = next((field_lookup[name] for name in TRAIT_DATA_TYPE_COLUMNS if name in field_lookup), None)
 
     rows: list[dict[str, str]] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
@@ -1700,11 +2448,31 @@ def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
             raw_icd = normalize(row.get(icd_field, "")) if icd_field else ""
             raw_phe = normalize(row.get(phe_field, "")) if phe_field else ""
             input_type = normalize_trait_input_type(row.get(type_field, "")) if type_field else "auto"
+            trait_scale = normalize_trait_scale(row.get(scale_field, "")) if scale_field else default_scale_norm
+            raw_code = normalize(row.get(code_field, "")) if code_field else ""
+            raw_data_type = normalize(row.get(data_type_field, "")) if data_type_field else ""
+            inferred_type_from_data_type = normalize_trait_data_type(raw_data_type)
 
-            if input_type == "icd10" and not raw_icd:
-                raw_icd = raw_query
+            if input_type == "auto" and inferred_type_from_data_type != "auto":
+                input_type = inferred_type_from_data_type
+
+            normalized_row_icd = normalize_icd10_code(raw_icd) if raw_icd else ""
+            if input_type == "icd10":
+                if is_strict_icd10_code(normalized_row_icd):
+                    raw_icd = normalized_row_icd
+                else:
+                    raw_icd = ""
+                    icd_from_code = normalize_icd10_code(raw_code)
+                    if is_strict_icd10_code(icd_from_code):
+                        raw_icd = icd_from_code
+                    else:
+                        icd_from_query = normalize_icd10_code(raw_query)
+                        if is_strict_icd10_code(icd_from_query):
+                            raw_icd = icd_from_query
+            elif normalized_row_icd:
+                raw_icd = normalized_row_icd
             if input_type == "phecode" and not raw_phe:
-                raw_phe = raw_query
+                raw_phe = normalize_phecode(raw_code or raw_query)
             if input_type == "trait_text" and not raw_query:
                 raw_query = raw_icd or raw_phe
 
@@ -1712,18 +2480,41 @@ def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
                 continue
 
             if input_type == "auto":
-                if normalize_icd10_code(raw_icd):
+                normalized_icd10 = normalize_icd10_code(raw_icd or raw_query)
+                if is_strict_icd10_code(normalized_icd10):
                     input_type = "icd10"
-                elif normalize_phecode(raw_phe):
+                    if not raw_icd:
+                        raw_icd = normalized_icd10
+                elif extract_ukb_field_ids(raw_query):
+                    input_type = "ukb_field"
+                elif looks_like_phecode_token(raw_phe or raw_query):
                     input_type = "phecode"
+                    if not raw_phe:
+                        raw_phe = normalize_phecode(raw_query)
                 else:
                     input_type = "trait_text"
+
+            if input_type == "ukb_field":
+                field_code = normalize(raw_code)
+                if not field_code:
+                    code_match = re.match(r"^\s*([0-9]{1,7})\b", raw_query)
+                    field_code = normalize(code_match.group(1)) if code_match else ""
+                if field_code and re.fullmatch(r"[0-9]{1,7}", field_code):
+                    ukb_token = f"ukb data field {field_code}"
+                    if raw_query:
+                        if ukb_token not in norm_key(raw_query):
+                            raw_query = normalize(f"{raw_query} (UKB data field {field_code})")
+                    else:
+                        raw_query = normalize(f"UKB data field {field_code}")
 
             rows.append(
                 {
                     "row_id": str(idx),
                     "query": raw_query,
                     "input_type": input_type,
+                    "trait_scale": trait_scale,
+                    "source_code": raw_code,
+                    "source_data_type": raw_data_type,
                     "icd10": raw_icd,
                     "phecode": raw_phe,
                 }
@@ -1731,89 +2522,125 @@ def load_trait_query_inputs(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def load_trait_cache_index(path: Path) -> dict[str, Any]:
+def is_ukb_field_supplement_publication(value: str) -> bool:
+    return normalize(value).lower().startswith(normalize(UKB_FIELD_SUPPLEMENT_PUBLICATION).lower())
+
+
+def is_icd10_supplement_publication(value: str) -> bool:
+    return normalize(value).lower().startswith(normalize(ICD10_SUPPLEMENT_PUBLICATION).lower())
+
+
+def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Trait cache not found: {path}")
 
+    cache_paths: list[Path] = [path]
+    for extra in extra_paths or []:
+        if extra in cache_paths:
+            continue
+        if extra.exists():
+            cache_paths.append(extra)
+
     records: list[TraitCacheRecord] = []
     icd10_index: dict[str, list[int]] = {}
+    icd10_label_index: dict[str, set[str]] = {}
     phecode_index: dict[str, list[int]] = {}
     ukb_field_index: dict[str, list[int]] = {}
     text_exact_index: dict[str, list[int]] = {}
     token_index: dict[str, set[int]] = {}
     token_freq: Counter[str] = Counter()
+    rownum = 0
 
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        for rownum, row in enumerate(reader, start=1):
-            reported_trait = normalize(row.get("Curated reported trait") or row.get("DISEASE/TRAIT") or "")
-            lookup_text = normalize(row.get("Lookup text") or row.get("DISEASE/TRAIT") or reported_trait)
-            icd10 = normalize_icd10_code(row.get("ICD10") or "")
-            phecode = normalize_phecode(row.get("PheCode") or "")
-            publication = normalize(row.get("Publication") or "")
+    for cache_path in cache_paths:
+        with cache_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                rownum += 1
+                reported_trait = normalize(row.get("Curated reported trait") or row.get("DISEASE/TRAIT") or "")
+                lookup_text = normalize(row.get("Lookup text") or row.get("DISEASE/TRAIT") or reported_trait)
+                icd10 = normalize_icd10_code(row.get("ICD10") or "")
+                phecode = normalize_phecode(row.get("PheCode") or "")
+                publication = normalize(row.get("Publication") or "")
+                is_ukb_field_supplement = is_ukb_field_supplement_publication(publication)
+                is_icd10_supplement = is_icd10_supplement_publication(publication)
 
-            raw_ids = split_multi_ids(row.get("main ontology URI(s)") or row.get("MAPPED_TRAIT_URI") or "")
-            if not raw_ids:
-                continue
-            canon_ids: list[str] = []
-            for item in raw_ids:
-                oid = canonicalize_trait_ontology_id(item)
-                if not oid:
+                raw_ids = split_multi_ids(row.get("main ontology URI(s)") or row.get("MAPPED_TRAIT_URI") or "")
+                if not raw_ids:
                     continue
-                if oid not in canon_ids:
-                    canon_ids.append(oid)
-            if not canon_ids:
-                continue
-
-            raw_labels = split_multi_labels(
-                row.get("main ontology label(s)") or row.get("MAPPED_TRAIT") or "",
-                expected_n=len(canon_ids),
-            )
-            labels: list[str] = []
-            for idx, oid in enumerate(canon_ids):
-                mapped_label = raw_labels[idx] if idx < len(raw_labels) else ""
-                labels.append(normalize(mapped_label))
-
-            record = TraitCacheRecord(
-                rownum=rownum,
-                reported_trait=reported_trait,
-                lookup_text=lookup_text,
-                icd10=icd10,
-                phecode=phecode,
-                mapped_ids=tuple(canon_ids),
-                mapped_labels=tuple(labels),
-                publication=publication,
-            )
-            rec_idx = len(records)
-            records.append(record)
-
-            if icd10:
-                icd10_index.setdefault(icd10, []).append(rec_idx)
-            if phecode:
-                phecode_index.setdefault(phecode, []).append(rec_idx)
-
-            ukb_ids = set(extract_ukb_field_ids(reported_trait)) | set(extract_ukb_field_ids(lookup_text))
-            explicit_ukb_field = normalize(row.get("UKBB data field") or row.get("UKB data field") or "")
-            if explicit_ukb_field and explicit_ukb_field not in {"-", "NA", "N/A"}:
-                if re.fullmatch(r"\d{1,7}", explicit_ukb_field):
-                    ukb_ids.add(explicit_ukb_field)
-                else:
-                    ukb_ids |= set(extract_ukb_field_ids(explicit_ukb_field))
-            for ukb_field_id in ukb_ids:
-                ukb_field_index.setdefault(ukb_field_id, []).append(rec_idx)
-
-            for text_value in {reported_trait, lookup_text}:
-                text_norm = norm_key(text_value)
-                if not text_norm:
+                canon_ids: list[str] = []
+                for item in raw_ids:
+                    oid = canonicalize_trait_ontology_id(item)
+                    if not oid:
+                        continue
+                    if oid not in canon_ids:
+                        canon_ids.append(oid)
+                if not canon_ids:
                     continue
-                text_exact_index.setdefault(text_norm, []).append(rec_idx)
-                for tok in informative_trait_tokens(text_norm):
-                    token_index.setdefault(tok, set()).add(rec_idx)
-                    token_freq[tok] += 1
+
+                raw_labels = split_multi_labels(
+                    row.get("main ontology label(s)") or row.get("MAPPED_TRAIT") or "",
+                    expected_n=len(canon_ids),
+                )
+                labels: list[str] = []
+                for idx, oid in enumerate(canon_ids):
+                    mapped_label = raw_labels[idx] if idx < len(raw_labels) else ""
+                    labels.append(normalize(mapped_label))
+
+                record = TraitCacheRecord(
+                    rownum=rownum,
+                    reported_trait=reported_trait,
+                    lookup_text=lookup_text,
+                    icd10=icd10,
+                    phecode=phecode,
+                    mapped_ids=tuple(canon_ids),
+                    mapped_labels=tuple(labels),
+                    publication=publication,
+                    is_ukb_field_supplement=is_ukb_field_supplement,
+                    is_icd10_supplement=is_icd10_supplement,
+                )
+                rec_idx = len(records)
+                records.append(record)
+
+                if not is_ukb_field_supplement:
+                    if icd10:
+                        icd10_index.setdefault(icd10, []).append(rec_idx)
+                        label_hints: set[str] = set()
+                        for text_value in (reported_trait, lookup_text):
+                            parsed_code, parsed_label = parse_icd10_labeled_trait_text(text_value)
+                            if parsed_code == icd10 and parsed_label:
+                                label_hints.add(parsed_label)
+                        if lookup_text and lookup_text != icd10:
+                            label_hints.add(lookup_text)
+                        for label_hint in label_hints:
+                            if label_hint:
+                                icd10_label_index.setdefault(icd10, set()).add(label_hint)
+                    if phecode:
+                        phecode_index.setdefault(phecode, []).append(rec_idx)
+
+                ukb_ids = set(extract_ukb_field_ids(reported_trait)) | set(extract_ukb_field_ids(lookup_text))
+                explicit_ukb_field = normalize(row.get("UKBB data field") or row.get("UKB data field") or "")
+                if explicit_ukb_field and explicit_ukb_field not in {"-", "NA", "N/A"}:
+                    if re.fullmatch(r"\d{1,7}", explicit_ukb_field):
+                        ukb_ids.add(explicit_ukb_field)
+                    else:
+                        ukb_ids |= set(extract_ukb_field_ids(explicit_ukb_field))
+                for ukb_field_id in ukb_ids:
+                    ukb_field_index.setdefault(ukb_field_id, []).append(rec_idx)
+
+                if not is_ukb_field_supplement and not is_icd10_supplement:
+                    for text_value in {reported_trait, lookup_text}:
+                        text_norm = norm_key(text_value)
+                        if not text_norm:
+                            continue
+                        text_exact_index.setdefault(text_norm, []).append(rec_idx)
+                        for tok in informative_trait_tokens(text_norm):
+                            token_index.setdefault(tok, set()).add(rec_idx)
+                            token_freq[tok] += 1
 
     return {
         "records": records,
         "icd10_index": icd10_index,
+        "icd10_label_index": {k: tuple(sorted(v)) for k, v in icd10_label_index.items()},
         "phecode_index": phecode_index,
         "ukb_field_index": ukb_field_index,
         "text_exact_index": text_exact_index,
@@ -1831,18 +2658,27 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
     exact_index: dict[str, set[str]] = {}
     token_index: dict[str, set[str]] = {}
     token_freq: Counter[str] = Counter()
+    icd10_xref_index: dict[str, set[str]] = {}
+    xref_label_hints: dict[str, str] = {}
+    term_parents: dict[str, tuple[str, ...]] = {}
 
     current_id = ""
     current_label = ""
-    current_synonyms: list[str] = []
+    current_synonyms: list[tuple[str, str]] = []
     current_obsolete = False
     current_replaced_by: list[str] = []
     current_consider: list[str] = []
+    current_icd10_xrefs: set[str] = set()
+    current_preferred_xrefs: set[str] = set()
+    current_parents: list[str] = []
     in_term = False
 
     def flush_term() -> None:
         nonlocal current_id, current_label, current_synonyms, current_obsolete
         nonlocal current_replaced_by, current_consider
+        nonlocal current_icd10_xrefs
+        nonlocal current_preferred_xrefs
+        nonlocal current_parents
 
         if not current_id:
             current_id = ""
@@ -1851,51 +2687,51 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
             current_obsolete = False
             current_replaced_by = []
             current_consider = []
+            current_icd10_xrefs = set()
+            current_preferred_xrefs = set()
+            current_parents = []
             return
 
         prefix = trait_ontology_prefix(current_id)
-        if prefix not in TRAIT_PREFERRED_PREFIX_ORDER:
-            current_id = ""
-            current_label = ""
-            current_synonyms = []
-            current_obsolete = False
-            current_replaced_by = []
-            current_consider = []
-            return
+        prefix_allowed = prefix in TRAIT_PREFERRED_PREFIX_ORDER
 
         if current_obsolete:
-            replaced_by: list[str] = []
-            for item in current_replaced_by:
-                oid = canonicalize_trait_ontology_id(item)
-                if not oid:
-                    continue
-                if trait_ontology_prefix(oid) not in TRAIT_PREFERRED_PREFIX_ORDER:
-                    continue
-                if oid not in replaced_by:
-                    replaced_by.append(oid)
+            if prefix_allowed:
+                replaced_by: list[str] = []
+                for item in current_replaced_by:
+                    oid = canonicalize_trait_ontology_id(item)
+                    if not oid:
+                        continue
+                    if trait_ontology_prefix(oid) not in TRAIT_PREFERRED_PREFIX_ORDER:
+                        continue
+                    if oid not in replaced_by:
+                        replaced_by.append(oid)
 
-            consider: list[str] = []
-            for item in current_consider:
-                oid = canonicalize_trait_ontology_id(item)
-                if not oid:
-                    continue
-                if trait_ontology_prefix(oid) not in TRAIT_PREFERRED_PREFIX_ORDER:
-                    continue
-                if oid not in consider:
-                    consider.append(oid)
+                consider: list[str] = []
+                for item in current_consider:
+                    oid = canonicalize_trait_ontology_id(item)
+                    if not oid:
+                        continue
+                    if trait_ontology_prefix(oid) not in TRAIT_PREFERRED_PREFIX_ORDER:
+                        continue
+                    if oid not in consider:
+                        consider.append(oid)
 
-            obsolete_terms[current_id] = TraitObsoleteTerm(
-                term_id=current_id,
-                label=normalize(current_label),
-                replaced_by=tuple(replaced_by),
-                consider=tuple(consider),
-            )
+                obsolete_terms[current_id] = TraitObsoleteTerm(
+                    term_id=current_id,
+                    label=normalize(current_label),
+                    replaced_by=tuple(replaced_by),
+                    consider=tuple(consider),
+                )
             current_id = ""
             current_label = ""
             current_synonyms = []
             current_obsolete = False
             current_replaced_by = []
             current_consider = []
+            current_icd10_xrefs = set()
+            current_preferred_xrefs = set()
+            current_parents = []
             return
 
         if not current_label:
@@ -1905,24 +2741,79 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
             current_obsolete = False
             current_replaced_by = []
             current_consider = []
+            current_icd10_xrefs = set()
+            current_preferred_xrefs = set()
+            current_parents = []
             return
 
-        term = TraitOntologyTerm(
-            term_id=current_id,
-            label=normalize(current_label),
-            synonyms=tuple(dict.fromkeys(normalize(syn) for syn in current_synonyms if normalize(syn))),
-        )
-        terms[current_id] = term
+        if prefix_allowed:
+            normalized_label = normalize(current_label)
+            label_key = norm_key(normalized_label)
+            synonym_values: list[str] = []
+            seen_synonym_values: set[str] = set()
+            exact_synonym_keys: set[str] = set()
+            narrow_synonym_keys: set[str] = set()
+            related_synonym_keys: set[str] = set()
+            broad_synonym_keys: set[str] = set()
+            for raw_synonym, raw_scope in current_synonyms:
+                syn_value = normalize(raw_synonym)
+                if not syn_value:
+                    continue
+                if syn_value not in seen_synonym_values:
+                    seen_synonym_values.add(syn_value)
+                    synonym_values.append(syn_value)
+                syn_key = norm_key(syn_value)
+                if not syn_key:
+                    continue
+                if raw_scope == "EXACT":
+                    exact_synonym_keys.add(syn_key)
+                elif raw_scope == "NARROW":
+                    narrow_synonym_keys.add(syn_key)
+                elif raw_scope == "RELATED":
+                    related_synonym_keys.add(syn_key)
+                elif raw_scope == "BROAD":
+                    broad_synonym_keys.add(syn_key)
+            term = TraitOntologyTerm(
+                term_id=current_id,
+                label=normalized_label,
+                synonyms=tuple(synonym_values),
+                label_key=label_key,
+                exact_synonym_keys=frozenset(exact_synonym_keys),
+                narrow_synonym_keys=frozenset(narrow_synonym_keys),
+                related_synonym_keys=frozenset(related_synonym_keys),
+                broad_synonym_keys=frozenset(broad_synonym_keys),
+            )
+            terms[current_id] = term
+            parents: list[str] = []
+            for raw_parent in current_parents:
+                parent_id = canonicalize_trait_ontology_id(raw_parent)
+                if not parent_id:
+                    continue
+                if parent_id not in parents:
+                    parents.append(parent_id)
+            term_parents[current_id] = tuple(parents)
 
-        phrases = {term.label, *term.synonyms}
-        for phrase in phrases:
-            key = norm_key(phrase)
-            if not key:
-                continue
-            exact_index.setdefault(key, set()).add(current_id)
-            for tok in informative_trait_tokens(key):
-                token_index.setdefault(tok, set()).add(current_id)
-                token_freq[tok] += 1
+            phrases = {term.label, *term.synonyms}
+            for phrase in phrases:
+                key = norm_key(phrase)
+                if not key:
+                    continue
+                exact_index.setdefault(key, set()).add(current_id)
+                for tok in informative_trait_tokens(key):
+                    token_index.setdefault(tok, set()).add(current_id)
+                    token_freq[tok] += 1
+
+        icd10_targets = set(current_preferred_xrefs)
+        if prefix_allowed:
+            icd10_targets.add(current_id)
+        if icd10_targets:
+            for code in sorted(current_icd10_xrefs):
+                icd10_xref_index.setdefault(code, set()).update(icd10_targets)
+        if current_label:
+            normalized_label = normalize(current_label)
+            for xref_id in current_preferred_xrefs:
+                if xref_id not in terms and normalized_label:
+                    xref_label_hints.setdefault(xref_id, normalized_label)
 
         current_id = ""
         current_label = ""
@@ -1930,6 +2821,9 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
         current_obsolete = False
         current_replaced_by = []
         current_consider = []
+        current_icd10_xrefs = set()
+        current_preferred_xrefs = set()
+        current_parents = []
 
     with obo_path.open("r", encoding="utf-8", errors="ignore") as handle:
         for raw_line in handle:
@@ -1949,23 +2843,79 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
             elif line.startswith("name: "):
                 current_label = line[6:].strip()
             elif line.startswith("synonym: "):
-                match = re.match(r'^synonym:\s+"(.+?)"\s+(?:EXACT|BROAD|NARROW|RELATED)\b', line)
+                match = re.match(r'^synonym:\s+"(.+?)"\s+(EXACT|BROAD|NARROW|RELATED)\b', line)
                 if match:
-                    current_synonyms.append(match.group(1).strip())
+                    current_synonyms.append((match.group(1).strip(), match.group(2).upper()))
             elif line.startswith("replaced_by: "):
                 current_replaced_by.append(line.split(":", 1)[1].strip())
             elif line.startswith("consider: "):
                 current_consider.append(line.split(":", 1)[1].strip())
             elif line.startswith("is_obsolete: "):
                 current_obsolete = line.split(":", 1)[1].strip().lower() == "true"
+            elif line.startswith("xref: "):
+                xref_text = line[6:].strip()
+                xref_token = xref_text.split()[0]
+                xref_id = canonicalize_trait_ontology_id(xref_token)
+                if trait_ontology_prefix(xref_id) in TRAIT_PREFERRED_PREFIX_ORDER:
+                    current_preferred_xrefs.add(xref_id)
+                icd10_code = extract_icd10_code_from_xref(xref_text)
+                if icd10_code:
+                    current_icd10_xrefs.add(icd10_code)
+            elif line.startswith("property_value: "):
+                property_text = line
+                mondo_id = extract_mondo_id(property_text)
+                if mondo_id and trait_ontology_prefix(mondo_id) in TRAIT_PREFERRED_PREFIX_ORDER:
+                    current_preferred_xrefs.add(mondo_id)
+                icd10_code = extract_icd10_code_from_xref(property_text)
+                if icd10_code:
+                    current_icd10_xrefs.add(icd10_code)
+            elif line.startswith("is_a: "):
+                parent_part = line[6:].split("!", 1)[0].strip()
+                if parent_part:
+                    current_parents.append(parent_part)
 
     flush_term()
+    for term_id, label in xref_label_hints.items():
+        if term_id in terms or not label:
+            continue
+        terms[term_id] = TraitOntologyTerm(
+            term_id=term_id,
+            label=label,
+            synonyms=(),
+            label_key=norm_key(label),
+        )
+
+    measurement_root = canonicalize_trait_ontology_id(DEFAULT_MEASUREMENT_ROOT)
+    measurement_cache: dict[str, bool] = {}
+    visiting: set[str] = set()
+
+    def is_measurement_descendant(term_id: str) -> bool:
+        if term_id == measurement_root:
+            return True
+        if term_id in measurement_cache:
+            return measurement_cache[term_id]
+        if term_id in visiting:
+            return False
+        visiting.add(term_id)
+        parents = term_parents.get(term_id, ())
+        result = any(is_measurement_descendant(parent_id) for parent_id in parents)
+        visiting.remove(term_id)
+        measurement_cache[term_id] = result
+        return result
+
+    measurement_term_ids = {
+        term_id
+        for term_id in terms
+        if is_measurement_descendant(term_id)
+    }
     return {
         "terms": terms,
         "obsolete_terms": obsolete_terms,
         "exact_index": exact_index,
         "token_index": token_index,
         "token_freq": token_freq,
+        "icd10_xref_index": icd10_xref_index,
+        "measurement_term_ids": measurement_term_ids,
     }
 
 
@@ -1997,6 +2947,7 @@ def build_trait_cache_term_resolution(
 
     for rec in records:
         resolved_ids: list[str] = []
+        unresolved_mondo_ids: list[str] = []
         row_has_obsolete = False
         row_has_unresolved = False
 
@@ -2043,6 +2994,8 @@ def build_trait_cache_term_resolution(
 
             stats["ids_unknown"] += 1
             row_has_unresolved = True
+            if trait_ontology_prefix(oid) == "MONDO":
+                unresolved_mondo_ids.append(oid)
             if len(issues) < issue_sample_limit:
                 issues.append(
                     f"row {rec.rownum}: id {oid} not found in ontology "
@@ -2055,6 +3008,20 @@ def build_trait_cache_term_resolution(
             stats["rows_with_unresolved_ids"] += 1
 
         if not resolved_ids:
+            # Keep unresolved MONDO-only rows as explicit review-required
+            # candidates so output can carry `term not in EFO` QC flags.
+            if unresolved_mondo_ids:
+                fallback_labels: list[str] = []
+                for unresolved_id in unresolved_mondo_ids:
+                    fallback_label = ""
+                    for idx, mapped_id in enumerate(rec.mapped_ids):
+                        if canonicalize_trait_ontology_id(mapped_id) == unresolved_id:
+                            if idx < len(rec.mapped_labels):
+                                fallback_label = normalize(rec.mapped_labels[idx])
+                            break
+                    fallback_labels.append(fallback_label or unresolved_id)
+                resolution[rec.rownum] = (tuple(unresolved_mondo_ids), tuple(fallback_labels))
+                continue
             stats["rows_without_active_terms"] += 1
             continue
 
@@ -2090,12 +3057,155 @@ def trait_similarity_score(query: str, query_toks: set[str], candidate_text: str
     cnorm, c_toks_frozen = _trait_similarity_candidate_profile(candidate_text)
     if not qnorm or not cnorm:
         return 0.0
-    if trait_negation_mismatch(qnorm, cnorm):
-        return 0.0
-    overlap = len(query_toks & c_toks_frozen) / max(len(query_toks), 1)
+    negation_mismatch = trait_negation_mismatch(qnorm, cnorm)
+    c_toks = set(c_toks_frozen)
+    overlap_tokens = query_toks & c_toks
+    overlap = len(overlap_tokens) / max(len(query_toks), 1)
+    nonweak_overlap_tokens = trait_nonweak_tokens(overlap_tokens)
+    query_anchor_tokens = trait_anchor_tokens(query_toks)
+    candidate_anchor_tokens = trait_anchor_tokens(c_toks)
     seq = _sequence_ratio(qnorm, cnorm)
     substring_bonus = 0.1 if len(cnorm) >= 6 and (cnorm in qnorm or qnorm in cnorm) else 0.0
-    return min(1.0, 0.6 * overlap + 0.4 * seq + substring_bonus)
+    strict_modifier_mismatches = sum(
+        1 for tok in TRAIT_STRICT_MODIFIER_TOKENS if ((tok in query_toks) != (tok in c_toks))
+    )
+    modifier_penalty = 0.25 * strict_modifier_mismatches
+    negation_penalty = 0.12 if negation_mismatch else 0.0
+    weak_overlap_penalty = 0.18 if overlap_tokens and not nonweak_overlap_tokens else 0.0
+    anchor_penalty = 0.20 if query_anchor_tokens and query_anchor_tokens.isdisjoint(candidate_anchor_tokens) else 0.0
+    raw_score = (
+        0.6 * overlap
+        + 0.4 * seq
+        + substring_bonus
+        - modifier_penalty
+        - negation_penalty
+        - weak_overlap_penalty
+        - anchor_penalty
+    )
+    return max(0.0, min(1.0, raw_score))
+
+
+def trait_modifier_label_mismatch(query_toks: set[str], candidate_label: str) -> bool:
+    if not query_toks or not candidate_label:
+        return False
+    label_norm = normalize_trait_text_for_similarity(candidate_label)
+    if not label_norm:
+        return False
+    label_toks = informative_trait_tokens(label_norm)
+    return any((tok in query_toks) != (tok in label_toks) for tok in TRAIT_STRICT_MODIFIER_TOKENS)
+
+
+def trait_match_scope_rank(
+    *,
+    query_exact_keys: set[str],
+    term: TraitOntologyTerm | None,
+    label_text: str,
+) -> int:
+    if not query_exact_keys:
+        return -1
+    label_key = norm_key(label_text)
+    if label_key and label_key in query_exact_keys:
+        return TRAIT_SYNONYM_SCOPE_RANK["LABEL"]
+    if term is None:
+        return -1
+    if query_exact_keys & term.exact_synonym_keys:
+        return TRAIT_SYNONYM_SCOPE_RANK["EXACT"]
+    if query_exact_keys & term.narrow_synonym_keys:
+        return TRAIT_SYNONYM_SCOPE_RANK["NARROW"]
+    if query_exact_keys & term.related_synonym_keys:
+        return TRAIT_SYNONYM_SCOPE_RANK["RELATED"]
+    if query_exact_keys & term.broad_synonym_keys:
+        return TRAIT_SYNONYM_SCOPE_RANK["BROAD"]
+    return -1
+
+
+def trait_overspecificity_penalties(
+    *,
+    query_tokens: set[str],
+    label_text: str,
+) -> tuple[int, int, int]:
+    if not label_text:
+        return 0, 0, 0
+    label_norm = normalize_trait_text_for_similarity(label_text) or norm_key(label_text)
+    label_tokens = informative_trait_tokens(label_norm)
+    if not label_tokens:
+        return 0, 0, 0
+    extra_tokens = label_tokens - query_tokens
+    subtype_penalty = len(extra_tokens & TRAIT_OVERSPECIFICITY_HINT_TOKENS)
+    extra_penalty = len([tok for tok in extra_tokens if tok not in TRAIT_STOP_TOKENS and len(tok) >= 4])
+    overlap = len(label_tokens & query_tokens)
+    return subtype_penalty, extra_penalty, overlap
+
+
+def trait_candidate_lexical_priority(
+    candidate: Candidate,
+    *,
+    query_exact_keys: set[str],
+    query_tokens: set[str],
+    ontology_terms: dict[str, TraitOntologyTerm],
+) -> tuple[int, int, int, int]:
+    ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(candidate.efo_id)]
+    ids = [item for item in ids if item]
+    labels = split_multi_labels(candidate.label, expected_n=len(ids))
+    if not ids:
+        scope_rank = trait_match_scope_rank(
+            query_exact_keys=query_exact_keys,
+            term=None,
+            label_text=normalize(candidate.label),
+        )
+        subtype_penalty, extra_penalty, overlap = trait_overspecificity_penalties(
+            query_tokens=query_tokens,
+            label_text=normalize(candidate.label),
+        )
+        return scope_rank, -subtype_penalty, -extra_penalty, overlap
+
+    best_rank = -1
+    best_subtype_penalty = 10**6
+    best_extra_penalty = 10**6
+    best_overlap = -1
+    for idx, term_id in enumerate(ids):
+        term = ontology_terms.get(term_id)
+        label_text = normalize(labels[idx] if idx < len(labels) else "")
+        if not label_text and term is not None:
+            label_text = term.label
+        scope_rank = trait_match_scope_rank(
+            query_exact_keys=query_exact_keys,
+            term=term,
+            label_text=label_text,
+        )
+        subtype_penalty, extra_penalty, overlap = trait_overspecificity_penalties(
+            query_tokens=query_tokens,
+            label_text=label_text,
+        )
+        rank_tuple = (scope_rank, -subtype_penalty, -extra_penalty, overlap)
+        best_tuple = (best_rank, -best_subtype_penalty, -best_extra_penalty, best_overlap)
+        if rank_tuple > best_tuple:
+            best_rank = scope_rank
+            best_subtype_penalty = subtype_penalty
+            best_extra_penalty = extra_penalty
+            best_overlap = overlap
+    return best_rank, -best_subtype_penalty, -best_extra_penalty, best_overlap
+
+
+def candidate_is_non_disease_entity(
+    candidate: Candidate,
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+) -> bool:
+    ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(candidate.efo_id)]
+    ids = [item for item in ids if item]
+    if not ids:
+        return False
+    prefixes = {trait_ontology_prefix(item) for item in ids if item}
+    if not prefixes or not prefixes.issubset(TRAIT_NON_DISEASE_ENTITY_PREFIXES):
+        return False
+    if has_disease_hint(candidate.label):
+        return False
+    for term_id in ids:
+        term = ontology_terms.get(term_id)
+        if term is not None and has_disease_hint(term.label):
+            return False
+    return True
 
 
 def collapse_trait_cache_candidates(
@@ -2147,6 +3257,751 @@ def collapse_trait_cache_candidates(
     return candidates
 
 
+def pick_preferred_mapping_pair(mapped_ids: str, mapped_labels: str) -> tuple[str, str] | None:
+    ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(mapped_ids)]
+    ids = [item for item in ids if item]
+    if not ids:
+        return None
+    labels = split_multi_labels(mapped_labels, expected_n=len(ids))
+    pairs: list[tuple[str, str]] = []
+    for idx, item in enumerate(ids):
+        label = normalize(labels[idx] if idx < len(labels) else "")
+        pairs.append((item, label))
+    pairs.sort(
+        key=lambda pair: (
+            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(pair[0]), 999),
+            pair[0],
+        )
+    )
+    return pairs[0]
+
+
+def pick_preferred_ontology_term(
+    term_ids: set[str],
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+) -> tuple[str, str] | None:
+    if not term_ids:
+        return None
+    ordered = sorted(
+        (term_id for term_id in term_ids if term_id in ontology_terms),
+        key=lambda term_id: (
+            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+            term_id,
+        ),
+    )
+    if not ordered:
+        return None
+    term_id = ordered[0]
+    return term_id, ontology_terms[term_id].label
+
+
+def is_generic_ukb_measurement_mapping(mapped_id: str, mapped_label: str) -> bool:
+    oid = canonicalize_trait_ontology_id(mapped_id)
+    label = norm_key(mapped_label)
+    return oid == UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_ID or label == "measurement"
+
+
+def candidate_has_generic_measurement_mapping(mapped_ids: str, mapped_labels: str) -> bool:
+    ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(mapped_ids)]
+    ids = [item for item in ids if item]
+    if not ids:
+        return is_generic_ukb_measurement_mapping("", mapped_labels)
+    labels = split_multi_labels(mapped_labels, expected_n=len(ids))
+    for idx, term_id in enumerate(ids):
+        label = normalize(labels[idx] if idx < len(labels) else "")
+        if is_generic_ukb_measurement_mapping(term_id, label):
+            return True
+    return False
+
+
+def trait_qc_risk_reasons(row: dict[str, str]) -> list[str]:
+    reasons: list[str] = []
+    validation = norm_key(row.get("validation", ""))
+    matched_via = norm_key(row.get("matched_via", ""))
+    mapped_label = normalize(row.get("mapped_trait_label", ""))
+
+    try:
+        confidence = float(row.get("confidence") or "0")
+    except ValueError:
+        confidence = 0.0
+
+    if row.get("term_not_in_efo"):
+        reasons.append("term_not_in_efo")
+    if norm_key(row.get("negation", "")) == "yes" and validation != "not_mapped":
+        reasons.append("negation_with_mapping")
+    if validation == "validated" and matched_via in {"cache_fuzzy_text", "efo_obo_fuzzy"}:
+        reasons.append("validated_fuzzy_match")
+    if validation == "validated" and confidence < 0.90:
+        reasons.append("validated_low_confidence")
+    if norm_key(row.get("specificity_loss_flag", "")) == "yes":
+        reasons.append("specificity_loss")
+    if is_generic_trait_label(mapped_label) and validation in {"validated", "review_required"}:
+        reasons.append("generic_mapped_label")
+    if matched_via in ICD10_PARENT_FALLBACK_METHOD_KEYS:
+        reasons.append("icd10_parent_fallback")
+    if matched_via == "cache_exact_ukb_field_supplement" and is_generic_trait_label(mapped_label):
+        reasons.append("ukb_supplement_generic")
+    return reasons
+
+
+def write_trait_qc_risk_tsv(mapped_output: Path, risk_output: Path) -> int:
+    risk_rows: list[dict[str, str]] = []
+    with mapped_output.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            reasons = trait_qc_risk_reasons(row)
+            if not reasons:
+                continue
+            risk_rows.append(
+                {
+                    "input_row_id": normalize(row.get("input_row_id", "")),
+                    "input_query": normalize(row.get("input_query", "")),
+                    "input_source_data_type": normalize(row.get("input_source_data_type", "")),
+                    "input_type": normalize(row.get("input_type", "")),
+                    "mapped_trait_id": normalize(row.get("mapped_trait_id", "")),
+                    "mapped_trait_label": normalize(row.get("mapped_trait_label", "")),
+                    "validation": normalize(row.get("validation", "")),
+                    "matched_via": normalize(row.get("matched_via", "")),
+                    "confidence": normalize(row.get("confidence", "")),
+                    "specificity_loss_flag": normalize(row.get("specificity_loss_flag", "")),
+                    "specificity_loss_notes": normalize(row.get("specificity_loss_notes", "")),
+                    "risk_reasons": "|".join(sorted(set(reasons))),
+                    "evidence": normalize(row.get("evidence", "")),
+                }
+            )
+
+    risk_output.parent.mkdir(parents=True, exist_ok=True)
+    with risk_output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=TRAIT_QC_RISK_FIELDS, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(risk_rows)
+    return len(risk_rows)
+
+
+def parse_mondo_sssom_icd10_mappings(path: Path) -> dict[str, set[str]]:
+    mapping: dict[str, set[str]] = {}
+    if not path.exists():
+        return mapping
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            subject_id = normalize(row.get("subject_id", ""))
+            object_id = normalize(row.get("object_id", ""))
+            if not subject_id or not object_id:
+                continue
+            subject_icd10 = extract_icd10_code_from_xref(subject_id)
+            object_icd10 = extract_icd10_code_from_xref(object_id)
+            subject_mondo = extract_mondo_id(subject_id)
+            object_mondo = extract_mondo_id(object_id)
+
+            if subject_icd10 and object_mondo:
+                mapping.setdefault(subject_icd10, set()).add(object_mondo)
+            if object_icd10 and subject_mondo:
+                mapping.setdefault(object_icd10, set()).add(subject_mondo)
+    return mapping
+
+
+def parse_cms_icd10_label_rows(zip_path: Path, *, source_url: str) -> tuple[list[dict[str, str]], str]:
+    with zipfile.ZipFile(zip_path) as zf:
+        member_names = [
+            name
+            for name in zf.namelist()
+            if name.lower().endswith(".txt")
+            and "order" in Path(name).name.lower()
+            and "addenda" not in Path(name).name.lower()
+        ]
+        if not member_names:
+            raise ValueError(f"No CMS ICD10 tabular-order text file found in {zip_path}")
+        member_names.sort(key=lambda name: ("icd10cm_order" not in Path(name).name.lower(), len(name), name))
+        member_name = member_names[0]
+        raw_lines = zf.read(member_name).decode("utf-8", errors="replace").splitlines()
+
+    rows: list[dict[str, str]] = []
+    seen_codes: set[str] = set()
+    for raw_line in raw_lines:
+        line = raw_line.rstrip("\r\n")
+        if len(line) < 17:
+            continue
+        raw_code = normalize(line[6:13])
+        if not raw_code:
+            continue
+        label = normalize(line[77:] if len(line) > 77 else "") or normalize(line[16:76])
+        code = normalize_icd10_code(raw_code)
+        if not code or not is_strict_icd10_code(code) or not label or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        rows.append(
+            {
+                "ICD10": code,
+                "label": label,
+                "source": "CMS ICD-10-CM tabular order",
+                "source_url": source_url,
+            }
+        )
+
+    if not rows:
+        raise ValueError(f"No ICD10 label rows parsed from {zip_path}")
+    return rows, member_name
+
+
+def build_icd10_label_cache(
+    *,
+    output_path: Path,
+    source_url: str,
+    timeout: float,
+) -> dict[str, Any]:
+    url = normalize(source_url)
+    if not url:
+        raise ValueError("ICD10 label source URL is required")
+
+    with tempfile.TemporaryDirectory(prefix="icd10-label-cache-") as tmpdir:
+        archive_path = Path(tmpdir) / Path(urllib.parse.urlparse(url).path).name
+        if not archive_path.name:
+            archive_path = Path(tmpdir) / "icd10_labels_source.zip"
+        download_to_file(url, archive_path, timeout=timeout)
+        archive_size_bytes = archive_path.stat().st_size if archive_path.exists() else 0
+        rows, member_name = parse_cms_icd10_label_rows(archive_path, source_url=url)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["ICD10", "label", "source", "source_url"],
+            delimiter="\t",
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return {
+        "codes": len(rows),
+        "output_path": str(output_path),
+        "source_url": url,
+        "source_member": member_name,
+        "archive_size_bytes": archive_size_bytes,
+    }
+
+
+def load_icd10_label_cache(path: Path) -> dict[str, tuple[str, ...]]:
+    label_index: dict[str, set[str]] = {}
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            code = normalize_icd10_code(row.get("ICD10") or row.get("icd10") or "")
+            label = normalize(row.get("label") or row.get("icd10_label") or row.get("description") or "")
+            if not code or not is_strict_icd10_code(code) or not label:
+                continue
+            label_index.setdefault(code, set()).add(label)
+    return {code: tuple(sorted(labels)) for code, labels in label_index.items()}
+
+
+def build_icd10_supplement_cache(
+    *,
+    output_path: Path,
+    trait_cache_path: Path,
+    efo_obo_path: Path,
+    mondo_sssom_cache_path: Path,
+    mondo_sssom_url: str,
+    mondo_download_timeout: float,
+) -> dict[str, Any]:
+    trait_cache_index = load_trait_cache_index(trait_cache_path)
+    base_icd10_codes = set(trait_cache_index.get("icd10_index", {}).keys())
+    ontology_index = load_trait_ontology_index(efo_obo_path)
+    ontology_terms: dict[str, TraitOntologyTerm] = ontology_index.get("terms", {})
+    ontology_icd10_xref_index: dict[str, set[str]] = ontology_index.get("icd10_xref_index", {})
+
+    code_to_term_ids: dict[str, set[str]] = {}
+    code_sources: dict[str, set[str]] = {}
+    for raw_code, term_ids in ontology_icd10_xref_index.items():
+        code = normalize_icd10_code(raw_code)
+        if not code:
+            continue
+        for term_id in term_ids:
+            oid = canonicalize_trait_ontology_id(term_id)
+            if oid in ontology_terms:
+                code_to_term_ids.setdefault(code, set()).add(oid)
+                code_sources.setdefault(code, set()).add("efo_obo_xref")
+
+    mondo_codes_added = 0
+    mondo_terms_not_in_efo = 0
+    mondo_downloaded = False
+    mondo_download_error = ""
+    mondo_cache_source = "none"
+    mondo_cache_used = False
+    mondo_mapping_codes = 0
+    mondo_url = normalize(mondo_sssom_url)
+    if mondo_url:
+        try:
+            mondo_sssom_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            download_to_file(mondo_url, mondo_sssom_cache_path, timeout=mondo_download_timeout)
+            mondo_downloaded = True
+            mondo_cache_source = "downloaded"
+        except Exception as exc:  # noqa: BLE001 - setup should degrade gracefully offline.
+            mondo_download_error = str(exc)
+    if mondo_sssom_cache_path.exists() and mondo_sssom_cache_path.stat().st_size > 0:
+        try:
+            mondo_mapping = parse_mondo_sssom_icd10_mappings(mondo_sssom_cache_path)
+            mondo_mapping_codes = len(mondo_mapping)
+            if mondo_mapping:
+                mondo_cache_used = True
+                if mondo_cache_source == "none":
+                    mondo_cache_source = "cached"
+            for code, term_ids in mondo_mapping.items():
+                valid_terms: set[str] = set()
+                for term_id in term_ids:
+                    canonical = canonicalize_trait_ontology_id(term_id)
+                    if not canonical:
+                        continue
+                    if canonical in ontology_terms:
+                        valid_terms.add(canonical)
+                    elif trait_ontology_prefix(canonical) == "MONDO":
+                        mondo_terms_not_in_efo += 1
+                if not valid_terms:
+                    continue
+                before = len(code_to_term_ids.get(code, set()))
+                code_to_term_ids.setdefault(code, set()).update(valid_terms)
+                after = len(code_to_term_ids.get(code, set()))
+                if after > before:
+                    mondo_codes_added += 1
+                code_sources.setdefault(code, set()).add("mondo_sssom")
+        except Exception as exc:  # noqa: BLE001 - setup should degrade gracefully offline.
+            if not mondo_download_error:
+                mondo_download_error = str(exc)
+
+    method_counts: Counter[str] = Counter()
+    supplement_rows: list[dict[str, str]] = []
+    total_codes = 0
+    base_covered_codes = 0
+
+    def method_for_sources(sources: set[str]) -> str:
+        if "mondo_sssom" in sources and "efo_obo_xref" in sources:
+            return "icd10_supplement_mondo_sssom_efo_obo_xref"
+        if "mondo_sssom" in sources:
+            return "icd10_supplement_mondo_sssom"
+        return "icd10_supplement_efo_obo_xref"
+
+    sortable_codes = sorted(
+        code_to_term_ids.keys(),
+        key=lambda code: (code[:1], int(re.sub(r"\D", "", code[:3]) or 0), code),
+    )
+    for code in sortable_codes:
+        total_codes += 1
+        if code in base_icd10_codes:
+            base_covered_codes += 1
+            continue
+        selected = pick_preferred_ontology_term(code_to_term_ids.get(code, set()), ontology_terms=ontology_terms)
+        if selected is None:
+            continue
+        mapped_id, mapped_label = selected
+        method = method_for_sources(code_sources.get(code, set()))
+        method_counts[method] += 1
+        supplement_rows.append(
+            {
+                "UKBB data field": "-",
+                "ICD10": code,
+                "PheCode": "-",
+                "Lookup text": f"ICD10 {code} {mapped_label}",
+                "Curated reported trait": f"ICD10 {code}: {mapped_label}",
+                "main ontology URI(s)": mapped_id,
+                "main ontology label(s)": mapped_label,
+                "Publication": ICD10_SUPPLEMENT_PUBLICATION,
+                "User submitted trait": "-",
+                "qc_status": "review_required",
+                "qc_resolution_modes": method,
+                "qc_label_match_modes": method,
+                "qc_unresolved_ids": "",
+                "final_update_applied": "yes",
+                "final_update_reason": "icd10_supplement_cache_generated",
+            }
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=TRAIT_CACHE_COLUMNS,
+            delimiter="\t",
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(supplement_rows)
+
+    return {
+        "total_codes": total_codes,
+        "base_covered_codes": base_covered_codes,
+        "supplement_rows": len(supplement_rows),
+        "method_efo_obo_xref": method_counts.get("icd10_supplement_efo_obo_xref", 0),
+        "method_mondo_sssom": method_counts.get("icd10_supplement_mondo_sssom", 0),
+        "method_mondo_sssom_efo_obo_xref": method_counts.get(
+            "icd10_supplement_mondo_sssom_efo_obo_xref", 0
+        ),
+        "mondo_url_used": mondo_url,
+        "mondo_cache_path": str(mondo_sssom_cache_path),
+        "mondo_cache_source": mondo_cache_source,
+        "mondo_cache_used": mondo_cache_used,
+        "mondo_mapping_codes": mondo_mapping_codes,
+        "mondo_downloaded": mondo_downloaded,
+        "mondo_codes_added": mondo_codes_added,
+        "mondo_terms_not_in_efo": mondo_terms_not_in_efo,
+        "mondo_download_error": mondo_download_error,
+    }
+
+
+def build_ukb_field_supplement_cache(
+    *,
+    output_path: Path,
+    trait_cache_path: Path,
+    efo_obo_path: Path,
+    ukb_field_catalog_path: Path | None,
+    ukb_field_metadata_path: Path | None,
+    ukb_category_catalog_path: Path | None,
+    ukb_category_tree_path: Path | None,
+) -> dict[str, int]:
+    if ukb_field_metadata_path is None or not ukb_field_metadata_path.exists():
+        raise FileNotFoundError(
+            "UKB field metadata is required to build supplemental field cache: "
+            f"{ukb_field_metadata_path}"
+        )
+
+    trait_cache_index = load_trait_cache_index(trait_cache_path)
+    ontology_index = load_trait_ontology_index(efo_obo_path)
+    trait_cache_resolution, _, _ = build_trait_cache_term_resolution(trait_cache_index, ontology_index)
+    records: list[TraitCacheRecord] = trait_cache_index.get("records", [])
+    ukb_field_index: dict[str, list[int]] = trait_cache_index.get("ukb_field_index", {})
+    text_exact_index: dict[str, list[int]] = trait_cache_index.get("text_exact_index", {})
+    ontology_terms: dict[str, TraitOntologyTerm] = ontology_index.get("terms", {})
+    ontology_exact_index: dict[str, set[str]] = ontology_index.get("exact_index", {})
+    ontology_token_index: dict[str, set[str]] = ontology_index.get("token_index", {})
+    ontology_token_freq: Counter[str] = ontology_index.get("token_freq", Counter())
+
+    ukb_field_titles = load_ukb_field_title_index(ukb_field_catalog_path)
+    metadata_field_titles = load_ukb_field_title_index(ukb_field_metadata_path)
+    for field_id, title in metadata_field_titles.items():
+        if field_id in ukb_field_titles:
+            continue
+        ukb_field_titles[field_id] = title
+
+    ukb_field_to_category, ukb_category_to_fields = load_ukb_field_category_index(ukb_field_metadata_path)
+    ukb_category_titles = load_ukb_category_title_index(ukb_category_catalog_path)
+    ukb_category_parents = load_ukb_category_parent_index(ukb_category_tree_path)
+
+    def resolve_record(record: TraitCacheRecord) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        resolved = trait_cache_resolution.get(record.rownum)
+        if resolved is not None:
+            return resolved
+        if record.mapped_ids:
+            return record.mapped_ids, record.mapped_labels
+        return None
+
+    def choose_mapping_from_records(
+        matched_records: list[TraitCacheRecord],
+        *,
+        method: str,
+        matched_on: str,
+    ) -> tuple[str, str, str] | None:
+        candidates = collapse_trait_cache_candidates(
+            matched_records,
+            method=method,
+            score=0.9,
+            matched_on=matched_on,
+            validated_if_unique=False,
+            record_resolver=resolve_record,
+        )
+        if len(candidates) != 1:
+            return None
+        pair = pick_preferred_mapping_pair(candidates[0].efo_id, candidates[0].label)
+        if pair is None:
+            return None
+        mapped_id, mapped_label = pair
+        return mapped_id, mapped_label, method
+
+    def choose_mapping_from_ontology_fuzzy(
+        text: str,
+        *,
+        method: str,
+        min_score: float = 0.88,
+        min_margin: float = 0.04,
+    ) -> tuple[str, str, str] | None:
+        query_norm = normalize_trait_text_for_similarity(text)
+        query_tokens = informative_trait_tokens(query_norm)
+        if not query_norm or not query_tokens:
+            return None
+        seed_tokens = pick_seed_tokens(query_tokens, ontology_token_freq, max_tokens=7)
+        candidate_term_ids: set[str] = set()
+        for tok in seed_tokens:
+            candidate_term_ids |= ontology_token_index.get(tok, set())
+        if not candidate_term_ids:
+            return None
+
+        scored_terms: list[tuple[float, str]] = []
+        for term_id in candidate_term_ids:
+            term = ontology_terms.get(term_id)
+            if term is None:
+                continue
+            best_score = trait_similarity_score(query_norm, query_tokens, term.label)
+            for syn in term.synonyms[:10]:
+                best_score = max(best_score, trait_similarity_score(query_norm, query_tokens, syn))
+            if best_score <= 0.0:
+                continue
+            scored_terms.append((best_score, term_id))
+        if not scored_terms:
+            return None
+
+        scored_terms.sort(
+            key=lambda item: (
+                item[0],
+                -TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(item[1]), 999),
+                item[1],
+            ),
+            reverse=True,
+        )
+        top_score, top_id = scored_terms[0]
+        second_score = scored_terms[1][0] if len(scored_terms) > 1 else 0.0
+        if top_score < min_score:
+            return None
+        if (top_score - second_score) < min_margin:
+            return None
+        top_term = ontology_terms.get(top_id)
+        if top_term is None:
+            return None
+        return top_term.term_id, top_term.label, method
+
+    def category_context(category_id: str) -> tuple[str, tuple[str, ...]]:
+        category_title = normalize(ukb_category_titles.get(category_id, ""))
+        path_titles = ukb_category_path_titles(
+            category_id,
+            category_titles=ukb_category_titles,
+            category_parents=ukb_category_parents,
+        )
+        return category_title, path_titles
+
+    category_default_mapping: dict[str, tuple[str, str, str]] = {}
+    for category_id in sorted({normalize(cat) for cat in ukb_field_to_category.values() if normalize(cat)}):
+        category_title, path_titles = category_context(category_id)
+        category_field_ids = tuple(normalize(item) for item in ukb_category_to_fields.get(category_id, ()) if normalize(item))
+        matched_record_idxs: list[int] = []
+        seen_rec_idxs: set[int] = set()
+        for field_id in category_field_ids:
+            for rec_idx in ukb_field_index.get(field_id, []):
+                record = records[rec_idx]
+                if record.is_ukb_field_supplement:
+                    continue
+                if rec_idx in seen_rec_idxs:
+                    continue
+                seen_rec_idxs.add(rec_idx)
+                matched_record_idxs.append(rec_idx)
+        if matched_record_idxs:
+            matched_records = [records[idx] for idx in matched_record_idxs]
+            chosen = choose_mapping_from_records(
+                matched_records,
+                method="ukb_field_supplement_category_cache_unique",
+                matched_on="UKB category field set",
+            )
+            if chosen is not None and is_generic_ukb_measurement_mapping(chosen[0], chosen[1]):
+                chosen = None
+            if chosen is not None:
+                category_default_mapping[category_id] = chosen
+                continue
+
+        category_exact_keys: list[str] = []
+        for variant in ukb_category_query_variants(category_id, category_title, path_titles):
+            key = norm_key(variant)
+            if key and key not in category_exact_keys:
+                category_exact_keys.append(key)
+        for title in path_titles:
+            key = norm_key(title)
+            if key and key not in category_exact_keys:
+                category_exact_keys.append(key)
+
+        matched_record_idxs = []
+        seen_rec_idxs = set()
+        for key in category_exact_keys:
+            for rec_idx in text_exact_index.get(key, []):
+                record = records[rec_idx]
+                if record.is_ukb_field_supplement:
+                    continue
+                if rec_idx in seen_rec_idxs:
+                    continue
+                seen_rec_idxs.add(rec_idx)
+                matched_record_idxs.append(rec_idx)
+        if matched_record_idxs:
+            matched_records = [records[idx] for idx in matched_record_idxs]
+            chosen = choose_mapping_from_records(
+                matched_records,
+                method="ukb_field_supplement_category_text_exact",
+                matched_on="UKB category title/path text",
+            )
+            if chosen is not None and is_generic_ukb_measurement_mapping(chosen[0], chosen[1]):
+                chosen = None
+            if chosen is not None:
+                category_default_mapping[category_id] = chosen
+                continue
+
+        exact_term_ids: set[str] = set()
+        for key in category_exact_keys:
+            exact_term_ids |= ontology_exact_index.get(key, set())
+        selected_term = pick_preferred_ontology_term(exact_term_ids, ontology_terms=ontology_terms)
+        if selected_term is not None:
+            term_id, term_label = selected_term
+            category_default_mapping[category_id] = (
+                term_id,
+                term_label,
+                "ukb_field_supplement_category_ontology_exact",
+            )
+            continue
+
+        category_text = " ".join([category_title, *path_titles]).lower()
+        looks_disease = (
+            has_disease_hint(category_text)
+            or any(phrase in category_text for phrase in UKB_DISEASE_CATEGORY_PHRASES)
+        )
+        if looks_disease:
+            category_default_mapping[category_id] = (
+                UKB_FIELD_SUPPLEMENT_GENERIC_DISEASE_ID,
+                UKB_FIELD_SUPPLEMENT_GENERIC_DISEASE_LABEL,
+                "ukb_field_supplement_generic_disease",
+            )
+        else:
+            category_default_mapping[category_id] = (
+                UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_ID,
+                UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_LABEL,
+                "ukb_field_supplement_generic_measurement",
+            )
+
+    base_covered_fields = set(ukb_field_index.keys())
+    supplement_rows: list[dict[str, str]] = []
+    method_counts: Counter[str] = Counter()
+    total_fields = 0
+
+    def make_row(field_id: str, field_title: str, mapped_id: str, mapped_label: str, method: str) -> dict[str, str]:
+        clean_title = normalize(field_title) or f"UKB field {field_id}"
+        return {
+            "UKBB data field": field_id,
+            "ICD10": "-",
+            "PheCode": "-",
+            "Lookup text": clean_title,
+            "Curated reported trait": f"{clean_title} (UKB data field {field_id})",
+            "main ontology URI(s)": mapped_id,
+            "main ontology label(s)": mapped_label,
+            "Publication": UKB_FIELD_SUPPLEMENT_PUBLICATION,
+            "User submitted trait": "-",
+            "qc_status": "review_required",
+            "qc_resolution_modes": method,
+            "qc_label_match_modes": method,
+            "qc_unresolved_ids": "",
+            "final_update_applied": "yes",
+            "final_update_reason": "ukb_field_supplement_cache_generated",
+        }
+
+    sortable_fields = sorted(
+        ukb_field_titles.items(),
+        key=lambda item: (int(item[0]) if item[0].isdigit() else 10**9, item[0]),
+    )
+    for field_id, field_title in sortable_fields:
+        if not field_id:
+            continue
+        total_fields += 1
+        if field_id in base_covered_fields:
+            continue
+
+        chosen_mapping: tuple[str, str, str] | None = None
+        field_exact_keys: list[str] = []
+        for variant in ukb_title_query_variants(field_id, field_title):
+            key = norm_key(variant)
+            if key and key not in field_exact_keys:
+                field_exact_keys.append(key)
+
+        matched_record_idxs: list[int] = []
+        seen_rec_idxs: set[int] = set()
+        for key in field_exact_keys:
+            for rec_idx in text_exact_index.get(key, []):
+                record = records[rec_idx]
+                if record.is_ukb_field_supplement:
+                    continue
+                if rec_idx in seen_rec_idxs:
+                    continue
+                seen_rec_idxs.add(rec_idx)
+                matched_record_idxs.append(rec_idx)
+        if matched_record_idxs:
+            matched_records = [records[idx] for idx in matched_record_idxs]
+            chosen_mapping = choose_mapping_from_records(
+                matched_records,
+                method="ukb_field_supplement_field_title_cache_exact",
+                matched_on="UKB field title",
+            )
+            if (
+                chosen_mapping is not None
+                and is_generic_ukb_measurement_mapping(chosen_mapping[0], chosen_mapping[1])
+            ):
+                chosen_mapping = None
+
+        if chosen_mapping is None:
+            exact_term_ids: set[str] = set()
+            for key in field_exact_keys:
+                exact_term_ids |= ontology_exact_index.get(key, set())
+            selected_term = pick_preferred_ontology_term(exact_term_ids, ontology_terms=ontology_terms)
+            if selected_term is not None:
+                term_id, term_label = selected_term
+                chosen_mapping = (
+                    term_id,
+                    term_label,
+                    "ukb_field_supplement_field_title_ontology_exact",
+                )
+                if is_generic_ukb_measurement_mapping(chosen_mapping[0], chosen_mapping[1]):
+                    chosen_mapping = None
+
+        if chosen_mapping is None:
+            chosen_mapping = choose_mapping_from_ontology_fuzzy(
+                field_title,
+                method="ukb_field_supplement_field_title_ontology_fuzzy",
+                min_score=0.95,
+                min_margin=0.02,
+            )
+
+        if chosen_mapping is None:
+            category_id = normalize(ukb_field_to_category.get(field_id, ""))
+            chosen_mapping = category_default_mapping.get(category_id)
+
+        if chosen_mapping is None:
+            chosen_mapping = (
+                UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_ID,
+                UKB_FIELD_SUPPLEMENT_GENERIC_MEASUREMENT_LABEL,
+                "ukb_field_supplement_generic_measurement",
+            )
+
+        mapped_id, mapped_label, method = chosen_mapping
+        method_counts[method] += 1
+        supplement_rows.append(make_row(field_id, field_title, mapped_id, mapped_label, method))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=TRAIT_CACHE_COLUMNS,
+            delimiter="\t",
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(supplement_rows)
+
+    return {
+        "total_fields": total_fields,
+        "base_covered_fields": len(base_covered_fields & set(ukb_field_titles)),
+        "supplement_rows": len(supplement_rows),
+        "method_category_cache_unique": method_counts.get("ukb_field_supplement_category_cache_unique", 0),
+        "method_category_text_exact": method_counts.get("ukb_field_supplement_category_text_exact", 0),
+        "method_category_ontology_exact": method_counts.get("ukb_field_supplement_category_ontology_exact", 0),
+        "method_field_title_cache_exact": method_counts.get("ukb_field_supplement_field_title_cache_exact", 0),
+        "method_field_title_ontology_exact": method_counts.get("ukb_field_supplement_field_title_ontology_exact", 0),
+        "method_field_title_ontology_fuzzy": method_counts.get("ukb_field_supplement_field_title_ontology_fuzzy", 0),
+        "method_generic_disease": method_counts.get("ukb_field_supplement_generic_disease", 0),
+        "method_generic_measurement": method_counts.get("ukb_field_supplement_generic_measurement", 0),
+    }
+
+
 def confidence_bucket(score: float) -> str:
     if score >= 0.93:
         return "high"
@@ -2159,6 +4014,7 @@ def make_trait_provenance(
     *,
     method: str,
     input_type: str,
+    trait_scale: str,
     input_value: str,
     matched_on: str,
     mapped_ids: str,
@@ -2174,6 +4030,7 @@ def make_trait_provenance(
         "mapping_provenance=v1;"
         f"method={method};"
         f"input_type={input_type};"
+        f"trait_scale={trait_scale};"
         f"input_value={input_value};"
         f"normalized_input={normalized_input};"
         f"matched_on={matched_on};"
@@ -2197,16 +4054,154 @@ def trait_candidate_prefix_rank(candidate_id: str) -> int:
     return best
 
 
+def mondo_import_qc(
+    mapped_id_text: str,
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+) -> tuple[str, str]:
+    mapped_ids = [canonicalize_trait_ontology_id(part) for part in split_multi_ids(mapped_id_text)]
+    mapped_ids = [item for item in mapped_ids if item]
+    if not mapped_ids:
+        return "", ""
+
+    missing_mondo_ids = [
+        item
+        for item in mapped_ids
+        if trait_ontology_prefix(item) == "MONDO" and item not in ontology_terms
+    ]
+    if not missing_mondo_ids:
+        return "", ""
+
+    has_active_non_mondo = any(
+        item in ontology_terms and trait_ontology_prefix(item) in {"EFO", "OBA", "HP", "NCIT"}
+        for item in mapped_ids
+    )
+    if has_active_non_mondo:
+        return "", ""
+
+    return "term not in EFO", "|".join(missing_mondo_ids)
+
+
+def trait_term_branch(
+    *,
+    term_id: str,
+    label: str,
+    ontology_terms: dict[str, TraitOntologyTerm],
+    measurement_term_ids: set[str],
+) -> str:
+    oid = canonicalize_trait_ontology_id(term_id)
+    term = ontology_terms.get(oid)
+    text = norm_key(label or (term.label if term is not None else ""))
+    toks = tokenize(text)
+    prefix = trait_ontology_prefix(oid)
+
+    if oid in measurement_term_ids:
+        return "measurement"
+    if prefix == "OBA":
+        return "measurement"
+    if toks & MEASUREMENT_HINT_TOKENS:
+        return "measurement"
+    if has_disease_hint(text):
+        return "non_measurement"
+    if prefix in {"MONDO", "HP"}:
+        return "non_measurement"
+    if text:
+        # Default unresolved trait labels to non-measurement so quantitative
+        # inputs only auto-validate when measurement evidence is explicit.
+        return "non_measurement"
+    return "unknown"
+
+
+def trait_candidate_branch(
+    *,
+    mapped_id_text: str,
+    mapped_label_text: str,
+    ontology_terms: dict[str, TraitOntologyTerm],
+    measurement_term_ids: set[str],
+) -> str:
+    mapped_ids = [canonicalize_trait_ontology_id(part) for part in split_multi_ids(mapped_id_text)]
+    mapped_ids = [item for item in mapped_ids if item]
+    if not mapped_ids:
+        return "unknown"
+
+    labels = split_multi_labels(mapped_label_text, expected_n=len(mapped_ids))
+    measurement_count = 0
+    non_measurement_count = 0
+    unknown_count = 0
+    for idx, term_id in enumerate(mapped_ids):
+        label = normalize(labels[idx] if idx < len(labels) else "")
+        branch = trait_term_branch(
+            term_id=term_id,
+            label=label,
+            ontology_terms=ontology_terms,
+            measurement_term_ids=measurement_term_ids,
+        )
+        if branch == "measurement":
+            measurement_count += 1
+        elif branch == "non_measurement":
+            non_measurement_count += 1
+        else:
+            unknown_count += 1
+
+    if measurement_count and non_measurement_count:
+        return "mixed"
+    if measurement_count:
+        return "measurement"
+    if non_measurement_count:
+        return "non_measurement"
+    if unknown_count:
+        return "unknown"
+    return "unknown"
+
+
+def trait_scale_mismatch(trait_scale: str, candidate_branch: str) -> bool:
+    scale = normalize_trait_scale(trait_scale)
+    if scale == "auto":
+        return False
+    if scale == "quantitative":
+        return candidate_branch in {"non_measurement", "mixed"}
+    if scale == "binary":
+        return candidate_branch in {"measurement", "mixed"}
+    return False
+
+
+def trait_scale_score_adjustment(trait_scale: str, candidate_branch: str) -> float:
+    scale = normalize_trait_scale(trait_scale)
+    if scale == "auto" or candidate_branch == "unknown":
+        return 0.0
+    if trait_scale_mismatch(scale, candidate_branch):
+        return -0.20
+    return 0.06
+
+
 TRAIT_OUTPUT_FIELDS = [
+    "input_row_id",
     "input_query",
+    "negation",
     "input_type",
+    "input_trait_scale",
+    "input_source_code",
+    "input_source_data_type",
     "input_icd10",
+    "input_icd10_label",
     "input_phecode",
+    "input_ukb_field_id",
+    "input_ukb_field_label",
+    "input_ukb_category_id",
+    "input_ukb_category_label",
+    "input_ukb_category_path",
     "mapped_trait_id",
     "mapped_trait_label",
     "confidence",
     "matched_via",
+    "matched_on",
+    "source_file",
     "validation",
+    "qc_review_flag",
+    "specificity_loss_flag",
+    "specificity_loss_notes",
+    "term_not_in_efo",
+    "mondo_missing_ids",
     "evidence",
     "provenance",
 ]
@@ -2236,6 +4231,8 @@ def map_trait_queries(
 ) -> list[dict[str, str]]:
     records: list[TraitCacheRecord] = trait_cache_index["records"]
     icd10_index: dict[str, list[int]] = trait_cache_index["icd10_index"]
+    icd10_label_index: dict[str, tuple[str, ...]] = trait_cache_index.get("icd10_label_index", {})
+    official_icd10_label_index: dict[str, tuple[str, ...]] = trait_cache_index.get("official_icd10_label_index", {})
     phecode_index: dict[str, list[int]] = trait_cache_index["phecode_index"]
     ukb_field_index: dict[str, list[int]] = trait_cache_index.get("ukb_field_index", {})
     text_exact_index: dict[str, list[int]] = trait_cache_index["text_exact_index"]
@@ -2243,9 +4240,11 @@ def map_trait_queries(
     cache_token_freq: Counter[str] = trait_cache_index["token_freq"]
 
     ontology_terms: dict[str, TraitOntologyTerm] = ontology_index["terms"]
+    measurement_term_ids: set[str] = set(ontology_index.get("measurement_term_ids", set()))
     ontology_exact_index: dict[str, set[str]] = ontology_index["exact_index"]
     ontology_token_index: dict[str, set[str]] = ontology_index["token_index"]
     ontology_token_freq: Counter[str] = ontology_index["token_freq"]
+    ontology_icd10_xref_index: dict[str, set[str]] = ontology_index.get("icd10_xref_index", {})
     ukb_field_titles = ukb_field_titles or {}
     ukb_category_titles = ukb_category_titles or {}
     ukb_category_parents = ukb_category_parents or {}
@@ -2274,9 +4273,15 @@ def map_trait_queries(
 
     via_rank = {
         "cache_exact_icd10": 0,
+        "cache_exact_icd10_supplement": 0,
+        "cache_parent_icd10": 1,
+        "cache_parent_icd10_supplement": 1,
         "cache_exact_phecode": 1,
+        "efo_obo_exact_icd10_xref": 1,
+        "efo_obo_parent_icd10_xref": 2,
         "cache_exact_text": 2,
         "cache_exact_ukb_field": 2,
+        "cache_exact_ukb_field_supplement": 2,
         "cache_exact_ukb_field_title": 2,
         "cache_exact_ukb_category": 2,
         "cache_exact_ukb_category_title": 2,
@@ -2422,25 +4427,50 @@ def map_trait_queries(
                 ukb_field_fallback_cache[fid] = precomputed
 
     for item in query_inputs:
+        input_row_id = normalize(item.get("row_id", ""))
         query = normalize(item.get("query", ""))
         input_type = normalize_trait_input_type(item.get("input_type", "auto"))
+        trait_scale = normalize_trait_scale(item.get("trait_scale", "auto"))
+        source_code = normalize(item.get("source_code", ""))
+        source_data_type = normalize(item.get("source_data_type", ""))
         icd10 = normalize_icd10_code(item.get("icd10", ""))
+        icd10_label = ""
+        icd10_match_label = ""
         phecode = normalize_phecode(item.get("phecode", ""))
+        parsed_query_icd10, parsed_query_icd10_label = parse_icd10_labeled_trait_text(query)
+        if parsed_query_icd10_label and (not icd10 or parsed_query_icd10 == icd10):
+            icd10_label = parsed_query_icd10_label
+            icd10_match_label = parsed_query_icd10_label
 
+        if icd10 and not is_strict_icd10_code(icd10):
+            icd10 = ""
         if input_type == "icd10" and not icd10:
-            icd10 = normalize_icd10_code(query)
+            source_code_icd10 = normalize_icd10_code(source_code)
+            if is_strict_icd10_code(source_code_icd10):
+                icd10 = source_code_icd10
+        if input_type == "icd10" and not icd10 and is_strict_icd10_code(parsed_query_icd10):
+            icd10 = parsed_query_icd10
+        if input_type == "icd10" and not icd10:
+            query_icd10 = normalize_icd10_code(query)
+            if is_strict_icd10_code(query_icd10):
+                icd10 = query_icd10
+        if icd10 and not icd10_label and parsed_query_icd10_label and parsed_query_icd10 == icd10:
+            icd10_label = parsed_query_icd10_label
+            icd10_match_label = parsed_query_icd10_label
+        if icd10 and not icd10_label:
+            official_icd10_labels = tuple(label for label in official_icd10_label_index.get(icd10, ()) if label)
+            if official_icd10_labels:
+                icd10_label = "|".join(official_icd10_labels)
+                if len(official_icd10_labels) == 1:
+                    icd10_match_label = official_icd10_labels[0]
+        if icd10 and not icd10_label:
+            cached_icd10_labels = tuple(label for label in icd10_label_index.get(icd10, ()) if label)
+            if cached_icd10_labels:
+                icd10_label = "|".join(cached_icd10_labels)
+                if len(cached_icd10_labels) == 1:
+                    icd10_match_label = cached_icd10_labels[0]
         if input_type == "phecode" and not phecode:
             phecode = normalize_phecode(query)
-
-        if input_type == "auto":
-            if icd10:
-                input_type = "icd10"
-            elif phecode:
-                input_type = "phecode"
-            else:
-                input_type = "trait_text"
-        if not query:
-            query = icd10 or phecode
 
         query_norm_hint = norm_key(query)
         ukb_field_ids = extract_ukb_field_ids(query)
@@ -2450,6 +4480,65 @@ def map_trait_queries(
                 maybe_field_id = normalize(numeric_field_match.group(1))
                 if maybe_field_id and (maybe_field_id in ukb_field_titles or maybe_field_id in ukb_field_to_category):
                     ukb_field_ids = (maybe_field_id,)
+
+        if input_type == "auto":
+            if icd10:
+                input_type = "icd10"
+            elif extract_ukb_field_ids(query):
+                input_type = "ukb_field"
+            elif phecode or looks_like_phecode_token(query):
+                input_type = "phecode"
+                if not phecode:
+                    phecode = normalize_phecode(query)
+            else:
+                input_type = "trait_text"
+        elif input_type == "ukb_field" and not ukb_field_ids and query:
+            numeric_field_match = re.fullmatch(r"(?:f)?([0-9]{1,7})", query_norm_hint)
+            if numeric_field_match:
+                ukb_field_ids = (normalize(numeric_field_match.group(1)),)
+        if not query:
+            query = icd10 or phecode
+
+        query_for_matching = query
+        prefer_icd10_from_ukb = False
+        parsed_ukb_field_id = ""
+        if input_type == "ukb_field" and query:
+            parsed_field_id, parsed_code, parsed_label = parse_ukb_hashed_trait_text(query)
+            parsed_ukb_field_id = parsed_field_id
+            if parsed_field_id and parsed_field_id not in ukb_field_ids:
+                ukb_field_ids = (*ukb_field_ids, parsed_field_id)
+            if parsed_label:
+                query_for_matching = parsed_label
+            elif parsed_code:
+                query_for_matching = parsed_code
+
+            # For UKB rows that carry explicit ICD10 values inside coded text,
+            # route through the ICD10 exact pathway when the field metadata
+            # explicitly indicates ICD10 coding.
+            if parsed_code and parsed_field_id:
+                field_title_key = norm_key(ukb_field_titles.get(parsed_field_id, ""))
+                if "icd10" in field_title_key:
+                    prefer_icd10_from_ukb = True
+                    if not icd10:
+                        code_icd10 = normalize_icd10_code(parsed_code)
+                        if is_strict_icd10_code(code_icd10):
+                            icd10 = code_icd10
+
+        if not icd10 and query:
+            allow_query_icd10_inference = (
+                input_type != "ukb_field" or not parsed_ukb_field_id or prefer_icd10_from_ukb
+            )
+            if allow_query_icd10_inference:
+                inferred_icd10 = normalize_icd10_code(query)
+                if is_strict_icd10_code(inferred_icd10):
+                    icd10 = inferred_icd10
+        if input_type == "icd10" and icd10_match_label:
+            query_for_matching = icd10_match_label
+
+        if not query_for_matching:
+            query_for_matching = query
+
+        query_norm_hint = norm_key(query)
         ukb_category_ids = extract_ukb_category_ids(query)
         if not ukb_category_ids and query_norm_hint and ukb_category_title_norms:
             inferred_category_ids = tuple(
@@ -2459,6 +4548,19 @@ def map_trait_queries(
             )
             if inferred_category_ids:
                 ukb_category_ids = inferred_category_ids
+
+        resolved_ukb_category_ids: list[str] = []
+        seen_category_ids: set[str] = set()
+        for category_id in ukb_category_ids:
+            cid = normalize(category_id)
+            if cid and cid not in seen_category_ids:
+                seen_category_ids.add(cid)
+                resolved_ukb_category_ids.append(cid)
+        for field_id in ukb_field_ids:
+            category_id = normalize(ukb_field_to_category.get(field_id, ""))
+            if category_id and category_id not in seen_category_ids:
+                seen_category_ids.add(category_id)
+                resolved_ukb_category_ids.append(category_id)
 
         ukb_exact_text_keys: list[str] = []
         ukb_primary_title = ""
@@ -2500,11 +4602,45 @@ def map_trait_queries(
                     if key and key not in ukb_category_field_exact_text_keys:
                         ukb_category_field_exact_text_keys.append(key)
 
-        cache_key = (query, input_type, icd10, phecode)
+        ukb_field_label_values = [
+            normalize(ukb_field_titles.get(field_id, ""))
+            for field_id in ukb_field_ids
+            if normalize(ukb_field_titles.get(field_id, ""))
+        ]
+        ukb_category_label_values = [
+            normalize(ukb_category_titles.get(category_id, ""))
+            for category_id in resolved_ukb_category_ids
+            if normalize(ukb_category_titles.get(category_id, ""))
+        ]
+        ukb_category_path_values = [
+            " > ".join(
+                title
+                for title in ukb_category_path_titles(
+                    category_id,
+                    category_titles=ukb_category_titles,
+                    category_parents=ukb_category_parents,
+                )
+                if title
+            )
+            for category_id in resolved_ukb_category_ids
+        ]
+        ukb_category_path_values = [value for value in ukb_category_path_values if value]
+        ukb_field_id_text = "|".join(ukb_field_ids)
+        ukb_field_label_text = "|".join(ukb_field_label_values)
+        ukb_category_id_text = "|".join(resolved_ukb_category_ids)
+        ukb_category_label_text = "|".join(ukb_category_label_values)
+        ukb_category_path_text = "|".join(ukb_category_path_values)
+
+        cache_key = (query, input_type, trait_scale, icd10, phecode)
         if memoize_queries and cache_key in query_result_cache:
             cached_rows = query_result_cache[cache_key]
             for cached in cached_rows:
                 row = dict(cached)
+                row["input_row_id"] = input_row_id
+                row["input_query"] = query
+                row["input_trait_scale"] = trait_scale
+                row["input_source_code"] = source_code
+                row["input_source_data_type"] = source_data_type
                 if row_callback is not None:
                     row_callback(row)
                 if collect_rows:
@@ -2512,11 +4648,14 @@ def map_trait_queries(
             progress.update()
             continue
 
-        query_norm = norm_key(query)
-        query_match_norm = normalize_trait_text_for_similarity(query)
+        query_exact_norms = trait_query_exact_norm_variants(query_for_matching)
+        query_exact_key_set = {key for key in query_exact_norms if key}
+        query_norm = query_exact_norms[0] if query_exact_norms else ""
+        query_match_norm = normalize_trait_text_for_similarity(query_for_matching)
         query_tokens = informative_trait_tokens(query_match_norm or query_norm)
-        has_ontology_exact = bool(query_norm and ontology_exact_index.get(query_norm))
-        if not has_ontology_exact and ukb_exact_text_keys:
+        query_has_negation = trait_has_negation(query) or trait_has_negation(query_for_matching)
+        has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in query_exact_norms)
+        if not has_ontology_exact and ukb_exact_text_keys and not prefer_icd10_from_ukb:
             has_ontology_exact = any(bool(ontology_exact_index.get(key)) for key in ukb_exact_text_keys)
 
         fuzzy_query_norm = query_match_norm
@@ -2526,18 +4665,161 @@ def map_trait_queries(
         best_any: list[Candidate] = []
         generated_rows: list[dict[str, str]] = []
 
+        if input_type == "trait_text" and trait_is_noninformative_negation(query_for_matching):
+            generated_rows.append(
+                {
+                    "input_row_id": input_row_id,
+                    "input_query": query,
+                    "negation": "yes",
+                    "input_type": input_type,
+                    "input_trait_scale": trait_scale,
+                    "input_source_code": source_code,
+                    "input_source_data_type": source_data_type,
+                    "input_icd10": icd10,
+                    "input_icd10_label": icd10_label,
+                    "input_phecode": phecode,
+                    "input_ukb_field_id": ukb_field_id_text,
+                    "input_ukb_field_label": ukb_field_label_text,
+                    "input_ukb_category_id": ukb_category_id_text,
+                    "input_ukb_category_label": ukb_category_label_text,
+                    "input_ukb_category_path": ukb_category_path_text,
+                    "mapped_trait_id": "",
+                    "mapped_trait_label": "",
+                    "confidence": "0.000",
+                    "matched_via": "none",
+                    "matched_on": "",
+                    "source_file": "",
+                    "validation": "not_mapped",
+                    "qc_review_flag": "yes",
+                    "specificity_loss_flag": "no",
+                    "specificity_loss_notes": "",
+                    "term_not_in_efo": "",
+                    "mondo_missing_ids": "",
+                    "evidence": "non-informative negation trait option",
+                    "provenance": "",
+                }
+            )
+            if memoize_queries and len(query_result_cache) < max(0, query_cache_max_entries):
+                query_result_cache[cache_key] = tuple(dict(row) for row in generated_rows)
+            for row in generated_rows:
+                if row_callback is not None:
+                    row_callback(dict(row))
+                if collect_rows:
+                    rows.append(dict(row))
+            progress.update()
+            continue
+
         if icd10 and icd10 in icd10_index:
             matched_records = [records[idx] for idx in icd10_index[icd10]]
-            candidates.extend(
-                collapse_trait_cache_candidates(
-                    matched_records,
-                    method="cache_exact_icd10",
-                    score=1.0,
-                    matched_on="ICD10",
-                    validated_if_unique=True,
+            curated_records = [record for record in matched_records if not record.is_icd10_supplement]
+            supplemental_records = [record for record in matched_records if record.is_icd10_supplement]
+            if curated_records:
+                candidates.extend(
+                    collapse_trait_cache_candidates(
+                        curated_records,
+                        method="cache_exact_icd10",
+                        score=1.0,
+                        matched_on="ICD10",
+                        validated_if_unique=True,
+                        record_resolver=resolve_record,
+                    )
+                )
+            elif supplemental_records:
+                icd10_supplement_candidates = collapse_trait_cache_candidates(
+                    supplemental_records,
+                    method="cache_exact_icd10_supplement",
+                    score=0.93,
+                    matched_on="ICD10 supplemental cache",
+                    validated_if_unique=False,
                     record_resolver=resolve_record,
                 )
-            )
+                if len(icd10_supplement_candidates) == 1:
+                    candidates.extend(icd10_supplement_candidates)
+
+        if not candidates and icd10:
+            for parent_icd10 in icd10_parent_fallback_codes(icd10):
+                if parent_icd10 not in icd10_index:
+                    continue
+                matched_records = [records[idx] for idx in icd10_index[parent_icd10]]
+                curated_records = [record for record in matched_records if not record.is_icd10_supplement]
+                supplemental_records = [record for record in matched_records if record.is_icd10_supplement]
+                if curated_records:
+                    parent_candidates = collapse_trait_cache_candidates(
+                        curated_records,
+                        method="cache_parent_icd10",
+                        score=0.90,
+                        matched_on=f"ICD10 parent fallback ({parent_icd10})",
+                        validated_if_unique=False,
+                        record_resolver=resolve_record,
+                    )
+                    if parent_candidates:
+                        candidates.extend(parent_candidates)
+                        break
+                if supplemental_records:
+                    parent_supplement_candidates = collapse_trait_cache_candidates(
+                        supplemental_records,
+                        method="cache_parent_icd10_supplement",
+                        score=0.86,
+                        matched_on=f"ICD10 parent supplemental fallback ({parent_icd10})",
+                        validated_if_unique=False,
+                        record_resolver=resolve_record,
+                    )
+                    if len(parent_supplement_candidates) == 1:
+                        candidates.extend(parent_supplement_candidates)
+                        break
+
+        if not candidates and icd10:
+            xref_term_ids = ontology_icd10_xref_index.get(icd10, set())
+            if xref_term_ids:
+                ordered = sorted(
+                    (term_id for term_id in xref_term_ids if term_id in ontology_terms),
+                    key=lambda tid: (
+                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        tid,
+                    ),
+                )
+                if ordered:
+                    for term_id in ordered[: max(top_k, 5)]:
+                        term = ontology_terms[term_id]
+                        candidates.append(
+                            Candidate(
+                                efo_id=term.term_id,
+                                label=term.label,
+                                score=0.94 if len(ordered) == 1 else 0.88,
+                                matched_via="efo_obo_exact_icd10_xref",
+                                evidence="exact ICD10 xref match in efo.obo",
+                                is_validated=len(ordered) == 1,
+                            )
+                        )
+
+        if not candidates and icd10:
+            for parent_icd10 in icd10_parent_fallback_codes(icd10):
+                xref_term_ids = ontology_icd10_xref_index.get(parent_icd10, set())
+                if not xref_term_ids:
+                    continue
+                ordered = sorted(
+                    (term_id for term_id in xref_term_ids if term_id in ontology_terms),
+                    key=lambda tid: (
+                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        tid,
+                    ),
+                )
+                if not ordered:
+                    continue
+                for term_id in ordered[: max(top_k, 5)]:
+                    term = ontology_terms[term_id]
+                    candidates.append(
+                        Candidate(
+                            efo_id=term.term_id,
+                            label=term.label,
+                            score=0.86 if len(ordered) == 1 else 0.82,
+                            matched_via="efo_obo_parent_icd10_xref",
+                            evidence=f"ICD10 parent fallback xref match in efo.obo ({parent_icd10})",
+                            is_validated=False,
+                        )
+                    )
+                if candidates:
+                    break
 
         if phecode and phecode in phecode_index:
             matched_records = [records[idx] for idx in phecode_index[phecode]]
@@ -2552,7 +4834,7 @@ def map_trait_queries(
                 )
             )
 
-        if ukb_field_ids:
+        if ukb_field_ids and not prefer_icd10_from_ukb:
             matched_record_idxs: list[int] = []
             seen_rec_idxs: set[int] = set()
             for ukb_field_id in ukb_field_ids:
@@ -2563,20 +4845,35 @@ def map_trait_queries(
                     matched_record_idxs.append(rec_idx)
             if matched_record_idxs:
                 matched_records = [records[idx] for idx in matched_record_idxs]
-                ukb_field_candidates = collapse_trait_cache_candidates(
-                    matched_records,
-                    method="cache_exact_ukb_field",
-                    score=0.985,
-                    matched_on="UKB data field code",
-                    validated_if_unique=True,
-                    record_resolver=resolve_record,
-                )
-                # Field IDs may fan out to multiple ontology mappings in cache;
-                # only use this fast path when the mapping is unambiguous.
-                if len(ukb_field_candidates) == 1:
-                    candidates.extend(ukb_field_candidates)
+                curated_records = [record for record in matched_records if not record.is_ukb_field_supplement]
+                supplemental_records = [record for record in matched_records if record.is_ukb_field_supplement]
 
-        if (not category_mapping_only_after_other_methods) and ukb_category_field_ids:
+                if curated_records:
+                    ukb_field_candidates = collapse_trait_cache_candidates(
+                        curated_records,
+                        method="cache_exact_ukb_field",
+                        score=0.985,
+                        matched_on="UKB data field code",
+                        validated_if_unique=True,
+                        record_resolver=resolve_record,
+                    )
+                    # Field IDs may fan out to multiple ontology mappings in cache;
+                    # only use this fast path when the mapping is unambiguous.
+                    if len(ukb_field_candidates) == 1:
+                        candidates.extend(ukb_field_candidates)
+                elif supplemental_records:
+                    supplemental_candidates = collapse_trait_cache_candidates(
+                        supplemental_records,
+                        method="cache_exact_ukb_field_supplement",
+                        score=0.90,
+                        matched_on="UKB data field supplemental cache",
+                        validated_if_unique=False,
+                        record_resolver=resolve_record,
+                    )
+                    if len(supplemental_candidates) == 1:
+                        candidates.extend(supplemental_candidates)
+
+        if (not category_mapping_only_after_other_methods) and ukb_category_field_ids and not prefer_icd10_from_ukb:
             matched_record_idxs = []
             seen_rec_idxs: set[int] = set()
             for ukb_field_id in sorted(ukb_category_field_ids):
@@ -2600,20 +4897,29 @@ def map_trait_queries(
                 if len(ukb_category_candidates) == 1:
                     candidates.extend(ukb_category_candidates)
 
-        if query_norm and query_norm in text_exact_index:
-            matched_records = [records[idx] for idx in text_exact_index[query_norm]]
-            candidates.extend(
-                collapse_trait_cache_candidates(
-                    matched_records,
-                    method="cache_exact_text",
-                    score=0.97,
-                    matched_on="Reported trait text",
-                    validated_if_unique=True,
-                    record_resolver=resolve_record,
+        if query_exact_norms:
+            matched_record_idxs: list[int] = []
+            seen_rec_idxs: set[int] = set()
+            for key in query_exact_norms:
+                for rec_idx in text_exact_index.get(key, []):
+                    if rec_idx in seen_rec_idxs:
+                        continue
+                    seen_rec_idxs.add(rec_idx)
+                    matched_record_idxs.append(rec_idx)
+            if matched_record_idxs:
+                matched_records = [records[idx] for idx in matched_record_idxs]
+                candidates.extend(
+                    collapse_trait_cache_candidates(
+                        matched_records,
+                        method="cache_exact_text",
+                        score=0.97,
+                        matched_on="Reported trait text",
+                        validated_if_unique=True,
+                        record_resolver=resolve_record,
+                    )
                 )
-            )
 
-        if ukb_exact_text_keys:
+        if ukb_exact_text_keys and not prefer_icd10_from_ukb:
             matched_record_idxs: list[int] = []
             seen_rec_idxs: set[int] = set()
             for key in ukb_exact_text_keys:
@@ -2635,7 +4941,7 @@ def map_trait_queries(
                 if len(ukb_title_candidates) == 1:
                     candidates.extend(ukb_title_candidates)
 
-        if (not category_mapping_only_after_other_methods) and ukb_category_exact_text_keys:
+        if (not category_mapping_only_after_other_methods) and ukb_category_exact_text_keys and not prefer_icd10_from_ukb:
             matched_record_idxs = []
             seen_rec_idxs: set[int] = set()
             for key in ukb_category_exact_text_keys:
@@ -2657,7 +4963,7 @@ def map_trait_queries(
                 if len(ukb_category_title_candidates) == 1:
                     candidates.extend(ukb_category_title_candidates)
 
-        if (not category_mapping_only_after_other_methods) and ukb_category_field_exact_text_keys:
+        if (not category_mapping_only_after_other_methods) and ukb_category_field_exact_text_keys and not prefer_icd10_from_ukb:
             matched_record_idxs = []
             seen_rec_idxs: set[int] = set()
             for key in ukb_category_field_exact_text_keys:
@@ -2716,35 +5022,40 @@ def map_trait_queries(
                 )
             )
             for score, rec in scored_cache[: max(3, top_k * 4)]:
-                if score < min_score:
-                    continue
                 resolved_mapping = resolve_record(rec)
                 if not resolved_mapping:
                     continue
                 resolved_ids, resolved_labels = resolved_mapping
-                mapped_ids = "|".join(resolved_ids)
                 mapped_labels = "|".join(resolved_labels)
+                modifier_mismatch = trait_modifier_label_mismatch(fuzzy_query_tokens, mapped_labels)
+                adjusted_score = max(0.0, score - (0.25 if modifier_mismatch else 0.0))
+                if adjusted_score < min_score:
+                    continue
+                mapped_ids = "|".join(resolved_ids)
                 candidates.append(
                     Candidate(
                         efo_id=mapped_ids,
                         label=mapped_labels,
-                        score=score,
+                        score=adjusted_score,
                         matched_via="cache_fuzzy_text",
                         evidence=f"cache row={rec.rownum}; matched reported trait '{rec.reported_trait}'",
-                        is_validated=score >= 0.93,
+                        is_validated=adjusted_score >= 0.93 and not modifier_mismatch,
                     )
                 )
 
-        if not candidates and (query_norm or ukb_exact_text_keys):
+        if (not candidates or (input_type == "icd10" and bool(icd10_label))) and (
+            query_exact_norms or (ukb_exact_text_keys and not prefer_icd10_from_ukb)
+        ):
             exact_term_ids: set[str] = set()
             matched_via_ukb_title = False
-            if query_norm:
-                exact_term_ids |= ontology_exact_index.get(query_norm, set())
-            for key in ukb_exact_text_keys:
-                term_ids = ontology_exact_index.get(key, set())
-                if term_ids:
-                    matched_via_ukb_title = True
-                    exact_term_ids |= term_ids
+            for key in query_exact_norms:
+                exact_term_ids |= ontology_exact_index.get(key, set())
+            if not prefer_icd10_from_ukb:
+                for key in ukb_exact_text_keys:
+                    term_ids = ontology_exact_index.get(key, set())
+                    if term_ids:
+                        matched_via_ukb_title = True
+                        exact_term_ids |= term_ids
             if exact_term_ids:
                 ordered = sorted(
                     exact_term_ids,
@@ -2779,6 +5090,7 @@ def map_trait_queries(
             candidate_term_ids: set[str] = set()
             for tok in seed_tokens:
                 candidate_term_ids |= ontology_token_index.get(tok, set())
+            query_anchor_tokens = trait_anchor_tokens(fuzzy_query_tokens)
 
             scored_terms: list[tuple[float, str]] = []
             for term_id in candidate_term_ids:
@@ -2802,31 +5114,87 @@ def map_trait_queries(
                 top_score = scored_terms[0][0]
                 second_score = scored_terms[1][0] if len(scored_terms) > 1 else 0.0
                 for score, term_id in scored_terms[: max(5, top_k * 6)]:
-                    if score < min_score:
-                        continue
                     term = ontology_terms[term_id]
+                    modifier_mismatch = trait_modifier_label_mismatch(fuzzy_query_tokens, term.label)
+                    label_tokens = informative_trait_tokens(normalize_trait_text_for_similarity(term.label))
+                    overlap_tokens = fuzzy_query_tokens & label_tokens
+                    nonweak_overlap_tokens = trait_nonweak_tokens(overlap_tokens)
+                    label_anchor_tokens = trait_anchor_tokens(label_tokens)
+                    weak_only_overlap = bool(overlap_tokens) and not nonweak_overlap_tokens
+                    anchor_mismatch = bool(query_anchor_tokens) and query_anchor_tokens.isdisjoint(label_anchor_tokens)
+                    scope_rank = trait_match_scope_rank(
+                        query_exact_keys=query_exact_key_set,
+                        term=term,
+                        label_text=term.label,
+                    )
+                    exact_scope_bonus = 0.08 if scope_rank >= TRAIT_SYNONYM_SCOPE_RANK["EXACT"] else 0.0
+                    adjusted_score = (
+                        score
+                        - (0.25 if modifier_mismatch else 0.0)
+                        - (0.14 if weak_only_overlap else 0.0)
+                        - (0.18 if anchor_mismatch else 0.0)
+                        + exact_scope_bonus
+                    )
+                    adjusted_score = max(0.0, min(1.0, adjusted_score))
+                    if adjusted_score < min_score:
+                        continue
+                    evidence_bits = ["token lexical fallback in efo.obo"]
+                    if exact_scope_bonus > 0.0:
+                        evidence_bits.append("exact label/synonym scope bonus")
+                    if weak_only_overlap:
+                        evidence_bits.append("weak-token-only overlap penalty")
+                    if anchor_mismatch:
+                        evidence_bits.append("anchor-token mismatch penalty")
                     candidates.append(
                         Candidate(
                             efo_id=term.term_id,
                             label=term.label,
-                            score=score,
+                            score=adjusted_score,
                             matched_via="efo_obo_fuzzy",
-                            evidence="token lexical fallback in efo.obo",
-                            is_validated=(score >= 0.93 and (top_score - second_score) >= 0.08),
+                            evidence="; ".join(evidence_bits),
+                            is_validated=(
+                                adjusted_score >= 0.93
+                                and (top_score - second_score) >= 0.08
+                                and not modifier_mismatch
+                                and not weak_only_overlap
+                                and not anchor_mismatch
+                            ),
                         )
                     )
-                best_any.append(
-                    Candidate(
-                        efo_id=ontology_terms[scored_terms[0][1]].term_id,
-                        label=ontology_terms[scored_terms[0][1]].label,
-                        score=top_score,
-                        matched_via="efo_obo_fuzzy",
-                        evidence="best lexical candidate from efo.obo",
-                        is_validated=False,
+                top_term = ontology_terms[scored_terms[0][1]]
+                top_label_tokens = informative_trait_tokens(normalize_trait_text_for_similarity(top_term.label))
+                top_overlap_tokens = fuzzy_query_tokens & top_label_tokens
+                top_nonweak_overlap = trait_nonweak_tokens(top_overlap_tokens)
+                top_anchor_tokens = trait_anchor_tokens(top_label_tokens)
+                top_anchor_mismatch = bool(query_anchor_tokens) and query_anchor_tokens.isdisjoint(top_anchor_tokens)
+                top_weak_only_overlap = bool(top_overlap_tokens) and not top_nonweak_overlap
+                if not (top_anchor_mismatch and top_weak_only_overlap):
+                    top_score_adjusted = max(
+                        0.0,
+                        min(
+                            1.0,
+                            top_score
+                            - (0.12 if top_weak_only_overlap else 0.0)
+                            - (0.16 if top_anchor_mismatch else 0.0),
+                        ),
                     )
-                )
+                    top_evidence = "best lexical candidate from efo.obo"
+                    if top_weak_only_overlap:
+                        top_evidence = f"{top_evidence}; weak-token-only overlap"
+                    if top_anchor_mismatch:
+                        top_evidence = f"{top_evidence}; anchor-token mismatch"
+                    best_any.append(
+                        Candidate(
+                            efo_id=top_term.term_id,
+                            label=top_term.label,
+                            score=top_score_adjusted,
+                            matched_via="efo_obo_fuzzy",
+                            evidence=top_evidence,
+                            is_validated=False,
+                        )
+                    )
 
-        if not candidates and (ukb_field_ids or ukb_category_ids):
+        if not candidates and (ukb_field_ids or ukb_category_ids) and not prefer_icd10_from_ukb:
             fallback_candidates: list[Candidate] = []
             seen_fallback_keys: set[tuple[str, str, str]] = set()
             for field_id in ukb_field_ids:
@@ -2858,6 +5226,149 @@ def map_trait_queries(
             if fallback_candidates:
                 candidates.extend(fallback_candidates)
 
+        def apply_trait_scale_bias(target_candidates: list[Candidate]) -> None:
+            scale_norm = normalize_trait_scale(trait_scale)
+            if scale_norm == "auto":
+                return
+            for candidate in target_candidates:
+                branch = trait_candidate_branch(
+                    mapped_id_text=candidate.efo_id,
+                    mapped_label_text=candidate.label,
+                    ontology_terms=ontology_terms,
+                    measurement_term_ids=measurement_term_ids,
+                )
+                candidate.score = max(
+                    0.0,
+                    min(1.0, candidate.score + trait_scale_score_adjustment(scale_norm, branch)),
+                )
+                if trait_scale_mismatch(scale_norm, branch):
+                    candidate.is_validated = False
+                    candidate.evidence = (
+                        f"{candidate.evidence}; trait_scale={scale_norm} branch mismatch ({branch})"
+                    )
+                elif branch != "unknown":
+                    candidate.evidence = f"{candidate.evidence}; trait_scale={scale_norm} aligned ({branch})"
+
+        apply_trait_scale_bias(candidates)
+        apply_trait_scale_bias(best_any)
+        blocked_trait_scale_mismatch_count = 0
+        blocked_non_disease_entity_count = 0
+        blocked_generic_measurement_found = False
+        query_has_disease_intent = (
+            has_disease_hint(query_for_matching)
+            or has_disease_hint(query)
+            or has_ukb_disease_context(ukb_field_label_text)
+            or has_ukb_disease_context(ukb_category_label_text)
+            or has_ukb_disease_context(ukb_category_path_text)
+            or bool(icd10)
+            or input_type == "icd10"
+        )
+
+        def filter_trait_scale_mismatch(target_candidates: list[Candidate]) -> list[Candidate]:
+            nonlocal blocked_trait_scale_mismatch_count
+            scale_norm = normalize_trait_scale(trait_scale)
+            if scale_norm == "auto":
+                return target_candidates
+            kept: list[Candidate] = []
+            for candidate in target_candidates:
+                branch = trait_candidate_branch(
+                    mapped_id_text=candidate.efo_id,
+                    mapped_label_text=candidate.label,
+                    ontology_terms=ontology_terms,
+                    measurement_term_ids=measurement_term_ids,
+                )
+                mismatch = (
+                    (scale_norm == "binary" and branch in {"measurement", "mixed"})
+                    or (scale_norm == "quantitative" and branch in {"non_measurement", "mixed"})
+                )
+                if mismatch:
+                    blocked_trait_scale_mismatch_count += 1
+                    continue
+                kept.append(candidate)
+            return kept
+
+        candidates = filter_trait_scale_mismatch(candidates)
+        best_any = filter_trait_scale_mismatch(best_any)
+
+        def filter_non_disease_entity_candidates(target_candidates: list[Candidate]) -> list[Candidate]:
+            nonlocal blocked_non_disease_entity_count
+            if not query_has_disease_intent:
+                return target_candidates
+            kept: list[Candidate] = []
+            for candidate in target_candidates:
+                if candidate_is_non_disease_entity(candidate, ontology_terms=ontology_terms):
+                    blocked_non_disease_entity_count += 1
+                    continue
+                kept.append(candidate)
+            return kept
+
+        candidates = filter_non_disease_entity_candidates(candidates)
+        best_any = filter_non_disease_entity_candidates(best_any)
+
+        def apply_parent_icd10_label_demotions(target_candidates: list[Candidate]) -> None:
+            if input_type != "icd10" or not icd10_label:
+                return
+            for candidate in target_candidates:
+                if candidate.matched_via not in ICD10_PARENT_FALLBACK_METHODS:
+                    continue
+                overlap = trait_query_label_overlap_ratio(icd10_label, candidate.label)
+                if overlap < 0.45:
+                    candidate.is_validated = False
+                    candidate.score = min(candidate.score, 0.88)
+                    candidate.evidence = (
+                        f"{candidate.evidence}; ICD10 parent fallback demoted by code-label mismatch"
+                    )
+
+        apply_parent_icd10_label_demotions(candidates)
+        apply_parent_icd10_label_demotions(best_any)
+        query_anchor_tokens_for_fuzzy = trait_anchor_tokens(
+            informative_trait_tokens(normalize_trait_text_for_similarity(query_for_matching))
+        )
+
+        def apply_high_risk_fuzzy_demotions(target_candidates: list[Candidate]) -> None:
+            for candidate in target_candidates:
+                if candidate.matched_via != "efo_obo_fuzzy":
+                    continue
+                overlap = trait_query_label_overlap_ratio(query_for_matching, candidate.label)
+                nonweak_overlap = trait_nonweak_overlap(query_for_matching, candidate.label)
+                anchor_overlap = trait_has_anchor_overlap(query_for_matching, candidate.label)
+                weak_only_overlap = overlap > 0.0 and not nonweak_overlap
+                anchor_mismatch = bool(query_anchor_tokens_for_fuzzy) and not anchor_overlap
+                high_risk = (
+                    is_generic_trait_label(candidate.label)
+                    or overlap < 0.45
+                    or weak_only_overlap
+                    or (query_has_disease_intent and anchor_mismatch)
+                )
+                if high_risk:
+                    candidate.is_validated = False
+                    max_score = 0.89
+                    reason_parts = ["high-risk ontology fuzzy match demoted"]
+                    if weak_only_overlap:
+                        max_score = min(max_score, 0.85)
+                        reason_parts.append("weak-token-only overlap")
+                    if query_has_disease_intent and anchor_mismatch:
+                        max_score = min(max_score, 0.84)
+                        reason_parts.append("missing anchor-token agreement")
+                    candidate.score = min(candidate.score, max_score)
+                    candidate.evidence = f"{candidate.evidence}; {'; '.join(reason_parts)}"
+
+        apply_high_risk_fuzzy_demotions(candidates)
+        apply_high_risk_fuzzy_demotions(best_any)
+
+        filtered_candidates: list[Candidate] = []
+        for candidate in candidates:
+            if candidate_has_generic_measurement_mapping(candidate.efo_id, candidate.label):
+                blocked_generic_measurement_found = True
+                continue
+            filtered_candidates.append(candidate)
+        candidates = filtered_candidates
+        best_any = [
+            candidate
+            for candidate in best_any
+            if not candidate_has_generic_measurement_mapping(candidate.efo_id, candidate.label)
+        ]
+
         deduped: dict[tuple[str, str, str], Candidate] = {}
         for candidate in candidates:
             key = (candidate.efo_id, candidate.label, candidate.matched_via)
@@ -2865,9 +5376,19 @@ def map_trait_queries(
             if prior is None or candidate.score > prior.score:
                 deduped[key] = candidate
         candidates = list(deduped.values())
+        query_lexical_norm = normalize_trait_text_for_similarity(query_for_matching) or (
+            query_exact_norms[0] if query_exact_norms else norm_key(query_for_matching)
+        )
+        query_lexical_tokens = informative_trait_tokens(query_lexical_norm)
         candidates.sort(
             key=lambda candidate: (
                 candidate.score,
+                *trait_candidate_lexical_priority(
+                    candidate,
+                    query_exact_keys=query_exact_key_set,
+                    query_tokens=query_lexical_tokens,
+                    ontology_terms=ontology_terms,
+                ),
                 -via_rank.get(candidate.matched_via, 999),
                 -trait_candidate_prefix_rank(candidate.efo_id),
                 candidate.efo_id,
@@ -2876,31 +5397,79 @@ def map_trait_queries(
         )
 
         emitted = candidates[: max(1, top_k)]
-        if not emitted and force_map_best and best_any:
+        used_best_any_fallback = False
+        auto_force_map_best = (
+            input_type == "ukb_field"
+            and bool(parsed_ukb_field_id)
+            and "#" in query
+            and query_has_disease_intent
+        )
+        if not emitted and (force_map_best or auto_force_map_best) and best_any:
             emitted = [best_any[0]]
+            used_best_any_fallback = True
 
         if not emitted:
             generated_rows.append(
                 {
+                    "input_row_id": input_row_id,
                     "input_query": query,
+                    "negation": "yes" if query_has_negation else "no",
                     "input_type": input_type,
+                    "input_trait_scale": trait_scale,
+                    "input_source_code": source_code,
+                    "input_source_data_type": source_data_type,
                     "input_icd10": icd10,
+                    "input_icd10_label": icd10_label,
                     "input_phecode": phecode,
+                    "input_ukb_field_id": ukb_field_id_text,
+                    "input_ukb_field_label": ukb_field_label_text,
+                    "input_ukb_category_id": ukb_category_id_text,
+                    "input_ukb_category_label": ukb_category_label_text,
+                    "input_ukb_category_path": ukb_category_path_text,
                     "mapped_trait_id": "",
                     "mapped_trait_label": "",
                     "confidence": "0.000",
                     "matched_via": "none",
+                    "matched_on": "",
+                    "source_file": "",
                     "validation": "not_mapped",
-                    "evidence": "no cache/efo candidate above threshold",
+                    "qc_review_flag": "yes",
+                    "specificity_loss_flag": "no",
+                    "specificity_loss_notes": "",
+                    "term_not_in_efo": "",
+                    "mondo_missing_ids": "",
+                    "evidence": (
+                        "no cache/efo candidate above threshold"
+                        if not query_has_negation
+                        else "no cache/efo candidate above threshold; negation cue in input query"
+                    ),
                     "provenance": "",
                 }
             )
+            if blocked_generic_measurement_found:
+                generated_rows[-1]["evidence"] = (
+                    f"{generated_rows[-1]['evidence']}; generic measurement term candidate blocked"
+                )
+            if blocked_trait_scale_mismatch_count > 0:
+                generated_rows[-1]["evidence"] = (
+                    f"{generated_rows[-1]['evidence']}; blocked trait-scale mismatched candidates="
+                    f"{blocked_trait_scale_mismatch_count}"
+                )
+            if blocked_non_disease_entity_count > 0:
+                generated_rows[-1]["evidence"] = (
+                    f"{generated_rows[-1]['evidence']}; blocked non-disease entity candidates="
+                    f"{blocked_non_disease_entity_count}"
+                )
         else:
             for candidate in emitted:
-                validated = candidate.is_validated and candidate.score >= min_score
-                validation = "validated" if validated else "review_required"
                 source_file = (
-                    trait_cache_path.name if candidate.matched_via.startswith("cache_") else efo_obo_path.name
+                    DEFAULT_UKB_FIELD_SUPPLEMENT_CACHE.name
+                    if candidate.matched_via == "cache_exact_ukb_field_supplement"
+                    else DEFAULT_ICD10_SUPPLEMENT_CACHE.name
+                    if candidate.matched_via == "cache_exact_icd10_supplement"
+                    else trait_cache_path.name
+                    if candidate.matched_via.startswith("cache_")
+                    else efo_obo_path.name
                 )
                 mapped_ids = "|".join(
                     format_ontology_id_for_output(part)
@@ -2909,13 +5478,44 @@ def map_trait_queries(
                 if not mapped_ids:
                     mapped_ids = format_ontology_id_for_output(candidate.efo_id)
                 mapped_labels = normalize(candidate.label)
+                specificity_loss_flag, specificity_loss_notes = trait_specificity_loss_flag(
+                    query_text=query_for_matching,
+                    icd10=icd10,
+                    matched_via=candidate.matched_via,
+                    mapped_id_text=mapped_ids,
+                    mapped_label_text=mapped_labels,
+                    ontology_terms=ontology_terms,
+                )
+                term_not_in_efo, mondo_missing_ids = mondo_import_qc(
+                    candidate.efo_id,
+                    ontology_terms=ontology_terms,
+                )
+                validated = (
+                    candidate.is_validated
+                    and candidate.score >= min_score
+                    and not term_not_in_efo
+                    and not query_has_negation
+                )
+                validation = "validated" if validated else "review_required"
                 matched_on = (
                     "ICD10"
                     if candidate.matched_via == "cache_exact_icd10"
+                    else "ICD10 (supplemental cache)"
+                    if candidate.matched_via == "cache_exact_icd10_supplement"
+                    else "ICD10 parent fallback"
+                    if candidate.matched_via == "cache_parent_icd10"
+                    else "ICD10 parent fallback (supplemental cache)"
+                    if candidate.matched_via == "cache_parent_icd10_supplement"
                     else "PheCode"
                     if candidate.matched_via == "cache_exact_phecode"
+                    else "ICD10 xref in efo.obo"
+                    if candidate.matched_via == "efo_obo_exact_icd10_xref"
+                    else "ICD10 parent xref in efo.obo"
+                    if candidate.matched_via == "efo_obo_parent_icd10_xref"
                     else "UKB data field"
                     if candidate.matched_via == "cache_exact_ukb_field"
+                    else "UKB data field (supplemental cache)"
+                    if candidate.matched_via == "cache_exact_ukb_field_supplement"
                     else "UKB field title"
                     if candidate.matched_via == "cache_exact_ukb_field_title"
                     else "UKB category"
@@ -2930,10 +5530,22 @@ def map_trait_queries(
                     if candidate.matched_via.startswith("cache_")
                     else "EFO/OBO label or synonym"
                 )
-                primary_input_value = icd10 if input_type == "icd10" else phecode if input_type == "phecode" else query
+                effective_input_type = input_type
+                if "ukb_" in candidate.matched_via:
+                    effective_input_type = "ukb_field"
+                primary_input_value = (
+                    icd10
+                    if effective_input_type == "icd10"
+                    else phecode
+                    if effective_input_type == "phecode"
+                    else ukb_field_id_text
+                    if effective_input_type == "ukb_field" and ukb_field_id_text
+                    else query
+                )
                 provenance = make_trait_provenance(
                     method=candidate.matched_via,
-                    input_type=input_type,
+                    input_type=effective_input_type,
+                    trait_scale=trait_scale,
                     input_value=primary_input_value,
                     matched_on=matched_on,
                     mapped_ids=mapped_ids,
@@ -2942,18 +5554,45 @@ def map_trait_queries(
                     score=candidate.score,
                     validated=validated,
                 )
+                evidence = candidate.evidence
+                if term_not_in_efo:
+                    evidence = f"{evidence}; MONDO term missing from EFO import"
+                if query_has_negation:
+                    evidence = f"{evidence}; negation cue in input query"
+                if specificity_loss_flag == "yes" and specificity_loss_notes:
+                    evidence = f"{evidence}; {specificity_loss_notes}"
+                if used_best_any_fallback and not force_map_best:
+                    evidence = f"{evidence}; auto best-candidate fallback for coded UKB trait"
                 generated_rows.append(
                     {
+                        "input_row_id": input_row_id,
                         "input_query": query,
-                        "input_type": input_type,
+                        "negation": "yes" if query_has_negation else "no",
+                        "input_type": effective_input_type,
+                        "input_trait_scale": trait_scale,
+                        "input_source_code": source_code,
+                        "input_source_data_type": source_data_type,
                         "input_icd10": icd10,
+                        "input_icd10_label": icd10_label,
                         "input_phecode": phecode,
+                        "input_ukb_field_id": ukb_field_id_text,
+                        "input_ukb_field_label": ukb_field_label_text,
+                        "input_ukb_category_id": ukb_category_id_text,
+                        "input_ukb_category_label": ukb_category_label_text,
+                        "input_ukb_category_path": ukb_category_path_text,
                         "mapped_trait_id": mapped_ids,
                         "mapped_trait_label": mapped_labels,
                         "confidence": f"{max(0.0, min(1.0, candidate.score)):.3f}",
                         "matched_via": candidate.matched_via,
+                        "matched_on": matched_on,
+                        "source_file": source_file,
                         "validation": validation,
-                        "evidence": candidate.evidence,
+                        "qc_review_flag": "no" if validation == "validated" else "yes",
+                        "specificity_loss_flag": specificity_loss_flag,
+                        "specificity_loss_notes": specificity_loss_notes,
+                        "term_not_in_efo": term_not_in_efo,
+                        "mondo_missing_ids": mondo_missing_ids,
+                        "evidence": evidence,
                         "provenance": provenance,
                     }
                 )
@@ -3612,6 +6251,98 @@ def ensure_efo_obo_available(
     if not looks_like_obo(efo_obo_path):
         raise ValueError(f"Downloaded file is not a valid OBO: {download_path}")
     return efo_obo_path, "downloaded"
+
+
+def looks_like_tsv_with_columns(path: Path, required_columns: tuple[str, ...]) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+            reader = csv.reader(handle, delimiter="\t")
+            header = next(reader, [])
+    except (OSError, StopIteration):
+        return False
+    if not header:
+        return False
+    normalized_header = {normalize(col) for col in header if normalize(col)}
+    return all(normalize(col) in normalized_header for col in required_columns)
+
+
+def ensure_tsv_available(
+    *,
+    path: Path,
+    download_url: str,
+    timeout: float,
+    required_columns: tuple[str, ...],
+    label: str,
+) -> tuple[Path, str]:
+    if looks_like_tsv_with_columns(path, required_columns):
+        return path, "local"
+
+    url = normalize(download_url)
+    if not url:
+        raise FileNotFoundError(f"{label} not found at {path}, and no download URL was provided.")
+
+    try:
+        download_to_file(url, path, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Failed to download {label} (url={url}, http_status={exc.code}). "
+            f"Provide a valid local file via {path} or override the download URL."
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Failed to download {label} (url={url}, reason={exc.reason}). "
+            f"Provide a valid local file via {path} or override the download URL."
+        ) from exc
+
+    if not looks_like_tsv_with_columns(path, required_columns):
+        raise ValueError(f"Downloaded {label} did not contain expected TSV columns: {path}")
+    return path, "downloaded"
+
+
+def ensure_ukb_metadata_available(
+    *,
+    ukb_field_catalog_path: Path,
+    ukb_field_metadata_path: Path,
+    ukb_category_catalog_path: Path,
+    ukb_category_tree_path: Path,
+    field_catalog_url: str,
+    field_metadata_url: str,
+    category_catalog_url: str,
+    category_tree_url: str,
+    timeout: float,
+) -> dict[str, tuple[Path, str]]:
+    return {
+        "ukb_field_catalog": ensure_tsv_available(
+            path=ukb_field_catalog_path,
+            download_url=field_catalog_url,
+            timeout=timeout,
+            required_columns=("field_id", "title"),
+            label="UKB field catalog",
+        ),
+        "ukb_field_metadata": ensure_tsv_available(
+            path=ukb_field_metadata_path,
+            download_url=field_metadata_url,
+            timeout=timeout,
+            required_columns=("field_id", "title", "main_category"),
+            label="UKB field metadata",
+        ),
+        "ukb_category_catalog": ensure_tsv_available(
+            path=ukb_category_catalog_path,
+            download_url=category_catalog_url,
+            timeout=timeout,
+            required_columns=("category_id", "title"),
+            label="UKB category catalog",
+        ),
+        "ukb_category_tree": ensure_tsv_available(
+            path=ukb_category_tree_path,
+            download_url=category_tree_url,
+            timeout=timeout,
+            required_columns=("parent_id", "child_id"),
+            label="UKB category tree",
+        ),
+    }
 
 
 def extract_first_xml_from_zip(zip_path: Path, output_dir: Path) -> Path:
@@ -5805,6 +8536,269 @@ def compile_accession_profiles(profiles: list[list[str]]) -> tuple[AccessionProf
     return tuple(compiled)
 
 
+def protein_term_roundtrip_queries(
+    *,
+    label: str,
+    synonyms: list[str],
+    subject_terms: frozenset[str] | None = None,
+    meta_subject: str = "",
+) -> list[str]:
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def add_query(value: str) -> None:
+        cleaned = normalize(value)
+        if not cleaned:
+            return
+        key = norm_key(cleaned)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        queries.append(cleaned)
+
+    primary_subject = normalize(meta_subject or normalize_measurement_subject(label))
+    add_query(primary_subject)
+
+    terms = subject_terms if subject_terms is not None else extract_subject_terms(label, synonyms)
+    ranked_terms = sorted(
+        (normalize(term) for term in terms if normalize(term)),
+        key=lambda term: (
+            len(informative_lookup_tokens(term)),
+            len(term),
+            term,
+        ),
+        reverse=True,
+    )
+    for term in ranked_terms:
+        add_query(term)
+    for synonym in synonyms[:8]:
+        add_query(normalize_measurement_subject(synonym))
+    add_query(normalize_measurement_subject(label))
+    return queries
+
+
+def resolve_term_protein_accessions(
+    efo_id: str,
+    index: dict[str, Any],
+    *,
+    label: str = "",
+    synonyms: list[str] | None = None,
+    subject_terms: frozenset[str] | None = None,
+) -> tuple[str, ...]:
+    term_meta = index.get("term_meta", {})
+    meta = term_meta.get(efo_id, {}) if isinstance(term_meta, dict) else {}
+    if isinstance(meta, dict) and "protein_accessions" in meta:
+        cached = tuple(
+            sorted(
+                {
+                    normalize(accession).upper()
+                    for accession in (meta.get("protein_accessions") or [])
+                    if canonical_accession(accession)
+                }
+            )
+        )
+        meta["protein_accessions"] = list(cached)
+        return cached
+
+    label_clean = normalize(label or (meta.get("label") if isinstance(meta, dict) else "") or "")
+    syns = (
+        [normalize(x) for x in synonyms if normalize(x)]
+        if synonyms is not None
+        else [
+            normalize(x)
+            for x in ((meta.get("synonyms") if isinstance(meta, dict) else []) or [])
+            if normalize(x)
+        ]
+    )
+    meta_subject = normalize((meta.get("subject") if isinstance(meta, dict) else "") or "")
+    queries = protein_term_roundtrip_queries(
+        label=label_clean,
+        synonyms=syns,
+        subject_terms=subject_terms,
+        meta_subject=meta_subject,
+    )
+
+    best_hits: tuple[str, ...] = ()
+    best_rank: tuple[int, int, int, int, str] | None = None
+    primary_subject_key = norm_key(meta_subject or normalize_measurement_subject(label_clean))
+    for subject_query in queries:
+        hits, _used_alias_resolution, _ambiguous_alias_resolution = resolve_query_accessions(
+            subject_query,
+            index,
+            input_type="protein_name",
+        )
+        normalized_hits = tuple(
+            sorted(
+                {
+                    normalize(accession).upper()
+                    for accession in hits
+                    if canonical_accession(accession)
+                }
+            )
+        )
+        if not normalized_hits:
+            continue
+        rank = (
+            1 if len(normalized_hits) == 1 else 0,
+            1 if norm_key(subject_query) == primary_subject_key and primary_subject_key else 0,
+            len(informative_lookup_tokens(subject_query)),
+            -len(normalized_hits),
+            subject_query,
+        )
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best_hits = normalized_hits
+
+    if isinstance(meta, dict):
+        meta["protein_accessions"] = list(best_hits)
+    return best_hits
+
+
+def resolve_term_protein_symbols(
+    efo_id: str,
+    index: dict[str, Any],
+    *,
+    label: str = "",
+    synonyms: list[str] | None = None,
+    subject_terms: frozenset[str] | None = None,
+) -> tuple[str, ...]:
+    term_meta = index.get("term_meta", {})
+    meta = term_meta.get(efo_id, {}) if isinstance(term_meta, dict) else {}
+    if isinstance(meta, dict) and "protein_symbols" in meta:
+        cached = tuple(
+            sorted(
+                {
+                    normalize(symbol).upper()
+                    for symbol in (meta.get("protein_symbols") or [])
+                    if is_symbol_like_alias(symbol)
+                }
+            )
+        )
+        meta["protein_symbols"] = list(cached)
+        return cached
+
+    candidate_accessions = resolve_term_protein_accessions(
+        efo_id,
+        index,
+        label=label,
+        synonyms=synonyms,
+        subject_terms=subject_terms,
+    )
+    symbols: set[str] = set()
+    for accession in candidate_accessions:
+        symbols |= accession_symbol_aliases(accession, index)
+
+    label_clean = normalize(label or (meta.get("label") if isinstance(meta, dict) else "") or "")
+    syns = (
+        [normalize(x) for x in synonyms if normalize(x)]
+        if synonyms is not None
+        else [
+            normalize(x)
+            for x in ((meta.get("synonyms") if isinstance(meta, dict) else []) or [])
+            if normalize(x)
+        ]
+    )
+    meta_subject = normalize((meta.get("subject") if isinstance(meta, dict) else "") or "")
+    for subject_query in protein_term_roundtrip_queries(
+        label=label_clean,
+        synonyms=syns,
+        subject_terms=subject_terms,
+        meta_subject=meta_subject,
+    ):
+        symbol = symbol_query_key(subject_query)
+        if symbol:
+            symbols.add(symbol)
+        for mnemonic_symbol in uniprot_mnemonic_symbol_keys(subject_query, index):
+            symbols.add(mnemonic_symbol)
+        factor_symbol = coag_factor_symbol_key(subject_query, index)
+        if factor_symbol:
+            symbols.add(factor_symbol)
+        defensin_symbol = defensin_alpha_shorthand_symbol_key(subject_query, index)
+        if defensin_symbol:
+            symbols.add(defensin_symbol)
+
+    normalized = tuple(sorted(symbol for symbol in symbols if is_symbol_like_alias(symbol)))
+    if isinstance(meta, dict):
+        meta["protein_symbols"] = list(normalized)
+    return normalized
+
+
+def query_protein_roundtrip_symbols(
+    query: str,
+    resolved_accessions: list[str] | tuple[str, ...],
+    index: dict[str, Any],
+) -> tuple[str, ...]:
+    symbols: set[str] = set()
+    for accession in resolved_accessions:
+        symbols |= accession_symbol_aliases(accession, index)
+    query_symbol = symbol_query_key(query)
+    if query_symbol:
+        symbols.add(query_symbol)
+    return tuple(sorted(symbol for symbol in symbols if is_symbol_like_alias(symbol)))
+
+
+def protein_roundtrip_status(
+    query_accessions: list[str] | tuple[str, ...],
+    query_symbols: list[str] | tuple[str, ...],
+    candidate_accessions: list[str] | tuple[str, ...],
+    candidate_symbols: list[str] | tuple[str, ...],
+) -> str:
+    query_set = {
+        normalize(accession).upper()
+        for accession in query_accessions
+        if canonical_accession(accession)
+    }
+    query_symbol_set = {
+        normalize(symbol).upper()
+        for symbol in query_symbols
+        if is_symbol_like_alias(symbol)
+    }
+    if not query_set and not query_symbol_set:
+        return "not_applicable"
+    candidate_set = {
+        normalize(accession).upper()
+        for accession in candidate_accessions
+        if canonical_accession(accession)
+    }
+    if candidate_set & query_set:
+        return "accession_match"
+    candidate_symbol_set = {
+        normalize(symbol).upper()
+        for symbol in candidate_symbols
+        if is_symbol_like_alias(symbol)
+    }
+    if candidate_symbol_set & query_symbol_set:
+        return "symbol_match"
+    if not candidate_set and not candidate_symbol_set:
+        return "unresolved"
+    return "mismatch"
+
+
+def protein_accession_roundtrip_evidence(
+    roundtrip_status: str,
+    candidate_accessions: list[str] | tuple[str, ...],
+    candidate_symbols: list[str] | tuple[str, ...],
+) -> str:
+    if roundtrip_status == "not_applicable":
+        return ""
+    accessions = [
+        normalize(accession).upper()
+        for accession in candidate_accessions
+        if canonical_accession(accession)
+    ]
+    symbols = [
+        normalize(symbol).upper()
+        for symbol in candidate_symbols
+        if is_symbol_like_alias(symbol)
+    ]
+    accession_text = "|".join(accessions) if accessions else "none"
+    symbol_text = "|".join(symbols) if symbols else "none"
+    return (
+        f"protein_roundtrip={roundtrip_status}; "
+        f"term_accessions={accession_text}; term_symbols={symbol_text}"
+    )
+
+
 def accession_identity_match(
     query: str,
     label: str,
@@ -6278,6 +9272,7 @@ def candidates_from_index(
     query_lipoprotein_classes = lipoprotein_class_tags(query) if route == "metabolite" else frozenset()
     query_lipoprotein_sizes = lipoprotein_size_tags(query) if route == "metabolite" else frozenset()
     query_all_lipoprotein_scope = has_all_lipoprotein_scope(query) if route == "metabolite" else False
+    query_roundtrip_symbols = list(query_protein_roundtrip_symbols(query, resolved_accessions, index))
     strict_unresolved_name = (
         name_mode == "strict"
         and ((route == "protein" and not is_accession_input) or (route == "metabolite" and not is_metabolite_id_input))
@@ -6301,6 +9296,7 @@ def candidates_from_index(
     context_cache: dict[tuple[str, str], bool] = {}
     token_gate_cache: dict[str, bool] = {}
     candidate_eval_cache: dict[str, tuple[bool, str, list[str], str, frozenset[str], frozenset[str], int, int, bool]] = {}
+    protein_roundtrip_cache: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {}
 
     def get_term_bundle(efo_id: str) -> tuple[str, list[str], str, frozenset[str], frozenset[str]]:
         cached_bundle = term_cache.get(efo_id)
@@ -6484,6 +9480,79 @@ def candidates_from_index(
         candidate_eval_cache[efo_id] = result
         return result
 
+    def candidate_protein_roundtrip(
+        efo_id: str,
+        label: str,
+        syns: list[str],
+        subject_terms: frozenset[str],
+    ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        if route != "protein" or len(resolved_accessions) != 1:
+            return ("not_applicable", (), ())
+        cached = protein_roundtrip_cache.get(efo_id)
+        if cached is not None:
+            return cached
+        candidate_accessions = resolve_term_protein_accessions(
+            efo_id,
+            index,
+            label=label,
+            synonyms=syns,
+            subject_terms=subject_terms,
+        )
+        candidate_symbols = resolve_term_protein_symbols(
+            efo_id,
+            index,
+            label=label,
+            synonyms=syns,
+            subject_terms=subject_terms,
+        )
+        roundtrip_status = protein_roundtrip_status(
+            resolved_accessions,
+            query_roundtrip_symbols,
+            candidate_accessions,
+            candidate_symbols,
+        )
+        result = (roundtrip_status, candidate_accessions, candidate_symbols)
+        protein_roundtrip_cache[efo_id] = result
+        return result
+
+    def finalize_candidate(
+        candidate: Candidate,
+        *,
+        label: str,
+        syns: list[str],
+        subject_terms: frozenset[str],
+    ) -> Candidate:
+        roundtrip_status, roundtrip_accessions, roundtrip_symbols = candidate_protein_roundtrip(
+            candidate.efo_id,
+            label,
+            syns,
+            subject_terms,
+        )
+        matched_via = candidate.matched_via
+        evidence = candidate.evidence
+        is_validated = candidate.is_validated
+        if roundtrip_status != "not_applicable":
+            matched_via = f"{matched_via}-roundtrip-{roundtrip_status.replace('_', '-')}"
+            roundtrip_evidence = protein_accession_roundtrip_evidence(
+                roundtrip_status,
+                roundtrip_accessions,
+                roundtrip_symbols,
+            )
+            if roundtrip_evidence:
+                evidence = f"{evidence}; {roundtrip_evidence}" if evidence else roundtrip_evidence
+            is_validated = is_validated and roundtrip_status in {"accession_match", "symbol_match"}
+        return Candidate(
+            efo_id=candidate.efo_id,
+            label=candidate.label,
+            score=candidate.score,
+            matched_via=matched_via,
+            evidence=evidence,
+            is_validated=is_validated,
+            roundtrip_status=roundtrip_status,
+            roundtrip_accessions=roundtrip_accessions,
+            roundtrip_symbols=roundtrip_symbols,
+        )
+
     def select_retrieval_tokens(tokens: set[str], *, max_tokens: int = 6) -> list[str]:
         ranked = [tok for tok in tokens if tok in token_index]
         if not ranked:
@@ -6502,13 +9571,18 @@ def candidates_from_index(
         if label and not context_ok(efo_id, label, syns):
             return []
         direct = [
-            Candidate(
-                efo_id=efo_id,
+            finalize_candidate(
+                Candidate(
+                    efo_id=efo_id,
+                    label=label,
+                    score=1.0,
+                    matched_via="direct-id",
+                    evidence="direct input EFO/OBA id",
+                    is_validated=bool(meta),
+                ),
                 label=label,
-                score=1.0,
-                matched_via="direct-id",
-                evidence="direct input EFO/OBA id",
-                is_validated=bool(meta),
+                syns=syns,
+                subject_terms=extract_subject_terms(label, syns),
             )
         ]
         return sorted(
@@ -6526,7 +9600,7 @@ def candidates_from_index(
         for cached in analyte_index.get(query_key, []):
             efo_id = normalize_id(cached.get("efo_id") or "")
             meta = term_meta.get(efo_id, {})
-            ok, label, syns, _merged, _nums, _subject_terms, _exact_bonus, _exact_rank, _measurement_like = candidate_eval(
+            ok, label, syns, _merged, _nums, subject_terms, _exact_bonus, _exact_rank, _measurement_like = candidate_eval(
                 efo_id
             )
             if not ok:
@@ -6544,13 +9618,18 @@ def candidates_from_index(
                 score = min(0.89, max(0.0, cached_score))
             merge_candidate(
                 candidates,
-                Candidate(
-                    efo_id=efo_id,
+                finalize_candidate(
+                    Candidate(
+                        efo_id=efo_id,
+                        label=label,
+                        score=score,
+                        matched_via="local-analyte-cache",
+                        evidence=normalize(cached.get("evidence") or "cached mapping"),
+                        is_validated=validated,
+                    ),
                     label=label,
-                    score=score,
-                    matched_via="local-analyte-cache",
-                    evidence=normalize(cached.get("evidence") or "cached mapping"),
-                    is_validated=validated,
+                    syns=syns,
+                    subject_terms=subject_terms,
                 ),
             )
 
@@ -6586,13 +9665,18 @@ def candidates_from_index(
                 score = min(1.0, max(0.92, 0.97 + matrix_bonus(label, syns, matrix_priority)))
                 merge_candidate(
                     candidates,
-                    Candidate(
-                        efo_id=efo_id,
+                    finalize_candidate(
+                        Candidate(
+                            efo_id=efo_id,
+                            label=label,
+                            score=score,
+                            matched_via="local-term-metabolite-xref" + ("-subject-exact" if exact_rank else ""),
+                            evidence=f"metabolite external-id match: {met_id}",
+                            is_validated=True,
+                        ),
                         label=label,
-                        score=score,
-                        matched_via="local-term-metabolite-xref" + ("-subject-exact" if exact_rank else ""),
-                        evidence=f"metabolite external-id match: {met_id}",
-                        is_validated=True,
+                        syns=syns,
+                        subject_terms=subject_terms,
                     ),
                 )
 
@@ -6637,7 +9721,9 @@ def candidates_from_index(
     for term, key, term_lower, term_toks, filtered_tokens in term_parts:
         # Exact normalized label/synonym hits
         for efo_id in exact_term_index.get(key, []):
-            ok, label, syns, _merged, _nums, _subject_terms, exact_bonus, exact_rank, _measurement_like = candidate_eval(efo_id)
+            ok, label, syns, _merged, _nums, subject_terms, exact_bonus, exact_rank, _measurement_like = candidate_eval(
+                efo_id
+            )
             if not ok:
                 continue
             score = max(0.9, similarity_score_prepared(term_lower, term_toks, label, syns))
@@ -6646,13 +9732,18 @@ def candidates_from_index(
             score = min(1.0, score + 0.02 * exact_bonus)
             merge_candidate(
                 candidates,
-                Candidate(
-                    efo_id=efo_id,
+                finalize_candidate(
+                    Candidate(
+                        efo_id=efo_id,
+                        label=label,
+                        score=score,
+                        matched_via="local-term-exact" + ("-subject-exact" if exact_rank else ""),
+                        evidence=f"exact normalized term match: {term}",
+                        is_validated=True,
+                    ),
                     label=label,
-                    score=score,
-                    matched_via="local-term-exact" + ("-subject-exact" if exact_rank else ""),
-                    evidence=f"exact normalized term match: {term}",
-                    is_validated=True,
+                    syns=syns,
+                    subject_terms=subject_terms,
                 ),
             )
             seen_ids.add(efo_id)
@@ -6681,7 +9772,9 @@ def candidates_from_index(
         for efo_id in candidate_ids:
             if efo_id in seen_ids:
                 continue
-            ok, label, syns, _merged, _nums, _subject_terms, exact_bonus, exact_rank, measurement_like = candidate_eval(efo_id)
+            ok, label, syns, _merged, _nums, subject_terms, exact_bonus, exact_rank, measurement_like = candidate_eval(
+                efo_id
+            )
             if not ok:
                 continue
             score = similarity_score_prepared(term_lower, term_toks, label, syns)
@@ -6736,19 +9829,24 @@ def candidates_from_index(
                     semantic_exact = score >= min_semantic_score
             merge_candidate(
                 candidates,
-                Candidate(
-                    efo_id=efo_id,
-                    label=label,
-                    score=score,
-                    matched_via=(
-                        "local-term-token"
-                        + ("-subject-exact" if exact_rank else "")
-                        + ("-concept-validated" if route == "metabolite" and has_metabolite_profiles else "")
-                        + ("-semantic-exact" if semantic_exact else "")
-                        + (f"-{NEEDS_NEW_TERM_MATCH_TAG}" if needs_new_term else "")
+                finalize_candidate(
+                    Candidate(
+                        efo_id=efo_id,
+                        label=label,
+                        score=score,
+                        matched_via=(
+                            "local-term-token"
+                            + ("-subject-exact" if exact_rank else "")
+                            + ("-concept-validated" if route == "metabolite" and has_metabolite_profiles else "")
+                            + ("-semantic-exact" if semantic_exact else "")
+                            + (f"-{NEEDS_NEW_TERM_MATCH_TAG}" if needs_new_term else "")
+                        ),
+                        evidence=f"token retrieval + lexical score using: {term}",
+                        is_validated=True,
                     ),
-                    evidence=f"token retrieval + lexical score using: {term}",
-                    is_validated=True,
+                    label=label,
+                    syns=syns,
+                    subject_terms=subject_terms,
                 ),
             )
 
@@ -7585,12 +10683,16 @@ def write_review_tsv(
         "suggested_subject",
         "suggested_score",
         "suggested_matrix",
+        "candidate_roundtrip_status",
+        "candidate_resolved_accessions",
+        "candidate_resolved_symbols",
         "source_validation",
         "source_evidence",
     ]
     count = 0
     reason_cache: dict[tuple[str, str], tuple[str, str, list[str], list[Candidate]]] = {}
     identity_cache: dict[tuple[str, tuple[str, ...]], dict[str, str]] = {}
+    roundtrip_cache: dict[tuple[tuple[str, ...], str], tuple[str, tuple[str, ...], tuple[str, ...]]] = {}
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", extrasaction="ignore")
         writer.writeheader()
@@ -7624,6 +10726,7 @@ def write_review_tsv(
             if identity is None:
                 identity = describe_query_identity(query, index, resolved_accessions)
                 identity_cache[identity_key] = identity
+            query_symbols = query_protein_roundtrip_symbols(query, resolved_accessions, index)
             top = suggestions[: max(1, top_n)]
             if not top:
                 writer.writerow(
@@ -7646,6 +10749,9 @@ def write_review_tsv(
                         "suggested_subject": "",
                         "suggested_score": "",
                         "suggested_matrix": "",
+                        "candidate_roundtrip_status": "",
+                        "candidate_resolved_accessions": "",
+                        "candidate_resolved_symbols": "",
                         "source_validation": row.get("validation", ""),
                         "source_evidence": row.get("evidence", ""),
                     }
@@ -7654,6 +10760,27 @@ def write_review_tsv(
                 continue
 
             for rank, cand in enumerate(top, start=1):
+                roundtrip_status = cand.roundtrip_status
+                roundtrip_accessions = cand.roundtrip_accessions
+                roundtrip_symbols = cand.roundtrip_symbols
+                if resolved_accessions or query_symbols:
+                    roundtrip_key = (tuple(sorted([*resolved_accessions, *query_symbols])), cand.efo_id)
+                    cached_roundtrip = roundtrip_cache.get(roundtrip_key)
+                    if cached_roundtrip is None:
+                        candidate_accessions = resolve_term_protein_accessions(cand.efo_id, index)
+                        candidate_symbols = resolve_term_protein_symbols(cand.efo_id, index)
+                        cached_roundtrip = (
+                            protein_roundtrip_status(
+                                resolved_accessions,
+                                query_symbols,
+                                candidate_accessions,
+                                candidate_symbols,
+                            ),
+                            candidate_accessions,
+                            candidate_symbols,
+                        )
+                        roundtrip_cache[roundtrip_key] = cached_roundtrip
+                    roundtrip_status, roundtrip_accessions, roundtrip_symbols = cached_roundtrip
                 writer.writerow(
                     {
                         "input_query": query,
@@ -7674,6 +10801,9 @@ def write_review_tsv(
                         "suggested_subject": normalize_measurement_subject(cand.label),
                         "suggested_score": f"{cand.score:.3f}",
                         "suggested_matrix": measurement_matrix_bucket(cand.label) or "none",
+                        "candidate_roundtrip_status": roundtrip_status,
+                        "candidate_resolved_accessions": "|".join(roundtrip_accessions),
+                        "candidate_resolved_symbols": "|".join(roundtrip_symbols),
                         "source_validation": row.get("validation", ""),
                         "source_evidence": row.get("evidence", ""),
                     }
@@ -7852,42 +10982,59 @@ def write_withheld_triage_tsv(
                 triage_decision = "review_needed"
                 triage_rationale = "metabolite identity could not be resolved to stable IDs in local alias/xref index"
         else:
-            resolved_accessions_raw, _used_alias_resolution, _ambiguous_alias_resolution = resolve_query_accessions(
-                candidate_subject,
-                index,
-            )
-            resolved_accessions = sorted(
+            query_accessions = sorted(
                 {
                     normalize(accession).upper()
-                    for accession in resolved_accessions_raw
-                    if normalize(accession)
+                    for accession in parse_pipe_list(row.get("resolved_accessions") or "")
+                    if canonical_accession(accession)
                 }
             )
-            for accession in resolved_accessions:
-                resolved_symbols |= accession_symbol_aliases(accession, index)
+            if query_acc and query_acc not in query_accessions:
+                query_accessions.append(query_acc)
+                query_accessions.sort()
+            query_symbols = set(query_protein_roundtrip_symbols(query_text, query_accessions, index))
+            if query_symbol:
+                query_symbols.add(query_symbol)
 
-            if query_acc and resolved_accessions:
-                if query_acc in resolved_accessions:
-                    qc_status = "supports_query_accession"
-                else:
-                    qc_status = "conflicts_with_query_accession"
-            else:
-                qc_status = "unresolved"
+            candidate_efo_id = normalize_id(row.get("suggested_efo_id") or "")
+            resolved_accessions = list(
+                resolve_term_protein_accessions(
+                    candidate_efo_id,
+                    index,
+                    label=row.get("suggested_label") or candidate_subject,
+                )
+            )
+            resolved_symbols = set(
+                resolve_term_protein_symbols(
+                    candidate_efo_id,
+                    index,
+                    label=row.get("suggested_label") or candidate_subject,
+                )
+            )
+            roundtrip_status = protein_roundtrip_status(
+                query_accessions,
+                sorted(query_symbols),
+                resolved_accessions,
+                sorted(resolved_symbols),
+            )
+            same_symbol = bool(query_symbols & resolved_symbols)
 
-            same_symbol = bool(query_symbol and query_symbol in resolved_symbols)
-
-            if qc_status == "supports_query_accession":
+            if roundtrip_status == "accession_match":
+                qc_status = "supports_query_accession"
                 triage_decision = "accept_high"
-                triage_rationale = "candidate subject resolves to same accession as query"
-            elif qc_status == "conflicts_with_query_accession" and same_symbol:
+                triage_rationale = "candidate term back-maps to the same UniProt accession as the query"
+            elif roundtrip_status == "symbol_match":
+                qc_status = "supports_query_symbol"
                 triage_decision = "accept_medium"
-                triage_rationale = "different accession but same primary gene symbol (likely alias/isoform-equivalent)"
-            elif qc_status == "conflicts_with_query_accession":
+                triage_rationale = "candidate term back-maps to the same gene symbol as the query"
+            elif roundtrip_status == "mismatch":
+                qc_status = "conflicts_with_query_identity"
                 triage_decision = "reject_high"
-                triage_rationale = "candidate subject resolves to different accession/gene symbol"
+                triage_rationale = "candidate term back-maps to a different accession/gene symbol than the query"
             else:
                 triage_decision = "review_needed"
-                triage_rationale = "candidate subject did not resolve cleanly in local accession alias index"
+                qc_status = "unresolved"
+                triage_rationale = "candidate term did not back-map cleanly to an accession or gene symbol"
 
         decision_counts[triage_decision] = decision_counts.get(triage_decision, 0) + 1
         triage_rows.append(
@@ -8080,6 +11227,617 @@ def seed_default_trait_cache_if_needed(trait_cache_path: Path) -> tuple[Path, bo
     return trait_cache_path, False
 
 
+def write_setup_cache_manifest(
+    *,
+    output_path: Path,
+    index_path: Path,
+    index: dict[str, Any],
+    file_entries: list[tuple[str, Path, bool]],
+    generated_paths: list[Path],
+) -> None:
+    def file_entry(name: str, path: Path, indexed: bool) -> dict[str, Any]:
+        exists = path.exists()
+        return {
+            "name": name,
+            "path": str(path),
+            "exists": exists,
+            "size_bytes": path.stat().st_size if exists else 0,
+            "indexed": indexed,
+        }
+
+    manifest = {
+        "generated_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "index_path": str(index_path),
+        "index_exists": index_path.exists(),
+        "index_size_bytes": index_path.stat().st_size if index_path.exists() else 0,
+        "index_summary": {
+            "term_meta": len(index.get("term_meta", {})),
+            "exact_term_index": len(index.get("exact_term_index", {})),
+            "token_index": len(index.get("token_index", {})),
+            "accession_alias_index": len(index.get("accession_alias_index", {})),
+            "gene_symbol_accession_index": len(index.get("gene_symbol_accession_index", {})),
+            "gene_id_accession_index": len(index.get("gene_id_accession_index", {})),
+            "metabolite_alias_index": len(index.get("metabolite_alias_index", {})),
+            "metabolite_concept_index": len(index.get("metabolite_concept_index", {})),
+        },
+        "files": [file_entry(name, path, indexed) for name, path, indexed in file_entries],
+        "generated_files": [str(path) for path in generated_paths if path.exists()],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class CacheStatusSpec:
+    name: str
+    path: Path
+    indexed: bool
+    requirement: str
+
+
+def setup_ukb_paths(ukb_field_catalog_path: Path | None) -> tuple[Path, Path, Path, Path]:
+    catalog_path = ukb_field_catalog_path or DEFAULT_UKB_FIELD_CATALOG
+    roots: list[Path] = [catalog_path.parent]
+    default_root = DEFAULT_UKB_FIELD_CATALOG.parent
+    if default_root not in roots:
+        roots.append(default_root)
+
+    def pick(filename: str, fallback: Path) -> Path:
+        for root in roots:
+            candidate = root / filename
+            if candidate.exists():
+                return candidate
+        return roots[0] / filename if roots else fallback
+
+    return (
+        catalog_path,
+        pick("field.txt", DEFAULT_UKB_FIELD_METADATA),
+        pick("category.txt", DEFAULT_UKB_CATEGORY_CATALOG),
+        pick("catbrowse.txt", DEFAULT_UKB_CATEGORY_TREE),
+    )
+
+
+def collect_default_cache_status_specs(
+    *,
+    term_cache_path: Path,
+    analyte_cache_path: Path,
+    uniprot_alias_source_path: Path,
+    uniprot_alias_index_path: Path,
+    metabolite_alias_path: Path,
+    trait_cache_path: Path,
+    ukb_field_catalog_path: Path,
+    ukb_field_metadata_path: Path,
+    ukb_category_catalog_path: Path,
+    ukb_category_tree_path: Path,
+    ukb_field_supplement_cache_path: Path,
+    icd10_supplement_cache_path: Path,
+    icd10_label_cache_path: Path,
+    mondo_sssom_cache_path: Path,
+    efo_obo_path: Path,
+    index_path: Path,
+) -> list[CacheStatusSpec]:
+    specs: list[CacheStatusSpec] = [
+        CacheStatusSpec("index", index_path, True, CACHE_REQUIREMENT_BY_NAME.get("index", "required")),
+        CacheStatusSpec("term_cache", term_cache_path, True, CACHE_REQUIREMENT_BY_NAME.get("term_cache", "required")),
+        CacheStatusSpec("analyte_cache", analyte_cache_path, True, CACHE_REQUIREMENT_BY_NAME.get("analyte_cache", "required")),
+        CacheStatusSpec(
+            "uniprot_aliases_source",
+            uniprot_alias_source_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("uniprot_aliases_source", "required"),
+        ),
+        CacheStatusSpec(
+            "uniprot_aliases_index",
+            uniprot_alias_index_path,
+            True,
+            CACHE_REQUIREMENT_BY_NAME.get("uniprot_aliases_index", "required"),
+        ),
+        CacheStatusSpec(
+            "metabolite_aliases",
+            metabolite_alias_path,
+            True,
+            CACHE_REQUIREMENT_BY_NAME.get("metabolite_aliases", "required"),
+        ),
+        CacheStatusSpec("hmdb_source_dir", DEFAULT_HMDB_LOCAL_DIR, False, CACHE_REQUIREMENT_BY_NAME.get("hmdb_source_dir", "optional")),
+        CacheStatusSpec(
+            "metabolite_download_dir",
+            DEFAULT_METABOLITE_DOWNLOAD_DIR,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("metabolite_download_dir", "optional"),
+        ),
+        CacheStatusSpec("trait_cache", trait_cache_path, False, CACHE_REQUIREMENT_BY_NAME.get("trait_cache", "required")),
+        CacheStatusSpec(
+            "ukb_field_catalog",
+            ukb_field_catalog_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("ukb_field_catalog", "required"),
+        ),
+        CacheStatusSpec(
+            "ukb_field_metadata",
+            ukb_field_metadata_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("ukb_field_metadata", "required"),
+        ),
+        CacheStatusSpec(
+            "ukb_category_catalog",
+            ukb_category_catalog_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("ukb_category_catalog", "required"),
+        ),
+        CacheStatusSpec(
+            "ukb_category_tree",
+            ukb_category_tree_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("ukb_category_tree", "required"),
+        ),
+        CacheStatusSpec(
+            "ukb_field_supplement_cache",
+            ukb_field_supplement_cache_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("ukb_field_supplement_cache", "required"),
+        ),
+        CacheStatusSpec(
+            "icd10_supplement_cache",
+            icd10_supplement_cache_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("icd10_supplement_cache", "required"),
+        ),
+        CacheStatusSpec(
+            "icd10_label_cache",
+            icd10_label_cache_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("icd10_label_cache", "recommended"),
+        ),
+        CacheStatusSpec(
+            "mondo_sssom_cache",
+            mondo_sssom_cache_path,
+            False,
+            CACHE_REQUIREMENT_BY_NAME.get("mondo_sssom_cache", "recommended"),
+        ),
+        CacheStatusSpec("efo_obo", efo_obo_path, False, CACHE_REQUIREMENT_BY_NAME.get("efo_obo", "required")),
+    ]
+    return specs
+
+
+def load_cache_status_specs_from_manifest(manifest_path: Path) -> tuple[list[CacheStatusSpec], dict[str, Any]]:
+    manifest_meta: dict[str, Any] = {
+        "path": str(manifest_path),
+        "exists": manifest_path.exists(),
+        "loaded": False,
+        "generated_at_utc": "",
+        "error": "",
+    }
+    if not manifest_path.exists():
+        return [], manifest_meta
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - reporting should keep going with defaults.
+        manifest_meta["error"] = str(exc)
+        return [], manifest_meta
+
+    manifest_meta["loaded"] = True
+    manifest_meta["generated_at_utc"] = normalize(str(payload.get("generated_at_utc", "")))
+
+    specs: list[CacheStatusSpec] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    index_path = normalize(str(payload.get("index_path", "")))
+    if index_path:
+        index_spec = CacheStatusSpec(
+            name="index",
+            path=Path(index_path),
+            indexed=True,
+            requirement=CACHE_REQUIREMENT_BY_NAME.get("index", "required"),
+        )
+        specs.append(index_spec)
+        seen_keys.add((index_spec.name, str(index_spec.path)))
+
+    for entry in payload.get("files", []):
+        if not isinstance(entry, dict):
+            continue
+        name = normalize(str(entry.get("name", "")))
+        path_str = normalize(str(entry.get("path", "")))
+        if not name or not path_str:
+            continue
+        key = (name, path_str)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        specs.append(
+            CacheStatusSpec(
+                name=name,
+                path=Path(path_str),
+                indexed=bool(entry.get("indexed", False)),
+                requirement=CACHE_REQUIREMENT_BY_NAME.get(name, "optional"),
+            )
+        )
+    return specs, manifest_meta
+
+
+def evaluate_cache_status_specs(
+    specs: list[CacheStatusSpec],
+    *,
+    manifest_meta: dict[str, Any],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    summary: Counter[str] = Counter()
+
+    for spec in specs:
+        exists = spec.path.exists()
+        size_bytes = spec.path.stat().st_size if exists else 0
+        mtime_utc = ""
+        if exists:
+            mtime_utc = datetime.fromtimestamp(spec.path.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z")
+        path_type = "dir" if exists and spec.path.is_dir() else "file"
+        status = "present" if exists else "missing"
+        summary[f"{spec.requirement}_{status}"] += 1
+        rows.append(
+            {
+                "name": spec.name,
+                "path": str(spec.path),
+                "exists": exists,
+                "indexed": spec.indexed,
+                "requirement": spec.requirement,
+                "status": status,
+                "path_type": path_type,
+                "size_bytes": size_bytes,
+                "mtime_utc": mtime_utc,
+            }
+        )
+
+    required_total = summary["required_present"] + summary["required_missing"]
+    recommended_total = summary["recommended_present"] + summary["recommended_missing"]
+    optional_total = summary["optional_present"] + summary["optional_missing"]
+    status_payload = {
+        "generated_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "manifest": manifest_meta,
+        "summary": {
+            "files_total": len(rows),
+            "required_total": required_total,
+            "required_present": summary["required_present"],
+            "required_missing": summary["required_missing"],
+            "recommended_total": recommended_total,
+            "recommended_present": summary["recommended_present"],
+            "recommended_missing": summary["recommended_missing"],
+            "optional_total": optional_total,
+            "optional_present": summary["optional_present"],
+            "optional_missing": summary["optional_missing"],
+        },
+        "files": rows,
+    }
+    return status_payload
+
+
+def print_cache_status_report(report: dict[str, Any]) -> None:
+    manifest = report.get("manifest", {})
+    manifest_path = manifest.get("path", "")
+    if manifest.get("loaded"):
+        generated_at = normalize(str(manifest.get("generated_at_utc", "")))
+        generated_suffix = f", generated_at={generated_at}" if generated_at else ""
+        print(f"[OK] cache manifest loaded: {manifest_path}{generated_suffix}")
+    elif manifest.get("exists"):
+        manifest_error = normalize(str(manifest.get("error", "")))
+        if manifest_error:
+            print(f"[WARN] cache manifest could not be parsed: {manifest_path}; reason={manifest_error}")
+        else:
+            print(f"[OK] cache manifest present but not used: {manifest_path}")
+    else:
+        print(f"[WARN] cache manifest not found: {manifest_path} (falling back to default cache paths)")
+
+    summary = report.get("summary", {})
+    print(
+        "[OK] cache status summary "
+        f"(required_present={summary.get('required_present', 0)}/{summary.get('required_total', 0)}, "
+        f"required_missing={summary.get('required_missing', 0)}, "
+        f"recommended_missing={summary.get('recommended_missing', 0)}, "
+        f"optional_missing={summary.get('optional_missing', 0)})"
+    )
+    for row in report.get("files", []):
+        status_flag = "OK" if row.get("exists") else "MISSING"
+        print(
+            f"[{status_flag}] requirement={row.get('requirement', 'optional')} "
+            f"name={row.get('name', '')} "
+            f"indexed={bool(row.get('indexed', False))} "
+            f"size_bytes={int(row.get('size_bytes', 0))} "
+            f"path={row.get('path', '')}"
+        )
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def trait_catalog_tokenize(text: str) -> set[str]:
+    normalized_text = normalize_trait_text_for_similarity(text)
+    return informative_trait_tokens(normalized_text)
+
+
+def is_generic_trait_label(label: str) -> bool:
+    key = norm_key(label)
+    if not key:
+        return True
+    generic = {
+        "disease",
+        "disorder",
+        "phenotype",
+        "trait",
+        "measurement",
+        "clinical measurement",
+        "symptom",
+        "abnormality",
+    }
+    return key in generic
+
+
+def parse_catalog_mapped_pairs(
+    mapped_trait: str,
+    mapped_trait_uri: str,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    raw_ids = [canonicalize_trait_ontology_id(part) for part in split_multi_ids(mapped_trait_uri)]
+    raw_ids = [item for item in raw_ids if item]
+    labels = split_multi_labels(mapped_trait, expected_n=len(raw_ids))
+    pairs: list[tuple[str, str]] = []
+    issues: list[str] = []
+    for idx, mapped_id in enumerate(raw_ids):
+        if trait_ontology_prefix(mapped_id) not in TRAIT_PREFERRED_PREFIX_ORDER:
+            continue
+        label = normalize(labels[idx] if idx < len(labels) else "")
+        pairs.append((mapped_id, label))
+    if not pairs and normalize(mapped_trait_uri):
+        issues.append("no_supported_mapped_ids")
+    return pairs, issues
+
+
+def resolve_catalog_mapping_pairs(
+    pairs: list[tuple[str, str]],
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+    obsolete_terms: dict[str, TraitObsoleteTerm],
+) -> tuple[list[tuple[str, str]], list[str], list[str], list[str]]:
+    resolved_pairs: list[tuple[str, str]] = []
+    unresolved_ids: list[str] = []
+    obsolete_ids: list[str] = []
+    resolution_modes: list[str] = []
+
+    for mapped_id, mapped_label in pairs:
+        if mapped_id in ontology_terms:
+            label = mapped_label or ontology_terms[mapped_id].label
+            if (mapped_id, label) not in resolved_pairs:
+                resolved_pairs.append((mapped_id, label))
+            resolution_modes.append("direct")
+            continue
+
+        obsolete_meta = obsolete_terms.get(mapped_id)
+        if obsolete_meta is None:
+            unresolved_ids.append(mapped_id)
+            resolution_modes.append("missing")
+            continue
+
+        obsolete_ids.append(mapped_id)
+        replacements = [rid for rid in obsolete_meta.replaced_by if rid in ontology_terms]
+        if replacements:
+            for rid in replacements:
+                label = ontology_terms[rid].label
+                if (rid, label) not in resolved_pairs:
+                    resolved_pairs.append((rid, label))
+            resolution_modes.append("replaced_by")
+            continue
+
+        consider = [rid for rid in obsolete_meta.consider if rid in ontology_terms]
+        if len(consider) == 1:
+            rid = consider[0]
+            label = ontology_terms[rid].label
+            if (rid, label) not in resolved_pairs:
+                resolved_pairs.append((rid, label))
+            resolution_modes.append("consider_single")
+            continue
+
+        unresolved_ids.append(mapped_id)
+        resolution_modes.append("obsolete_unresolved")
+
+    return resolved_pairs, unresolved_ids, obsolete_ids, resolution_modes
+
+
+def build_catalog_trait_refresh(
+    *,
+    studies_tsv: Path,
+    trait_cache_path: Path,
+    ontology_index: dict[str, Any],
+    publication_tag: str,
+    studies_sha256: str = "",
+) -> dict[str, Any]:
+    if not studies_tsv.exists():
+        raise FileNotFoundError(f"GWAS Catalog studies TSV not found: {studies_tsv}")
+    if not trait_cache_path.exists():
+        raise FileNotFoundError(f"Trait cache TSV not found: {trait_cache_path}")
+
+    ontology_terms: dict[str, TraitOntologyTerm] = ontology_index.get("terms", {})
+    obsolete_terms: dict[str, TraitObsoleteTerm] = ontology_index.get("obsolete_terms", {})
+
+    cache_index = load_trait_cache_index(trait_cache_path)
+    records: list[TraitCacheRecord] = cache_index.get("records", [])
+    existing_trait_mappings: dict[str, set[str]] = {}
+    existing_exact_pairs: set[tuple[str, str]] = set()
+    for rec in records:
+        if not rec.reported_trait:
+            continue
+        trait_key = normalize_trait_text_for_similarity(rec.reported_trait)
+        if not trait_key:
+            continue
+        mapped_key = "|".join(rec.mapped_ids)
+        if mapped_key:
+            existing_trait_mappings.setdefault(trait_key, set()).add(mapped_key)
+        existing_exact_pairs.add((trait_key, mapped_key))
+
+    qc_rows: list[dict[str, str]] = []
+    by_trait_key: dict[str, set[str]] = {}
+    with studies_tsv.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            trait = normalize(row.get("DISEASE/TRAIT", ""))
+            mapped_trait = normalize(row.get("MAPPED_TRAIT", ""))
+            mapped_trait_uri = normalize(row.get("MAPPED_TRAIT_URI", ""))
+            if not trait or not mapped_trait_uri:
+                continue
+
+            parsed_pairs, parse_issues = parse_catalog_mapped_pairs(mapped_trait, mapped_trait_uri)
+            resolved_pairs, unresolved_ids, obsolete_ids, resolution_modes = resolve_catalog_mapping_pairs(
+                parsed_pairs,
+                ontology_terms=ontology_terms,
+                obsolete_terms=obsolete_terms,
+            )
+
+            resolved_ids = [pair[0] for pair in resolved_pairs]
+            resolved_labels = [pair[1] for pair in resolved_pairs]
+            resolved_id_key = "|".join(resolved_ids)
+            if resolved_id_key:
+                by_trait_key.setdefault(normalize_trait_text_for_similarity(trait), set()).add(resolved_id_key)
+
+            source_label_tokens = trait_catalog_tokenize(mapped_trait)
+            resolved_label_tokens = set()
+            for label in resolved_labels:
+                resolved_label_tokens |= trait_catalog_tokenize(label)
+            overlap_n = len(source_label_tokens & resolved_label_tokens)
+            denom = max(1, len(source_label_tokens))
+            label_match_ratio = overlap_n / denom
+            if not source_label_tokens and resolved_labels:
+                label_match_ratio = 1.0
+
+            label_mode = "no_source_label"
+            if mapped_trait and resolved_labels:
+                if norm_key(mapped_trait) == norm_key("|".join(resolved_labels)):
+                    label_mode = "full_exact"
+                elif overlap_n > 0:
+                    label_mode = "token_overlap"
+                else:
+                    label_mode = "low_overlap"
+
+            high_confidence = bool(resolved_ids) and not unresolved_ids and label_match_ratio >= 0.50
+            qc_rows.append(
+                {
+                    "DISEASE/TRAIT": trait,
+                    "MAPPED_TRAIT": mapped_trait,
+                    "MAPPED_TRAIT_URI": mapped_trait_uri,
+                    "resolved_mapped_ids": "|".join(resolved_ids),
+                    "resolved_mapped_labels": "|".join(resolved_labels),
+                    "resolved_id_count": str(len(resolved_ids)),
+                    "unresolved_ids": "|".join(unresolved_ids + parse_issues),
+                    "obsolete_ids": "|".join(obsolete_ids),
+                    "id_resolution_modes": "|".join(resolution_modes),
+                    "label_match_ratio": f"{label_match_ratio:.3f}",
+                    "label_match_modes": label_mode,
+                    "confidence": "high" if high_confidence else "low",
+                    "qc_status": "ok" if high_confidence else "fail",
+                }
+            )
+
+    high_conf_initial = [row for row in qc_rows if row.get("confidence") == "high" and row.get("qc_status") == "ok"]
+    high_conf_by_trait: list[dict[str, str]] = []
+    for row in high_conf_initial:
+        trait_key = normalize_trait_text_for_similarity(row.get("DISEASE/TRAIT", ""))
+        if not trait_key:
+            continue
+        unique_mappings = by_trait_key.get(trait_key, set())
+        if len(unique_mappings) == 1:
+            high_conf_by_trait.append(row)
+
+    high_conf_specific: list[dict[str, str]] = []
+    for row in high_conf_by_trait:
+        trait = normalize(row.get("DISEASE/TRAIT", ""))
+        mapped_labels = split_multi_labels(row.get("resolved_mapped_labels", ""), expected_n=1)
+        if not mapped_labels:
+            continue
+        first_label = mapped_labels[0]
+        if is_generic_trait_label(first_label):
+            continue
+        trait_tokens = trait_catalog_tokenize(trait)
+        label_tokens = trait_catalog_tokenize(first_label)
+        if trait_tokens and label_tokens and not (trait_tokens & label_tokens):
+            continue
+        high_conf_specific.append(row)
+
+    rows_to_add: list[dict[str, str]] = []
+    dedup_new: set[tuple[str, str]] = set()
+    conflict_count = 0
+    for row in high_conf_specific:
+        trait = normalize(row.get("DISEASE/TRAIT", ""))
+        trait_key = normalize_trait_text_for_similarity(trait)
+        mapped_ids = normalize(row.get("resolved_mapped_ids", ""))
+        mapped_labels = normalize(row.get("resolved_mapped_labels", ""))
+        if not trait_key or not mapped_ids:
+            continue
+        cache_key = (trait_key, mapped_ids)
+        if cache_key in existing_exact_pairs:
+            continue
+        existing_for_trait = existing_trait_mappings.get(trait_key, set())
+        if existing_for_trait and mapped_ids not in existing_for_trait:
+            conflict_count += 1
+            continue
+        if cache_key in dedup_new:
+            continue
+        dedup_new.add(cache_key)
+        rows_to_add.append(
+            {
+                "UKBB data field": "-",
+                "ICD10": "-",
+                "PheCode": "-",
+                "Lookup text": trait,
+                "Curated reported trait": trait,
+                "main ontology URI(s)": mapped_ids,
+                "main ontology label(s)": mapped_labels,
+                "Publication": publication_tag,
+                "User submitted trait": "-",
+                "qc_status": "validated",
+                "qc_resolution_modes": "catalog_import_high_conf",
+                "qc_label_match_modes": row.get("label_match_modes", ""),
+                "qc_unresolved_ids": "",
+                "final_update_applied": "yes",
+                "final_update_reason": "catalog_import_high_conf_unambiguous_specific_nonconflicting",
+            }
+        )
+
+    merged_rows: list[dict[str, str]] = []
+    with trait_cache_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            merged_rows.append({column: normalize(row.get(column, "")) for column in TRAIT_CACHE_COLUMNS})
+    merged_rows.extend(rows_to_add)
+
+    summary = {
+        "input_rows": len(qc_rows),
+        "high_conf_initial": len(high_conf_initial),
+        "after_unambiguous_trait_filter": len(high_conf_by_trait),
+        "after_specific_filter_candidate_rows": len(high_conf_specific),
+        "cache_rows_before": len(merged_rows) - len(rows_to_add),
+        "cache_rows_added": len(rows_to_add),
+        "cache_rows_after": len(merged_rows),
+        "conflicting_rows_skipped": conflict_count,
+        "policy": (
+            "high && unambiguous mapping per normalized trait && "
+            "specific_label_overlap && nonconflicting with existing cache"
+        ),
+        "studies_tsv": str(studies_tsv),
+        "studies_tsv_sha256": studies_sha256 or file_sha256(studies_tsv),
+        "trait_cache": str(trait_cache_path),
+        "publication_tag": publication_tag,
+    }
+
+    return {
+        "qc_rows": qc_rows,
+        "high_conf_rows": high_conf_specific,
+        "rows_to_add": rows_to_add,
+        "merged_rows": merged_rows,
+        "summary": summary,
+    }
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bulk/offline mapper for measurement EFO terms")
     sub = parser.add_subparsers(dest="command")
@@ -8172,8 +11930,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "setup-bundled-caches",
         help=(
             "Offline-first setup using bundled local caches "
-            "(protein aliases, metabolite aliases, trait cache); auto-provisions efo.obo "
-            "from bundled URL only when missing, then builds local index"
+            "(protein aliases, metabolite aliases, trait cache); auto-provisions missing "
+            "efo.obo and UKB metadata, builds ICD10 side caches, then builds the local index"
         ),
     )
     p_setup.add_argument(
@@ -8253,6 +12011,109 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Bundled trait cache TSV path",
     )
     p_setup.add_argument(
+        "--ukb-field-catalog",
+        default=str(DEFAULT_UKB_FIELD_CATALOG),
+        help="Bundled UKB field catalog TSV path (for example references/ukb/fieldsum.txt)",
+    )
+    p_setup.add_argument(
+        "--ukb-field-catalog-url",
+        default=DEFAULT_UKB_FIELD_CATALOG_URL,
+        help="Official UKB field catalog TSV URL used when the local file is missing",
+    )
+    p_setup.add_argument(
+        "--ukb-field-metadata-url",
+        default=DEFAULT_UKB_FIELD_METADATA_URL,
+        help="Official UKB field metadata TSV URL used when the local file is missing",
+    )
+    p_setup.add_argument(
+        "--ukb-category-catalog-url",
+        default=DEFAULT_UKB_CATEGORY_CATALOG_URL,
+        help="Official UKB category catalog TSV URL used when the local file is missing",
+    )
+    p_setup.add_argument(
+        "--ukb-category-tree-url",
+        default=DEFAULT_UKB_CATEGORY_TREE_URL,
+        help="Official UKB category tree TSV URL used when the local file is missing",
+    )
+    p_setup.add_argument(
+        "--ukb-download-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) when auto-downloading missing UKB metadata files",
+    )
+    p_setup.add_argument(
+        "--ukb-field-supplement-cache",
+        default=str(DEFAULT_UKB_FIELD_SUPPLEMENT_CACHE),
+        help=(
+            "Output UKB supplemental field trait cache TSV path "
+            "(generated from UKB metadata + ontology during setup)"
+        ),
+    )
+    p_setup.add_argument(
+        "--build-ukb-field-supplement",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build UKB supplemental field trait cache during setup (default: on)",
+    )
+    p_setup.add_argument(
+        "--icd10-supplement-cache",
+        default=str(DEFAULT_ICD10_SUPPLEMENT_CACHE),
+        help=(
+            "Output ICD10 supplemental trait cache TSV path "
+            "(generated from ontology ICD10 xrefs plus MONDO SSSOM enrichment when cache is available)"
+        ),
+    )
+    p_setup.add_argument(
+        "--icd10-label-cache",
+        default=str(DEFAULT_ICD10_LABEL_CACHE),
+        help="Output ICD10 label cache TSV path",
+    )
+    p_setup.add_argument(
+        "--icd10-mondo-sssom-cache",
+        default=str(DEFAULT_MONDO_SSSOM_CACHE),
+        help=(
+            "Local MONDO SSSOM cache path used by setup for ICD10 enrichment. "
+            "setup-bundled-caches refreshes this file from --icd10-mondo-sssom-url when reachable."
+        ),
+    )
+    p_setup.add_argument(
+        "--build-icd10-supplement",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build ICD10 supplemental trait cache during setup (default: on)",
+    )
+    p_setup.add_argument(
+        "--build-icd10-label-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build ICD10 label cache during setup when missing (default: on)",
+    )
+    p_setup.add_argument(
+        "--icd10-label-source-url",
+        default=DEFAULT_ICD10_LABEL_SOURCE_URL,
+        help="Official ICD10 label source ZIP URL used when the local label cache is missing",
+    )
+    p_setup.add_argument(
+        "--icd10-label-download-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) for ICD10 label source download during setup",
+    )
+    p_setup.add_argument(
+        "--icd10-mondo-sssom-url",
+        default=DEFAULT_MONDO_SSSOM_URL,
+        help=(
+            "MONDO SSSOM mappings URL used by setup to refresh local MONDO ICD10 cache. "
+            "When unavailable (for example offline), setup falls back to the existing local cache file."
+        ),
+    )
+    p_setup.add_argument(
+        "--icd10-mondo-download-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) for MONDO SSSOM refresh during ICD10 supplemental build",
+    )
+    p_setup.add_argument(
         "--efo-obo",
         default=str(DEFAULT_EFO_OBO_LOCAL),
         help=(
@@ -8294,6 +12155,115 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Rebuild index from bundled caches (default: on)",
+    )
+    p_setup.add_argument(
+        "--cache-manifest-output",
+        default=str(DEFAULT_SETUP_CACHE_MANIFEST),
+        help=(
+            "Write setup cache/index inventory JSON for auditability "
+            "(default: final_output/analyte_mapper_cache_manifest.json)"
+        ),
+    )
+
+    p_cache_status = sub.add_parser(
+        "cache-status",
+        help=(
+            "Audit cache/index file presence after setup. "
+            "Prints present/missing status and can write a JSON status report."
+        ),
+    )
+    p_cache_status.add_argument(
+        "--manifest",
+        default=str(DEFAULT_SETUP_CACHE_MANIFEST),
+        help=(
+            "Setup cache manifest JSON path (default: final_output/analyte_mapper_cache_manifest.json). "
+            "When present, paths are read from the manifest."
+        ),
+    )
+    p_cache_status.add_argument(
+        "--prefer-manifest",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use paths listed in --manifest when available (default: on)",
+    )
+    p_cache_status.add_argument("--term-cache", default=str(DEFAULT_TERM_CACHE), help="Measurement term cache TSV path")
+    p_cache_status.add_argument("--analyte-cache", default=str(DEFAULT_ANALYTE_CACHE), help="Analyte cache TSV path")
+    p_cache_status.add_argument(
+        "--uniprot-aliases",
+        default=str(DEFAULT_UNIPROT_ALIASES),
+        help="UniProt alias source TSV path",
+    )
+    p_cache_status.add_argument(
+        "--uniprot-light-output",
+        default=str(DEFAULT_UNIPROT_ALIASES_LIGHT),
+        help="Lightweight UniProt alias TSV path",
+    )
+    p_cache_status.add_argument(
+        "--metabolite-aliases",
+        default=str(DEFAULT_METABOLITE_ALIASES),
+        help="Metabolite alias TSV path",
+    )
+    p_cache_status.add_argument("--trait-cache", default=str(DEFAULT_TRAIT_CACHE), help="Trait cache TSV path")
+    p_cache_status.add_argument(
+        "--ukb-field-catalog",
+        default=str(DEFAULT_UKB_FIELD_CATALOG),
+        help="UKB field catalog TSV path (used to resolve UKB metadata sibling files)",
+    )
+    p_cache_status.add_argument(
+        "--ukb-field-supplement-cache",
+        default=str(DEFAULT_UKB_FIELD_SUPPLEMENT_CACHE),
+        help="UKB supplemental trait cache TSV path",
+    )
+    p_cache_status.add_argument(
+        "--icd10-supplement-cache",
+        default=str(DEFAULT_ICD10_SUPPLEMENT_CACHE),
+        help="ICD10 supplemental trait cache TSV path",
+    )
+    p_cache_status.add_argument(
+        "--icd10-label-cache",
+        default=str(DEFAULT_ICD10_LABEL_CACHE),
+        help="ICD10 label cache TSV path",
+    )
+    p_cache_status.add_argument(
+        "--icd10-mondo-sssom-cache",
+        default=str(DEFAULT_MONDO_SSSOM_CACHE),
+        help="MONDO SSSOM ICD10 cache TSV path",
+    )
+    p_cache_status.add_argument("--efo-obo", default=str(DEFAULT_EFO_OBO_LOCAL), help="EFO OBO path")
+    p_cache_status.add_argument("--index", default=str(DEFAULT_INDEX), help="JSON index path")
+    p_cache_status.add_argument(
+        "--output-json",
+        default="",
+        help=(
+            "Optional JSON status output path "
+            f"(for example {DEFAULT_SETUP_CACHE_STATUS})"
+        ),
+    )
+    p_cache_status.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit with code 1 when required cache files are missing",
+    )
+
+    p_icd10_labels = sub.add_parser(
+        "icd10-label-cache-build",
+        help="Build ICD10 label cache from the official CMS ICD-10-CM tabular-order release",
+    )
+    p_icd10_labels.add_argument(
+        "--output",
+        default=str(DEFAULT_ICD10_LABEL_CACHE),
+        help="Output ICD10 label cache TSV path",
+    )
+    p_icd10_labels.add_argument(
+        "--source-url",
+        default=DEFAULT_ICD10_LABEL_SOURCE_URL,
+        help="Official ICD10 source ZIP URL (default: CMS 2026 tabular-order release)",
+    )
+    p_icd10_labels.add_argument(
+        "--download-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) for ICD10 label source download",
     )
 
     p_uniprot = sub.add_parser(
@@ -8604,6 +12574,80 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_map.add_argument("--analyte-cache", default=str(DEFAULT_ANALYTE_CACHE), help="Analyte cache path for write-back")
     p_map.add_argument("--cache-min-confidence", type=float, default=0.80, help="Min confidence for write-back")
 
+    p_trait_cache = sub.add_parser(
+        "trait-cache-refresh",
+        help=(
+            "Refresh catalog-derived trait cache rows from an updated GWAS Catalog studies TSV "
+            "using high-confidence, unambiguous, non-conflicting filters"
+        ),
+    )
+    p_trait_cache.add_argument(
+        "--studies-tsv",
+        required=True,
+        help="GWAS Catalog studies TSV (download export with DISEASE/TRAIT, MAPPED_TRAIT, MAPPED_TRAIT_URI columns)",
+    )
+    p_trait_cache.add_argument(
+        "--trait-cache",
+        default=str(DEFAULT_TRAIT_CACHE),
+        help="Existing trait mapping cache TSV to update",
+    )
+    p_trait_cache.add_argument(
+        "--output-cache",
+        default="",
+        help="Optional output cache path (defaults to --trait-cache for in-place update)",
+    )
+    p_trait_cache.add_argument(
+        "--publication-tag",
+        default="CatalogMappedTraitsImport",
+        help="Publication tag for inserted cache rows",
+    )
+    p_trait_cache.add_argument(
+        "--efo-obo",
+        default=str(DEFAULT_EFO_OBO_LOCAL),
+        help="EFO OBO path used for ID resolution and MONDO-import checks",
+    )
+    p_trait_cache.add_argument(
+        "--efo-obo-bundled-url",
+        default=DEFAULT_EFO_OBO_BUNDLED_URL,
+        help="Bundled EFO OBO URL used only when --efo-obo is missing",
+    )
+    p_trait_cache.add_argument(
+        "--efo-obo-download-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout (seconds) when auto-fetching bundled EFO OBO",
+    )
+    p_trait_cache.add_argument(
+        "--qc-output",
+        default=str(DEFAULT_CATALOG_QC_OUTPUT),
+        help="Optional QC TSV output path (set empty to skip)",
+    )
+    p_trait_cache.add_argument(
+        "--high-confidence-output",
+        default=str(DEFAULT_CATALOG_HIGH_CONF_OUTPUT),
+        help="Optional high-confidence TSV output path (set empty to skip)",
+    )
+    p_trait_cache.add_argument(
+        "--to-add-output",
+        default=str(DEFAULT_CATALOG_TO_ADD_OUTPUT),
+        help="Optional cache-row TSV output path for rows selected to add (set empty to skip)",
+    )
+    p_trait_cache.add_argument(
+        "--summary-output",
+        default=str(DEFAULT_CATALOG_SUMMARY_OUTPUT),
+        help="Optional JSON summary output path (set empty to skip)",
+    )
+    p_trait_cache.add_argument(
+        "--state-output",
+        default=str(DEFAULT_CATALOG_REFRESH_STATE_OUTPUT),
+        help="State JSON path used to track last processed studies TSV hash (set empty to skip)",
+    )
+    p_trait_cache.add_argument(
+        "--force-refresh",
+        action="store_true",
+        help="Run refresh even when studies TSV hash matches last recorded state",
+    )
+
     p_trait = sub.add_parser(
         "trait-map",
         help="Map disease/phenotype traits using curated cache first, then efo.obo fallback",
@@ -8613,7 +12657,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "Input txt/csv/tsv for disease/phenotype mapping. Supported columns: "
-            "query/trait/reported_trait, optional icd10 and/or phecode, optional input_type."
+            "query/trait/reported_trait, optional icd10 and/or phecode, optional input_type, "
+            "optional trait_scale (binary|quantitative), optional code and data_type "
+            "(for example code+data_type=UKB Data Field or ICD10). "
+            "Auto-routing handles ICD10 strings (including union-style strings like 'Union#A071#A07.1'), "
+            "UKB field text (for example 'UKB data field 22435'), PheCode-like values, and free text."
         ),
     )
     p_trait.add_argument("--output", required=True, help="Output TSV path")
@@ -8650,6 +12698,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_trait.add_argument("--top-k", type=int, default=1, help="Candidates to emit per input row")
     p_trait.add_argument("--min-score", type=float, default=0.82, help="Minimum confidence score to accept candidate")
     p_trait.add_argument(
+        "--default-trait-scale",
+        default="auto",
+        choices=["auto", "binary", "quantitative"],
+        help=(
+            "Default trait scale when no trait_scale column is present. "
+            "binary biases to non-measurement branch; quantitative biases to measurement branch."
+        ),
+    )
+    p_trait.add_argument(
         "--force-map-best",
         action="store_true",
         help="Emit best candidate as review_required when no mapping reaches --min-score",
@@ -8659,11 +12716,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional TSV path for rows with validation=review_required",
     )
     p_trait.add_argument(
+        "--qc-risk-output",
+        help=(
+            "Optional TSV path for curator-risk flags. "
+            "If omitted, trait-map writes <output stem>_qc_risk.tsv."
+        ),
+    )
+    p_trait.add_argument(
         "--ukb-field-catalog",
         default=str(DEFAULT_UKB_FIELD_CATALOG),
         help=(
             "Optional UKB field catalog TSV (for example references/ukb/fieldsum.txt) "
             "used to enrich UKB data-field queries by field title."
+        ),
+    )
+    p_trait.add_argument(
+        "--icd10-supplement-cache",
+        default=str(DEFAULT_ICD10_SUPPLEMENT_CACHE),
+        help=(
+            "Optional ICD10 supplemental cache TSV (generated by setup-bundled-caches) "
+            "used for ICD10 exact matches not present in the curated trait cache."
+        ),
+    )
+    p_trait.add_argument(
+        "--icd10-label-cache",
+        default=str(DEFAULT_ICD10_LABEL_CACHE),
+        help=(
+            "Optional ICD10 code-label cache TSV (for example built with icd10-label-cache-build) "
+            "used to populate input_icd10_label for bare ICD10 code queries."
         ),
     )
     p_trait.add_argument(
@@ -8712,6 +12792,22 @@ def main() -> int:
         return 2
 
     try:
+        if args.command == "icd10-label-cache-build":
+            output_path = Path(args.output)
+            stats = build_icd10_label_cache(
+                output_path=output_path,
+                source_url=args.source_url,
+                timeout=float(args.download_timeout),
+            )
+            print(
+                f"[OK] built ICD10 label cache at {output_path} "
+                f"(codes={stats.get('codes', 0)}, "
+                f"source_member={stats.get('source_member', '')}, "
+                f"archive_size_bytes={stats.get('archive_size_bytes', 0)}, "
+                f"source_url={stats.get('source_url', '')})"
+            )
+            return 0
+
         if args.command == "setup-bundled-caches":
             term_cache_path = Path(args.term_cache)
             analyte_cache_path = Path(args.analyte_cache)
@@ -8720,8 +12816,16 @@ def main() -> int:
             uniprot_light_output_path = Path(args.uniprot_light_output)
             metabolite_alias_path = Path(args.metabolite_aliases)
             trait_cache_path = Path(args.trait_cache)
+            ukb_setup_catalog_arg = normalize(args.ukb_field_catalog)
+            ukb_setup_catalog_path = Path(args.ukb_field_catalog) if ukb_setup_catalog_arg else None
+            ukb_field_supplement_cache_path = Path(args.ukb_field_supplement_cache)
+            icd10_supplement_cache_path = Path(args.icd10_supplement_cache)
+            icd10_label_cache_path = Path(args.icd10_label_cache)
+            mondo_sssom_cache_path = Path(args.icd10_mondo_sssom_cache)
             efo_obo_setup_path = Path(args.efo_obo)
             index_path = Path(args.index)
+            cache_manifest_arg = normalize(args.cache_manifest_output)
+            cache_manifest_output_path = Path(args.cache_manifest_output) if cache_manifest_arg else None
 
             if args.seed_legacy_trait_cache:
                 trait_cache_path, seeded = seed_default_trait_cache_if_needed(trait_cache_path)
@@ -8750,6 +12854,50 @@ def main() -> int:
                 ("trait_cache", trait_cache_path),
                 ("efo_obo", efo_obo_setup_path),
             ]
+
+            ukb_roots: list[Path] = []
+            if ukb_setup_catalog_path is not None:
+                ukb_roots.append(ukb_setup_catalog_path.parent)
+            default_ukb_root = DEFAULT_UKB_FIELD_CATALOG.parent
+            if default_ukb_root not in ukb_roots:
+                ukb_roots.append(default_ukb_root)
+
+            def pick_ukb_metadata_path(filename: str) -> Path | None:
+                for root in ukb_roots:
+                    candidate = root / filename
+                    if candidate.exists():
+                        return candidate
+                if ukb_roots:
+                    return ukb_roots[0] / filename
+                return None
+
+            ukb_field_catalog_path = ukb_setup_catalog_path or DEFAULT_UKB_FIELD_CATALOG
+            ukb_field_metadata_path = pick_ukb_metadata_path("field.txt") or DEFAULT_UKB_FIELD_METADATA
+            ukb_category_catalog_path = pick_ukb_metadata_path("category.txt") or DEFAULT_UKB_CATEGORY_CATALOG
+            ukb_category_tree_path = pick_ukb_metadata_path("catbrowse.txt") or DEFAULT_UKB_CATEGORY_TREE
+            if bool(args.build_ukb_field_supplement):
+                ukb_provisioned = ensure_ukb_metadata_available(
+                    ukb_field_catalog_path=ukb_field_catalog_path,
+                    ukb_field_metadata_path=ukb_field_metadata_path,
+                    ukb_category_catalog_path=ukb_category_catalog_path,
+                    ukb_category_tree_path=ukb_category_tree_path,
+                    field_catalog_url=args.ukb_field_catalog_url,
+                    field_metadata_url=args.ukb_field_metadata_url,
+                    category_catalog_url=args.ukb_category_catalog_url,
+                    category_tree_url=args.ukb_category_tree_url,
+                    timeout=float(args.ukb_download_timeout),
+                )
+                for cache_name, (cache_path, source) in ukb_provisioned.items():
+                    if source != "local":
+                        print(f"[OK] provisioned {cache_name} at {cache_path} (source={source})")
+                required_paths.extend(
+                    [
+                        ("ukb_field_catalog", ukb_field_catalog_path),
+                        ("ukb_field_metadata", ukb_field_metadata_path),
+                        ("ukb_category_catalog", ukb_category_catalog_path),
+                        ("ukb_category_tree", ukb_category_tree_path),
+                    ]
+                )
             missing = [f"{name}={path}" for name, path in required_paths if not path.exists()]
             if missing:
                 raise FileNotFoundError(
@@ -8791,7 +12939,91 @@ def main() -> int:
 
             uniprot_aliases = load_uniprot_aliases(uniprot_alias_index_path)
             metabolite_alias_records = load_metabolite_alias_records(metabolite_alias_path)
-            trait_cache_index = load_trait_cache_index(trait_cache_path)
+            if bool(args.build_ukb_field_supplement):
+                supplement_stats = build_ukb_field_supplement_cache(
+                    output_path=ukb_field_supplement_cache_path,
+                    trait_cache_path=trait_cache_path,
+                    efo_obo_path=efo_obo_setup_path,
+                    ukb_field_catalog_path=ukb_setup_catalog_path,
+                    ukb_field_metadata_path=ukb_field_metadata_path,
+                    ukb_category_catalog_path=ukb_category_catalog_path,
+                    ukb_category_tree_path=ukb_category_tree_path,
+                )
+                print(
+                    f"[OK] built UKB supplemental trait cache at {ukb_field_supplement_cache_path} "
+                    f"(fields_total={supplement_stats.get('total_fields', 0)}, "
+                    f"base_covered={supplement_stats.get('base_covered_fields', 0)}, "
+                    f"supplement_rows={supplement_stats.get('supplement_rows', 0)}, "
+                    f"field_title_cache_exact={supplement_stats.get('method_field_title_cache_exact', 0)}, "
+                    f"field_title_ontology_exact={supplement_stats.get('method_field_title_ontology_exact', 0)}, "
+                    f"field_title_ontology_fuzzy={supplement_stats.get('method_field_title_ontology_fuzzy', 0)}, "
+                    f"category_cache_unique={supplement_stats.get('method_category_cache_unique', 0)}, "
+                    f"category_text_exact={supplement_stats.get('method_category_text_exact', 0)}, "
+                    f"category_ontology_exact={supplement_stats.get('method_category_ontology_exact', 0)}, "
+                    f"generic_disease={supplement_stats.get('method_generic_disease', 0)}, "
+                    f"generic_measurement={supplement_stats.get('method_generic_measurement', 0)})"
+                )
+
+            if bool(args.build_icd10_supplement):
+                icd10_supplement_stats = build_icd10_supplement_cache(
+                    output_path=icd10_supplement_cache_path,
+                    trait_cache_path=trait_cache_path,
+                    efo_obo_path=efo_obo_setup_path,
+                    mondo_sssom_cache_path=mondo_sssom_cache_path,
+                    mondo_sssom_url=args.icd10_mondo_sssom_url,
+                    mondo_download_timeout=float(args.icd10_mondo_download_timeout),
+                )
+                print(
+                    f"[OK] built ICD10 supplemental trait cache at {icd10_supplement_cache_path} "
+                    f"(codes_total={icd10_supplement_stats.get('total_codes', 0)}, "
+                    f"base_covered={icd10_supplement_stats.get('base_covered_codes', 0)}, "
+                    f"supplement_rows={icd10_supplement_stats.get('supplement_rows', 0)}, "
+                    f"from_efo_obo_xref={icd10_supplement_stats.get('method_efo_obo_xref', 0)}, "
+                    f"from_mondo_sssom={icd10_supplement_stats.get('method_mondo_sssom', 0)}, "
+                    f"from_both={icd10_supplement_stats.get('method_mondo_sssom_efo_obo_xref', 0)}, "
+                    f"mondo_cache_source={icd10_supplement_stats.get('mondo_cache_source', 'none')}, "
+                    f"mondo_mapping_codes={icd10_supplement_stats.get('mondo_mapping_codes', 0)}, "
+                    f"mondo_downloaded={icd10_supplement_stats.get('mondo_downloaded', False)}, "
+                    f"mondo_codes_added={icd10_supplement_stats.get('mondo_codes_added', 0)}, "
+                    f"mondo_terms_not_in_efo={icd10_supplement_stats.get('mondo_terms_not_in_efo', 0)})"
+                )
+                if icd10_supplement_stats.get("mondo_download_error"):
+                    if icd10_supplement_stats.get("mondo_cache_used"):
+                        print(
+                            "[WARN] MONDO SSSOM live refresh failed; using local cached MONDO mappings. "
+                            f"reason={icd10_supplement_stats.get('mondo_download_error')}"
+                        )
+                    else:
+                        print(
+                            "[WARN] MONDO SSSOM mappings unavailable; ICD10 supplement built from EFO ICD10 xrefs only. "
+                            f"reason={icd10_supplement_stats.get('mondo_download_error')}"
+                        )
+
+            if bool(args.build_icd10_label_cache):
+                existing_icd10_labels = load_icd10_label_cache(icd10_label_cache_path)
+                if existing_icd10_labels:
+                    print(
+                        f"[OK] using existing ICD10 label cache at {icd10_label_cache_path} "
+                        f"(codes={len(existing_icd10_labels)})"
+                    )
+                else:
+                    icd10_label_stats = build_icd10_label_cache(
+                        output_path=icd10_label_cache_path,
+                        source_url=args.icd10_label_source_url,
+                        timeout=float(args.icd10_label_download_timeout),
+                    )
+                    print(
+                        f"[OK] built ICD10 label cache at {icd10_label_cache_path} "
+                        f"(codes={icd10_label_stats.get('codes', 0)}, "
+                        f"source_member={icd10_label_stats.get('source_member', '')})"
+                    )
+
+            extra_trait_cache_paths: list[Path] = []
+            if ukb_field_supplement_cache_path.exists():
+                extra_trait_cache_paths.append(ukb_field_supplement_cache_path)
+            if icd10_supplement_cache_path.exists():
+                extra_trait_cache_paths.append(icd10_supplement_cache_path)
+            trait_cache_index = load_trait_cache_index(trait_cache_path, extra_paths=extra_trait_cache_paths)
 
             if args.rebuild_index or not index_path.exists():
                 index = build_index(
@@ -8822,8 +13054,105 @@ def main() -> int:
                 f"protein_aliases={len(uniprot_aliases)}, "
                 f"metabolite_concepts={len(metabolite_alias_records)}, "
                 f"trait_records={len(trait_cache_index.get('records', []))}, "
+                f"ukb_field_supplement={ukb_field_supplement_cache_path}, "
+                f"icd10_supplement={icd10_supplement_cache_path}, "
+                f"icd10_label_cache={icd10_label_cache_path}, "
                 f"efo_obo={efo_obo_setup_path})"
             )
+            if cache_manifest_output_path is not None:
+                write_setup_cache_manifest(
+                    output_path=cache_manifest_output_path,
+                    index_path=index_path,
+                    index=index,
+                    file_entries=[
+                        ("term_cache", term_cache_path, True),
+                        ("analyte_cache", analyte_cache_path, True),
+                        ("uniprot_aliases_source", uniprot_alias_source_path, False),
+                        ("uniprot_aliases_index", uniprot_alias_index_path, True),
+                        ("metabolite_aliases", metabolite_alias_path, True),
+                        ("hmdb_source_dir", DEFAULT_HMDB_LOCAL_DIR, False),
+                        ("metabolite_download_dir", DEFAULT_METABOLITE_DOWNLOAD_DIR, False),
+                        ("trait_cache", trait_cache_path, False),
+                        ("ukb_field_catalog", ukb_field_catalog_path, False),
+                        ("ukb_field_metadata", ukb_field_metadata_path, False),
+                        ("ukb_category_catalog", ukb_category_catalog_path, False),
+                        ("ukb_category_tree", ukb_category_tree_path, False),
+                        ("ukb_field_supplement_cache", ukb_field_supplement_cache_path, False),
+                        ("icd10_supplement_cache", icd10_supplement_cache_path, False),
+                        ("icd10_label_cache", icd10_label_cache_path, False),
+                        ("mondo_sssom_cache", mondo_sssom_cache_path, False),
+                        ("efo_obo", efo_obo_setup_path, False),
+                    ],
+                    generated_paths=[
+                        index_path,
+                        ukb_field_supplement_cache_path,
+                        icd10_supplement_cache_path,
+                        icd10_label_cache_path,
+                        mondo_sssom_cache_path,
+                    ],
+                )
+                print(f"[OK] wrote setup cache manifest to {cache_manifest_output_path}")
+            return 0
+
+        if args.command == "cache-status":
+            manifest_path = Path(args.manifest)
+            manifest_meta: dict[str, Any] = {
+                "path": str(manifest_path),
+                "exists": manifest_path.exists(),
+                "loaded": False,
+                "generated_at_utc": "",
+                "error": "",
+            }
+            specs: list[CacheStatusSpec] = []
+            if bool(args.prefer_manifest):
+                specs, manifest_meta = load_cache_status_specs_from_manifest(manifest_path)
+            if not specs:
+                ukb_catalog_arg = normalize(args.ukb_field_catalog)
+                ukb_catalog_path = Path(args.ukb_field_catalog) if ukb_catalog_arg else DEFAULT_UKB_FIELD_CATALOG
+                (
+                    ukb_catalog_path,
+                    ukb_field_metadata_path,
+                    ukb_category_catalog_path,
+                    ukb_category_tree_path,
+                ) = setup_ukb_paths(ukb_catalog_path)
+                specs = collect_default_cache_status_specs(
+                    term_cache_path=Path(args.term_cache),
+                    analyte_cache_path=Path(args.analyte_cache),
+                    uniprot_alias_source_path=Path(args.uniprot_aliases),
+                    uniprot_alias_index_path=Path(args.uniprot_light_output),
+                    metabolite_alias_path=Path(args.metabolite_aliases),
+                    trait_cache_path=Path(args.trait_cache),
+                    ukb_field_catalog_path=ukb_catalog_path,
+                    ukb_field_metadata_path=ukb_field_metadata_path,
+                    ukb_category_catalog_path=ukb_category_catalog_path,
+                    ukb_category_tree_path=ukb_category_tree_path,
+                    ukb_field_supplement_cache_path=Path(args.ukb_field_supplement_cache),
+                    icd10_supplement_cache_path=Path(args.icd10_supplement_cache),
+                    icd10_label_cache_path=Path(args.icd10_label_cache),
+                    mondo_sssom_cache_path=Path(args.icd10_mondo_sssom_cache),
+                    efo_obo_path=Path(args.efo_obo),
+                    index_path=Path(args.index),
+                )
+            report = evaluate_cache_status_specs(specs, manifest_meta=manifest_meta)
+            print_cache_status_report(report)
+
+            output_json_arg = normalize(args.output_json)
+            if output_json_arg:
+                output_json_path = Path(args.output_json)
+                output_json_path.parent.mkdir(parents=True, exist_ok=True)
+                output_json_path.write_text(
+                    json.dumps(report, indent=2, ensure_ascii=True) + "\n",
+                    encoding="utf-8",
+                )
+                print(f"[OK] wrote cache status JSON to {output_json_path}")
+
+            required_missing = int(report.get("summary", {}).get("required_missing", 0))
+            if bool(args.strict) and required_missing > 0:
+                print(
+                    f"[ERROR] cache status check failed: required_missing={required_missing}",
+                    file=sys.stderr,
+                )
+                return 1
             return 0
 
         if args.command == "uniprot-alias-build-light":
@@ -9151,10 +13480,165 @@ def main() -> int:
             print(f"[OK] wrote {len(rows)} rows to {args.output}")
             return 0
 
+        if args.command == "trait-cache-refresh":
+            trait_cache_path = Path(args.trait_cache)
+            studies_tsv_path = Path(args.studies_tsv)
+            output_cache_arg = normalize(args.output_cache)
+            output_cache_path = Path(args.output_cache) if output_cache_arg else trait_cache_path
+            state_output_arg = normalize(args.state_output)
+            state_output_path = Path(args.state_output) if state_output_arg else None
+            studies_sha256 = file_sha256(studies_tsv_path)
+
+            if state_output_path is not None and state_output_path.exists() and not bool(args.force_refresh):
+                try:
+                    state = json.loads(state_output_path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001 - malformed state should not block refresh.
+                    state = {}
+                if (
+                    normalize(state.get("studies_tsv_sha256", "")) == studies_sha256
+                    and output_cache_path.exists()
+                ):
+                    print(
+                        "[OK] trait cache refresh skipped; studies TSV hash unchanged "
+                        f"({studies_sha256[:12]})"
+                    )
+                    print(f"[OK] using existing trait cache at {output_cache_path}")
+                    return 0
+
+            efo_obo_path, efo_obo_source = ensure_efo_obo_available(
+                efo_obo_path=Path(args.efo_obo),
+                bundled_url=args.efo_obo_bundled_url,
+                timeout=float(args.efo_obo_download_timeout),
+            )
+            if efo_obo_source != "local":
+                print(
+                    f"[OK] provisioned EFO OBO at {efo_obo_path} "
+                    f"(source={efo_obo_source})"
+                )
+            ontology_index = load_trait_ontology_index(efo_obo_path)
+
+            refresh_result = build_catalog_trait_refresh(
+                studies_tsv=studies_tsv_path,
+                trait_cache_path=trait_cache_path,
+                ontology_index=ontology_index,
+                publication_tag=normalize(args.publication_tag) or "CatalogMappedTraitsImport",
+                studies_sha256=studies_sha256,
+            )
+
+            def write_rows(path_arg: str, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
+                if not normalize(path_arg):
+                    return
+                path = Path(path_arg)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+            qc_fieldnames = [
+                "DISEASE/TRAIT",
+                "MAPPED_TRAIT",
+                "MAPPED_TRAIT_URI",
+                "resolved_mapped_ids",
+                "resolved_mapped_labels",
+                "resolved_id_count",
+                "unresolved_ids",
+                "obsolete_ids",
+                "id_resolution_modes",
+                "label_match_ratio",
+                "label_match_modes",
+                "confidence",
+                "qc_status",
+            ]
+
+            write_rows(args.qc_output, refresh_result.get("qc_rows", []), qc_fieldnames)
+            write_rows(
+                args.high_confidence_output,
+                refresh_result.get("high_conf_rows", []),
+                qc_fieldnames,
+            )
+            write_rows(
+                args.to_add_output,
+                refresh_result.get("rows_to_add", []),
+                TRAIT_CACHE_COLUMNS,
+            )
+
+            output_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_cache_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=TRAIT_CACHE_COLUMNS,
+                    delimiter="\t",
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+                writer.writerows(refresh_result.get("merged_rows", []))
+
+            if normalize(args.summary_output):
+                summary_path = Path(args.summary_output)
+                summary_path.parent.mkdir(parents=True, exist_ok=True)
+                summary_path.write_text(
+                    json.dumps(refresh_result.get("summary", {}), indent=2, ensure_ascii=True) + "\n",
+                    encoding="utf-8",
+                )
+                print(f"[OK] wrote trait-cache refresh summary to {summary_path}")
+
+            if state_output_path is not None:
+                state_output_path.parent.mkdir(parents=True, exist_ok=True)
+                state_payload = {
+                    "updated_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "studies_tsv": str(studies_tsv_path),
+                    "studies_tsv_sha256": studies_sha256,
+                    "trait_cache_output": str(output_cache_path),
+                    "cache_rows_added": refresh_result.get("summary", {}).get("cache_rows_added", 0),
+                }
+                state_output_path.write_text(
+                    json.dumps(state_payload, indent=2, ensure_ascii=True) + "\n",
+                    encoding="utf-8",
+                )
+                print(f"[OK] wrote trait-cache refresh state to {state_output_path}")
+
+            summary = refresh_result.get("summary", {})
+            print(
+                "[OK] refreshed trait cache from studies TSV "
+                f"(input_rows={summary.get('input_rows', 0)}, "
+                f"high_conf_initial={summary.get('high_conf_initial', 0)}, "
+                f"after_unambiguous={summary.get('after_unambiguous_trait_filter', 0)}, "
+                f"after_specific={summary.get('after_specific_filter_candidate_rows', 0)}, "
+                f"added={summary.get('cache_rows_added', 0)}, "
+                f"conflicts_skipped={summary.get('conflicting_rows_skipped', 0)})"
+            )
+            print(f"[OK] wrote updated trait cache to {output_cache_path}")
+            return 0
+
         if args.command == "trait-map":
-            query_inputs = load_trait_query_inputs(Path(args.input))
+            query_inputs = load_trait_query_inputs(
+                Path(args.input),
+                default_trait_scale=args.default_trait_scale,
+            )
             if not query_inputs:
                 raise ValueError("No usable trait queries found in input")
+            input_type_counts = Counter(normalize_trait_input_type(row.get("input_type", "auto")) for row in query_inputs)
+            trait_scale_counts = Counter(normalize_trait_scale(row.get("trait_scale", "auto")) for row in query_inputs)
+            print(
+                "[OK] trait input rows loaded "
+                f"(total={len(query_inputs)}, "
+                f"auto={input_type_counts.get('auto', 0)}, "
+                f"trait_text={input_type_counts.get('trait_text', 0)}, "
+                f"icd10={input_type_counts.get('icd10', 0)}, "
+                f"phecode={input_type_counts.get('phecode', 0)}, "
+                f"ukb_field={input_type_counts.get('ukb_field', 0)}, "
+                f"scale_auto={trait_scale_counts.get('auto', 0)}, "
+                f"scale_binary={trait_scale_counts.get('binary', 0)}, "
+                f"scale_quantitative={trait_scale_counts.get('quantitative', 0)})"
+            )
+            icd10_query_rows = sum(
+                1
+                for row in query_inputs
+                if is_strict_icd10_code(
+                    normalize_icd10_code(row.get("icd10", "") or row.get("query", ""))
+                )
+            )
             ukb_query_rows = sum(1 for row in query_inputs if extract_ukb_field_ids(row.get("query", "")))
             ukb_category_query_rows = sum(
                 1 for row in query_inputs if extract_ukb_category_ids(row.get("query", ""))
@@ -9178,7 +13662,6 @@ def main() -> int:
                     f"[OK] provisioned EFO OBO at {efo_obo_path} "
                     f"(source={efo_obo_source})"
                 )
-            trait_cache_index = load_trait_cache_index(trait_cache_path)
             ontology_index = load_trait_ontology_index(efo_obo_path)
             ukb_catalog_arg = normalize(args.ukb_field_catalog)
             ukb_catalog_path = Path(args.ukb_field_catalog) if ukb_catalog_arg else None
@@ -9213,6 +13696,57 @@ def main() -> int:
             ukb_field_metadata_path = pick_ukb_metadata_path("field.txt")
             ukb_category_catalog_path = pick_ukb_metadata_path("category.txt")
             ukb_category_tree_path = pick_ukb_metadata_path("catbrowse.txt")
+            ukb_field_supplement_cache_path = pick_ukb_metadata_path("field_trait_supplement_cache.tsv")
+            icd10_supplement_cache_arg = normalize(args.icd10_supplement_cache)
+            icd10_supplement_cache_path = (
+                Path(args.icd10_supplement_cache)
+                if icd10_supplement_cache_arg
+                else DEFAULT_ICD10_SUPPLEMENT_CACHE
+            )
+            icd10_label_cache_arg = normalize(args.icd10_label_cache)
+            icd10_label_cache_path = (
+                Path(args.icd10_label_cache)
+                if icd10_label_cache_arg
+                else DEFAULT_ICD10_LABEL_CACHE
+            )
+
+            extra_trait_cache_paths: list[Path] = []
+            if ukb_field_supplement_cache_path is not None and ukb_field_supplement_cache_path.exists():
+                extra_trait_cache_paths.append(ukb_field_supplement_cache_path)
+                print(
+                    f"[OK] loaded UKB supplemental field trait cache from {ukb_field_supplement_cache_path}"
+                )
+            elif ukb_query_rows > 0:
+                print(
+                    "[WARN] UKB supplemental field trait cache not found; "
+                    "setup can build it with setup-bundled-caches."
+                )
+            if icd10_supplement_cache_path.exists():
+                extra_trait_cache_paths.append(icd10_supplement_cache_path)
+                print(
+                    f"[OK] loaded ICD10 supplemental trait cache from {icd10_supplement_cache_path}"
+                )
+            elif icd10_query_rows > 0:
+                print(
+                    "[WARN] ICD10 supplemental trait cache not found; "
+                    "setup can build it with setup-bundled-caches."
+                )
+            trait_cache_index = load_trait_cache_index(trait_cache_path, extra_paths=extra_trait_cache_paths)
+            official_icd10_label_index: dict[str, tuple[str, ...]] = {}
+            if icd10_label_cache_path.exists():
+                official_icd10_label_index = load_icd10_label_cache(icd10_label_cache_path)
+                print(
+                    f"[OK] loaded ICD10 label cache with {len(official_icd10_label_index)} codes "
+                    f"from {icd10_label_cache_path}"
+                )
+            elif icd10_query_rows > 0:
+                print(
+                    "[WARN] ICD10 label cache not found; bare ICD10 code outputs may have blank "
+                    "input_icd10_label. Build it with icd10-label-cache-build."
+                )
+            if official_icd10_label_index:
+                trait_cache_index = dict(trait_cache_index)
+                trait_cache_index["official_icd10_label_index"] = official_icd10_label_index
 
             ukb_field_to_category, ukb_category_to_fields = load_ukb_field_category_index(ukb_field_metadata_path)
             ukb_category_titles = load_ukb_category_title_index(ukb_category_catalog_path)
@@ -9314,6 +13848,12 @@ def main() -> int:
 
             output_path = Path(args.output)
             review_output_path = Path(args.review_output) if args.review_output else None
+            qc_risk_output_arg = normalize(args.qc_risk_output)
+            qc_risk_output_path = (
+                Path(args.qc_risk_output)
+                if qc_risk_output_arg
+                else output_path.with_name(f"{output_path.stem}{DEFAULT_TRAIT_QC_RISK_SUFFIX}")
+            )
             flush_every = max(1, int(args.flush_every))
             memoize_queries = bool(args.memoize_queries)
             query_cache_max_entries = max(0, int(args.query_cache_max_entries))
@@ -9375,6 +13915,8 @@ def main() -> int:
 
             if review_output_path is not None:
                 print(f"[OK] wrote {review_count} review rows to {review_output_path}")
+            risk_count = write_trait_qc_risk_tsv(output_path, qc_risk_output_path)
+            print(f"[OK] wrote {risk_count} QC-risk rows to {qc_risk_output_path}")
             print(f"[OK] wrote {total_rows} rows to {output_path}")
             return 0
 

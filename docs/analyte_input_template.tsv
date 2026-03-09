@@ -1,0 +1,8 @@
+query	input_type
+Q9ULI3	accession
+P14625	accession
+LIPC	gene_symbol
+Beta-glucosidase 2	protein_name
+HMDB0000122	metabolite_id
+CHEBI:38553	metabolite_id
+glucose	metabolite_name

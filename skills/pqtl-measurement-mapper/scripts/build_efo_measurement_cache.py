@@ -5,7 +5,7 @@ Default behavior:
 - Download EFO OBO if local file is not supplied.
 - Parse terms and parent relationships.
 - Extract descendants of measurement root (EFO:0001444).
-- Write TSV cache: efo_id, label, synonyms, source.
+- Write TSV cache: efo_id, label, synonyms, metabolite xrefs, source.
 """
 
 from __future__ import annotations
@@ -21,6 +21,9 @@ from pathlib import Path
 DEFAULT_EFO_OBO_URL = "https://github.com/EBISPOT/efo/releases/latest/download/efo.obo"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
 ALLOWED_ID_RE = re.compile(r"^(EFO|OBA):\d+$", re.IGNORECASE)
+CHEBI_XREF_RE = re.compile(r"CHEBI[:_](\d{1,7})", re.IGNORECASE)
+HMDB_XREF_RE = re.compile(r"HMDB[:_]?([0-9]{3,})", re.IGNORECASE)
+KEGG_XREF_RE = re.compile(r"(?:CPD:|COMPOUND:|KEGG[:_])([CD]\d{5})", re.IGNORECASE)
 
 
 def normalize(text: str) -> str:
@@ -42,6 +45,58 @@ def normalize_obo_id(text: str) -> str:
     return raw.upper()
 
 
+def canonical_metabolite_id(value: str) -> str:
+    raw = normalize(value).upper().replace(" ", "")
+    if not raw:
+        return ""
+    raw = raw.replace("_", ":")
+    hmdb = re.match(r"^HMDB(\d{3,})$", raw)
+    if hmdb:
+        return f"HMDB{hmdb.group(1).zfill(7)}"
+    chebi = re.match(r"^CHEBI:(\d{1,7})$", raw)
+    if chebi:
+        return f"CHEBI:{chebi.group(1)}"
+    kegg = re.match(r"^(?:KEGG:)?(?:CPD:|DR:)?([CD]\d{5})$", raw)
+    if kegg:
+        return kegg.group(1).upper()
+    return ""
+
+
+def metabolite_id_bucket(metabolite_id: str) -> str:
+    mid = canonical_metabolite_id(metabolite_id)
+    if mid.startswith("HMDB"):
+        return "hmdb"
+    if mid.startswith("CHEBI:"):
+        return "chebi"
+    if re.match(r"^[CD]\d{5}$", mid):
+        return "kegg"
+    return "other"
+
+
+def extract_metabolite_xref_ids(text: str) -> set[str]:
+    raw = normalize(text)
+    if not raw:
+        return set()
+    ids: set[str] = set()
+
+    direct = canonical_metabolite_id(raw)
+    if direct:
+        ids.add(direct)
+
+    for token in re.split(r"[|;, \t]+", raw):
+        direct_token = canonical_metabolite_id(token)
+        if direct_token:
+            ids.add(direct_token)
+
+    for match in CHEBI_XREF_RE.findall(raw):
+        ids.add(f"CHEBI:{match}")
+    for match in HMDB_XREF_RE.findall(raw):
+        ids.add(f"HMDB{match.zfill(7)}")
+    for match in KEGG_XREF_RE.findall(raw):
+        ids.add(match.upper())
+    return ids
+
+
 def parse_obo_terms(obo_path: Path) -> dict[str, dict[str, object]]:
     terms: dict[str, dict[str, object]] = {}
 
@@ -54,7 +109,7 @@ def parse_obo_terms(obo_path: Path) -> dict[str, dict[str, object]]:
                 if current and current.get("id"):
                     term_id = str(current["id"])
                     terms[term_id] = current
-                current = {"id": "", "name": "", "synonyms": [], "parents": [], "obsolete": False}
+                current = {"id": "", "name": "", "synonyms": [], "parents": [], "xrefs": [], "obsolete": False}
                 continue
 
             if not current:
@@ -88,6 +143,14 @@ def parse_obo_terms(obo_path: Path) -> dict[str, dict[str, object]]:
                     cast = current["parents"]
                     if isinstance(cast, list):
                         cast.append(parent)
+                continue
+
+            if line.startswith("xref: "):
+                xref = normalize(line[6:])
+                if xref:
+                    cast = current["xrefs"]
+                    if isinstance(cast, list):
+                        cast.append(xref)
                 continue
 
             if line.startswith("is_obsolete: true"):
@@ -131,7 +194,11 @@ def write_cache(terms: dict[str, dict[str, object]], selected_ids: set[str], out
 
     written = 0
     with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["efo_id", "label", "synonyms", "source"], delimiter="\t")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["efo_id", "label", "synonyms", "xrefs", "hmdb_ids", "chebi_ids", "kegg_ids", "source"],
+            delimiter="\t",
+        )
         writer.writeheader()
 
         for term_id in sorted(selected_ids):
@@ -153,11 +220,23 @@ def write_cache(terms: dict[str, dict[str, object]], selected_ids: set[str], out
             if isinstance(syns_raw, list):
                 syns = sorted({normalize(s) for s in syns_raw if isinstance(s, str) and normalize(s)})
 
+            xref_raw = data.get("xrefs")
+            metabolite_ids: set[str] = set()
+            if isinstance(xref_raw, list):
+                for raw_xref in xref_raw:
+                    if isinstance(raw_xref, str):
+                        metabolite_ids.update(extract_metabolite_xref_ids(raw_xref))
+            xrefs = sorted(metabolite_ids)
+
             writer.writerow(
                 {
                     "efo_id": term_id,
                     "label": name,
                     "synonyms": "|".join(syns),
+                    "xrefs": "|".join(xrefs),
+                    "hmdb_ids": "|".join([mid for mid in xrefs if metabolite_id_bucket(mid) == "hmdb"]),
+                    "chebi_ids": "|".join([mid for mid in xrefs if metabolite_id_bucket(mid) == "chebi"]),
+                    "kegg_ids": "|".join([mid for mid in xrefs if metabolite_id_bucket(mid) == "kegg"]),
                     "source": source,
                 }
             )
@@ -197,7 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         required=True,
-        help="Output TSV path (efo_id,label,synonyms,source)",
+        help="Output TSV path (efo_id,label,synonyms,xrefs,hmdb_ids,chebi_ids,kegg_ids,source)",
     )
     parser.add_argument("--source", default="efo-obo-measurement-branch", help="Source label written to output")
     parser.add_argument("--timeout", type=float, default=60.0, help="Download timeout seconds")

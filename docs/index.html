@@ -1,806 +1,358 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Analyte EFO Mapper</title>
-  <meta name="description" content="Map protein and metabolite identifiers to EFO/OBA measurement terms for pQTL and mQTL studies.">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analyte Mapper Guide</title>
+  <meta name="description" content="Curator-friendly guide for analyte and trait mapping to EFO/OBA/MONDO terms." />
   <style>
     @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
 
     :root {
-      --bg-a: #f4efe6;
-      --bg-b: #e8f5ef;
-      --ink: #1b1f24;
-      --ink-muted: #475569;
-      --panel: rgba(255, 255, 255, 0.82);
-      --line: rgba(27, 31, 36, 0.12);
+      --bg-a: #f6f3ea;
+      --bg-b: #e7f2ee;
+      --ink: #1f2937;
+      --muted: #4b5563;
+      --line: rgba(31, 41, 55, 0.15);
+      --panel: rgba(255, 255, 255, 0.9);
       --accent: #0f766e;
-      --accent-strong: #0d9488;
-      --warning: #b45309;
-      --shadow: 0 20px 40px rgba(2, 8, 23, 0.12);
+      --accent-2: #0b4f87;
+      --warn: #b45309;
       --radius: 18px;
+      --shadow: 0 18px 35px rgba(2, 8, 23, 0.12);
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
       font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
       color: var(--ink);
+      line-height: 1.55;
       background:
-        radial-gradient(1200px 600px at 8% -10%, #fff 0%, transparent 55%),
-        radial-gradient(900px 420px at 100% 0%, #d6f4ea 0%, transparent 65%),
+        radial-gradient(800px 420px at 8% 0%, #ffffff 0%, transparent 60%),
+        radial-gradient(700px 300px at 95% 0%, #d8f3ea 0%, transparent 65%),
         linear-gradient(130deg, var(--bg-a), var(--bg-b));
-      min-height: 100vh;
-      line-height: 1.5;
-    }
-
-    .orb {
-      position: fixed;
-      border-radius: 999px;
-      pointer-events: none;
-      filter: blur(2px);
-      opacity: 0.3;
-      z-index: 0;
-      animation: float 8s ease-in-out infinite;
-    }
-
-    .orb.one {
-      width: 220px;
-      height: 220px;
-      right: -70px;
-      top: 90px;
-      background: #38bdf8;
-    }
-
-    .orb.two {
-      width: 180px;
-      height: 180px;
-      left: -40px;
-      bottom: 120px;
-      background: #34d399;
-      animation-delay: 1.8s;
-    }
-
-    @keyframes float {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-10px); }
     }
 
     main {
-      position: relative;
-      z-index: 1;
-      width: min(1040px, 92vw);
-      margin: 32px auto 56px;
+      width: min(1100px, 93vw);
+      margin: 26px auto 50px;
       display: grid;
-      gap: 20px;
+      gap: 14px;
     }
 
     .card {
       background: var(--panel);
-      backdrop-filter: blur(6px);
       border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
-      padding: 22px;
-      transform: translateY(12px);
-      opacity: 0;
-      animation: rise 460ms ease forwards;
-    }
-
-    .card:nth-child(2) { animation-delay: 80ms; }
-    .card:nth-child(3) { animation-delay: 160ms; }
-    .card:nth-child(4) { animation-delay: 240ms; }
-    .card:nth-child(5) { animation-delay: 320ms; }
-
-    @keyframes rise {
-      to {
-        transform: translateY(0);
-        opacity: 1;
-      }
-    }
-
-    .appendix-card {
-      border: 2px dashed rgba(15, 118, 110, 0.38);
-      background: rgba(255, 255, 255, 0.9);
-    }
-
-    .stage-setup {
-      border-top: 4px solid #0369a1;
-      background: linear-gradient(180deg, rgba(3, 105, 161, 0.08), rgba(255, 255, 255, 0.86));
-    }
-
-    .stage-map {
-      border-top: 4px solid #0f766e;
-      background: linear-gradient(180deg, rgba(15, 118, 110, 0.08), rgba(255, 255, 255, 0.86));
-    }
-
-    .stage-optional {
-      border-top: 4px solid #b45309;
-      background: linear-gradient(180deg, rgba(180, 83, 9, 0.08), rgba(255, 255, 255, 0.86));
-    }
-
-    .stage-review {
-      border-top: 4px solid #475569;
-      background: linear-gradient(180deg, rgba(71, 85, 105, 0.08), rgba(255, 255, 255, 0.86));
-    }
-
-    .legend {
-      margin-top: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-
-    .legend-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.8rem;
-      color: var(--ink-muted);
-      background: rgba(255, 255, 255, 0.6);
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 10px;
-    }
-
-    .legend-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-    }
-
-    .jump-nav {
-      margin-top: 14px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .jump-link {
-      display: inline-block;
-      font-size: 0.82rem;
-      font-weight: 700;
-      color: #0b5f59;
-      text-decoration: none;
-      border: 2px solid rgba(15, 118, 110, 0.35);
-      background: rgba(255, 255, 255, 0.9);
-      border-radius: 999px;
-      padding: 7px 12px;
-      box-shadow: 0 2px 8px rgba(15, 118, 110, 0.12);
-      transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
-    }
-
-    .jump-link:hover {
-      text-decoration: underline;
-      text-underline-offset: 2px;
-      background: rgba(240, 253, 250, 1);
-      box-shadow: 0 6px 16px rgba(15, 118, 110, 0.2);
-      transform: translateY(-1px);
-    }
-
-    .jump-link:active {
-      transform: translateY(0);
-      box-shadow: 0 2px 8px rgba(15, 118, 110, 0.14);
-    }
-
-    .jump-link:focus-visible {
-      outline: 3px solid rgba(14, 116, 144, 0.42);
-      outline-offset: 2px;
-    }
-
-    .workflow-banner {
-      padding: 14px 18px;
-    }
-
-    .workflow-banner h2 {
-      margin-bottom: 6px;
-      font-size: 1rem;
+      padding: 20px;
     }
 
     h1 {
       margin: 0 0 8px;
-      font-size: clamp(1.8rem, 4.8vw, 2.7rem);
+      font-size: clamp(1.9rem, 4vw, 2.6rem);
       line-height: 1.1;
       letter-spacing: -0.02em;
     }
 
     h2 {
       margin: 0 0 10px;
-      font-size: 1.1rem;
-      letter-spacing: 0.01em;
+      font-size: 1.12rem;
+      color: var(--accent-2);
     }
 
-    p {
-      margin: 0;
-      color: var(--ink-muted);
-    }
+    p { margin: 0; color: var(--muted); }
 
-    .badge-row {
+    .lead { font-size: 1.02rem; }
+
+    .tags {
       margin-top: 12px;
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
     }
 
-    .badge {
-      border: 1px solid rgba(13, 148, 136, 0.25);
-      color: #0f766e;
+    .tag {
+      border: 1px solid rgba(15, 118, 110, 0.25);
+      color: var(--accent);
       background: rgba(15, 118, 110, 0.08);
       border-radius: 999px;
-      padding: 5px 10px;
+      padding: 4px 10px;
       font-size: 0.78rem;
-      font-weight: 600;
+      font-weight: 700;
+    }
+
+    code, pre {
+      font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
     }
 
     pre {
-      margin: 12px 0 0;
-      padding: 12px;
-      border-radius: 12px;
+      margin: 10px 0 0;
       background: #0f172a;
       color: #d1fae5;
-      border: 1px solid #1e293b;
-      overflow-x: auto;
-      font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #1f2937;
+      overflow: auto;
       font-size: 0.84rem;
-      line-height: 1.5;
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    code {
-      font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
-      font-size: 0.88em;
+    ol, ul {
+      margin: 8px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
     }
 
-    a {
-      color: #0f766e;
-    }
+    li { margin: 6px 0; }
 
-    .btn-row {
-      margin-top: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-
-    .btn {
-      border: 1px solid transparent;
-      border-radius: 12px;
-      padding: 9px 14px;
-      font-weight: 600;
-      font-size: 0.88rem;
-      text-decoration: none;
-      cursor: pointer;
-      transition: transform 120ms ease, filter 120ms ease;
-    }
-
-    .btn:hover {
-      transform: translateY(-1px);
-      filter: brightness(1.02);
-    }
-
-    .btn.primary {
-      color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent-strong));
-    }
-
-    .btn.ghost {
-      color: #0f766e;
-      background: rgba(255, 255, 255, 0.65);
-      border-color: rgba(15, 118, 110, 0.25);
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 20px;
-    }
-
-    .template-table-wrap {
-      margin-top: 12px;
-      overflow-x: auto;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.62);
-    }
-
-    .template-table {
+    table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 540px;
-      font-family: "IBM Plex Mono", "JetBrains Mono", monospace;
-      font-size: 0.82rem;
+      margin-top: 10px;
+      font-size: 0.9rem;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
     }
 
-    .template-table th,
-    .template-table td {
-      border-bottom: 1px solid rgba(15, 23, 42, 0.12);
-      padding: 8px 10px;
+    th, td {
       text-align: left;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
       vertical-align: top;
-      white-space: nowrap;
     }
 
-    .template-table th {
-      background: rgba(15, 118, 110, 0.1);
-      color: #0f766e;
+    th {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #334155;
+      background: rgba(15, 118, 110, 0.06);
+    }
+
+    .warn {
+      color: var(--warn);
       font-weight: 700;
     }
 
-    .template-table tr:last-child td {
-      border-bottom: none;
-    }
+    .small { font-size: 0.85rem; }
 
-    ul {
-      margin: 8px 0 0;
-      padding-left: 18px;
-      color: var(--ink-muted);
-    }
-
-    ol {
-      margin: 10px 0 0;
-      padding-left: 20px;
-      color: var(--ink-muted);
-    }
-
-    li {
-      margin: 5px 0;
-    }
-
-    .note {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(180, 83, 9, 0.22);
-      background: rgba(251, 191, 36, 0.12);
-      color: #78350f;
-      font-size: 0.86rem;
-    }
-
-    footer {
-      margin-top: 8px;
-      color: #64748b;
-      font-size: 0.82rem;
-    }
-
-    @media (max-width: 760px) {
-      main {
-        margin-top: 20px;
-      }
-
-      .card {
-        padding: 18px;
-      }
-
-      .grid {
-        grid-template-columns: 1fr;
-      }
+    .footer {
+      text-align: center;
+      color: #475569;
+      font-size: 0.8rem;
+      padding: 6px 0 2px;
     }
   </style>
 </head>
 <body>
-  <div class="orb one"></div>
-  <div class="orb two"></div>
   <main>
-    <section class="card" id="top">
-      <h1>Analyte EFO Mapper</h1>
-      <p>Maps proteins/metabolites to measurement terms and can also map disease/phenotype reported traits using a curated cache plus EFO/OBO fallback.</p>
-      <div class="badge-row">
-        <span class="badge">EFO + OBA</span>
-        <span class="badge">Matrix-aware (plasma &gt; blood &gt; serum)</span>
-        <span class="badge">Validated vs review-queue outputs</span>
-        <span class="badge">Disease/phenotype trait-map mode</span>
-      </div>
-      <div class="legend">
-        <span class="legend-item"><span class="legend-dot" style="background:#0369a1"></span>Setup</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#0f766e"></span>Core mapping</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#b45309"></span>Optional tuning</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#475569"></span>Review / maintenance</span>
-      </div>
-      <div class="jump-nav">
-        <a class="jump-link" href="#first-time-setup">1. Setup Details (Novice)</a>
-        <a class="jump-link" href="#input-file">2. Input File</a>
-        <a class="jump-link" href="#copy-paste-cells">3. Copy-Paste Commands</a>
-        <a class="jump-link" href="#mapping-method">Mapping Logic</a>
-        <a class="jump-link" href="#additional-options">4. Additional Options</a>
+    <section class="card">
+      <h1>Analyte Mapper</h1>
+      <p class="lead">A curator-first mapper for analytes and traits to ontology terms. Designed for transparent, auditable GWAS metadata curation.</p>
+      <div class="tags">
+        <span class="tag">Offline-first setup</span>
+        <span class="tag">UKB-aware trait mapping</span>
+        <span class="tag">ICD10 / PheCode routing</span>
+        <span class="tag">MONDO-in-EFO QC flag</span>
       </div>
     </section>
 
-    <section class="card stage-setup" id="first-time-setup">
-      <h2>1. Setup Details (Novice)</h2>
-      <p>Do this once on a new machine. Follow the exact steps below even if you have never used Python before.</p>
-      <ol>
-        <li>
-          <strong>Open your command line:</strong> use Terminal (Mac/Linux) or PowerShell (Windows).
-        </li>
-        <li>
-          <strong>Install Git and Python 3.10+:</strong> if missing, install from
-          <a href="https://git-scm.com/downloads" target="_blank" rel="noopener noreferrer">git-scm.com/downloads</a>
-          and
-          <a href="https://www.python.org/downloads/" target="_blank" rel="noopener noreferrer">python.org/downloads</a>.
-          Then check versions:
-          <code>git --version</code>,
-          <code>python3 --version</code> (Mac/Linux),
-          or <code>py --version</code> (Windows).
-        </li>
-        <li>
-          <strong>Copy one full setup block below and run it:</strong> this downloads the project, creates an isolated Python environment,
-          installs required packages, creates folders, and copies your input template to <code>data/analytes.tsv</code>.
-        </li>
-      </ol>
-      <div class="note">
-        If a command says <code>not found</code>, stop there, install the missing tool (Git or Python), then run the block again.
-      </div>
-      <div class="grid">
-        <article>
-          <h2>Mac/Linux: run this exactly</h2>
-          <pre id="setup-mac">git clone https://github.com/earlEBI/analyte-efo-mapper.git
-cd analyte-efo-mapper
-python3 -m venv .venv
+    <section class="card">
+      <h2>Quick Start</h2>
+      <pre>python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
-mkdir -p data final_output
-cp docs/input_template.tsv data/analytes.tsv
-analyte-efo-mapper setup-bundled-caches</pre>
-          <div class="btn-row">
-            <button class="btn primary copy-btn" type="button" data-copy-target="setup-mac">Copy Mac/Linux Setup</button>
-          </div>
-        </article>
-        <article>
-          <h2>Windows PowerShell: run this exactly</h2>
-          <pre id="setup-win">git clone https://github.com/earlEBI/analyte-efo-mapper.git
-cd analyte-efo-mapper
-py -3 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
-New-Item -ItemType Directory -Force data, final_output | Out-Null
-Copy-Item docs\input_template.tsv data\analytes.tsv
-analyte-efo-mapper setup-bundled-caches</pre>
-          <div class="btn-row">
-            <button class="btn primary copy-btn" type="button" data-copy-target="setup-win">Copy Windows Setup</button>
-          </div>
-        </article>
-      </div>
-      <div class="note">
-        Next: edit <code>data/analytes.tsv</code> with your own IDs (UniProt, gene symbol, gene ID, protein name, or metabolite IDs/names).
-      </div>
-      <div class="note">
-        The final command in each setup block validates bundled protein/metabolite/trait caches, validates bundled UKB field/category dictionaries, and builds the local index without internet downloads.
-      </div>
-      <div class="note">
-        Bundled UKB dictionaries used by trait mode live at
-        <code>references/ukb/fieldsum.txt</code>, <code>references/ukb/field.txt</code>,
-        <code>references/ukb/category.txt</code>, and <code>references/ukb/catbrowse.txt</code>.
-      </div>
-      <div class="note">
-        Trait mode requires <code>skills/pqtl-measurement-mapper/references/efo.obo</code>. If missing, setup/trait-map can auto-provision it from your pinned bundled URL (recommended: repo release asset <code>efo.obo.gz</code>).
-      </div>
-      <div class="note">
-        To use your own release asset, pass <code>--efo-obo-bundled-url https://github.com/&lt;owner&gt;/&lt;repo&gt;/releases/latest/download/efo.obo.gz</code>.
-      </div>
-      <div class="note">
-        Setup uses a lightweight UniProt profile by default (reviewed-like + requires gene symbol) and writes
-        <code>skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv</code>.
-      </div>
-      <div class="note">
-        If you need the full bundled UniProt cache for setup/indexing, run:
-        <code>analyte-efo-mapper setup-bundled-caches --uniprot-profile full</code>
-      </div>
-      <div class="note">
-        If you plan to map many <code>gene_id</code> inputs, run once after setup:
-        <code>analyte-efo-mapper uniprot-alias-enrich --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv --workers 8</code>
-      </div>
-      <div class="note">
-        Run all mapper commands with <code>analyte-efo-mapper ...</code>.
-      </div>
-      <div class="note">
-        Upgrade / pull latest (external-user flow):<br>
-        <code>git pull --rebase origin main</code><br>
-        <code>python -m pip install -e .</code><br>
-        <code>analyte-efo-mapper setup-bundled-caches</code>
-      </div>
+	python -m pip install -U pip
+		python -m pip install -r requirements.txt
+		python -m pip install -e .
+		analyte-efo-mapper setup-bundled-caches
+		analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json</pre>
+	      <p class="small" style="margin-top:8px;"><code>setup-bundled-caches</code> auto-downloads missing official UKB metadata, refreshes MONDO ICD10 mappings, builds the ICD10 label cache when missing, and rebuilds the local index. If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache.</p>
+	      <pre>analyte-efo-mapper map --input data/analytes.tsv --output final_output/analytes_efo.tsv
+	analyte-efo-mapper trait-map --input data/traits.tsv --output final_output/traits_mapped.tsv --review-output final_output/traits_review.tsv</pre>
     </section>
 
-    <section class="card workflow-banner stage-map" id="input-file">
-      <h2>2. Input File</h2>
-      <p>Prepare your input file before running the copy-paste commands below.</p>
-    </section>
-
-    <section class="grid">
-      <article class="card stage-map" id="input-template">
-        <h2>Input Template</h2>
-        <p>Recommended format is a 2-column TSV: <code>query</code> then <code>input_type</code>.</p>
-        <div class="template-table-wrap">
-          <table class="template-table">
-            <thead>
-              <tr>
-                <th>query</th>
-                <th>input_type</th>
-                <th>meaning</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td>Q9ULI3</td><td>accession</td><td>UniProt accession</td></tr>
-              <tr><td>LIPC</td><td>gene_symbol</td><td>Gene symbol</td></tr>
-              <tr><td>ENSG00000172137</td><td>gene_id</td><td>Ensembl gene ID</td></tr>
-              <tr><td>Beta-glucosidase 2</td><td>protein_name</td><td>Protein name text</td></tr>
-              <tr><td>HMDB0000122</td><td>metabolite_id</td><td>Metabolite database ID</td></tr>
-              <tr><td>CHEBI:38553</td><td>metabolite_id</td><td>Metabolite database ID</td></tr>
-              <tr><td>glucose</td><td>metabolite_name</td><td>Metabolite name text</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="note">
-          Save as tab-separated values (TSV), not CSV. Header row should be <code>query</code> and optional <code>input_type</code>.
-        </div>
-        <pre id="input-template-tsv">query	input_type
+    <section class="card">
+      <h2>Input Formats</h2>
+      <table>
+        <thead>
+          <tr><th>Mode</th><th>Accepted Inputs</th><th>Auto Detection</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>map</code></td>
+            <td>Protein/metabolite IDs, gene symbols, gene IDs, names (<code>.txt/.csv/.tsv</code>)</td>
+            <td>Uses <code>input_type</code> if present, otherwise alias/ID heuristics</td>
+          </tr>
+          <tr>
+            <td><code>trait-map</code></td>
+            <td>Trait text, ICD10, PheCode, UKB data-field text (<code>.txt/.csv/.tsv</code>)</td>
+            <td>Routes ICD10 including union-like strings (for example <code>Union#A071#A07.1</code>), UKB field text, phecode-like tokens, and free text</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="small" style="margin-top:10px;"><strong>Recommended analyte columns:</strong></p>
+      <table>
+        <thead>
+          <tr><th>Column</th><th>Required</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>query</code></td><td>yes</td><td>Input analyte identifier or name</td></tr>
+          <tr><td><code>input_type</code></td><td>optional</td><td>Explicit routing (<code>accession</code>, <code>gene_symbol</code>, <code>protein_name</code>, <code>metabolite_id</code>, <code>metabolite_name</code>, <code>auto</code>)</td></tr>
+        </tbody>
+      </table>
+      <pre style="margin-top:10px;">query	input_type
 Q9ULI3	accession
+P14625	accession
 LIPC	gene_symbol
-ENSG00000172137	gene_id
 Beta-glucosidase 2	protein_name
 HMDB0000122	metabolite_id
 CHEBI:38553	metabolite_id
 glucose	metabolite_name</pre>
-        <div class="btn-row">
-          <button class="btn ghost copy-btn" type="button" data-copy-target="input-template-tsv">Copy 2-Column TSV Example</button>
-          <a class="btn ghost" href="./input_template.tsv" download>Download TSV Template</a>
-        </div>
-        <div class="note">
-          Trait workflow uses a separate input file (for command 3c), for example:
-        </div>
-        <pre id="trait-input-template-inline">query	input_type
-Depression	trait_text
-I44	icd10
-250.23	phecode
-Coronary artery disease	trait_text</pre>
-        <div class="btn-row">
-          <button class="btn ghost copy-btn" type="button" data-copy-target="trait-input-template-inline">Copy Trait TSV Example</button>
-        </div>
-      </article>
-
-      <article class="card stage-map" id="copy-paste-cells">
-        <h2>3. Copy-Paste Commands</h2>
-        <p>Choose one command based on what you are mapping.</p>
-
-        <h3>a) Proteins</h3>
-        <pre id="map-cmd-protein">analyte-efo-mapper map \
+      <p class="small" style="margin-top:10px;">Bundled analyte example file: <code>docs/analyte_input_template.tsv</code></p>
+      <p class="small" style="margin-top:8px;"><code>gene_id</code> routing is an advanced/conditional path only. The bundled offline UniProt alias caches are too sparse in <code>gene_ids</code> to recommend it by default.</p>
+      <p class="small" style="margin-top:10px;"><strong>Analyte context options (<code>map</code>):</strong> <code>--measurement-context</code>, <code>--additional-contexts</code>, <code>--additional-context-keywords</code>, <code>--matrix-priority</code>.</p>
+      <pre style="margin-top:10px;">analyte-efo-mapper map \
   --input data/analytes.tsv \
   --output final_output/analytes_efo.tsv \
-  --withheld-triage-output final_output/withheld_for_review_triage.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --entity-type protein \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-        <div class="btn-row">
-          <button class="btn primary copy-btn" type="button" data-copy-target="map-cmd-protein">Copy Protein Command</button>
-        </div>
+  --measurement-context blood \
+  --additional-contexts serum \
+  --additional-context-keywords "aorta,adipose tissue" \
+  --matrix-priority plasma,blood,serum</pre>
 
-        <h3>b) Metabolites</h3>
-        <pre id="map-cmd-metabolite">analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --withheld-triage-output final_output/withheld_for_review_triage.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --metabolite-aliases skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
-  --entity-type metabolite \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-        <div class="btn-row">
-          <button class="btn primary copy-btn" type="button" data-copy-target="map-cmd-metabolite">Copy Metabolite Command</button>
-        </div>
-
-        <h3>c) Traits</h3>
-<pre id="map-cmd-traits">analyte-efo-mapper trait-map \
-  --input data/traits.tsv \
-  --output final_output/traits_mapped.tsv \
-  --trait-cache skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv \
-  --ukb-field-catalog references/ukb/fieldsum.txt \
-  --efo-obo skills/pqtl-measurement-mapper/references/efo.obo \
-  --min-score 0.82 \
-  --review-output final_output/traits_review.tsv \
-  --progress</pre>
-        <div class="btn-row">
-          <button class="btn primary copy-btn" type="button" data-copy-target="map-cmd-traits">Copy Trait Command</button>
-        </div>
-        <p class="note">Trait cache QC is automatic: cache IDs are checked against <code>efo.obo</code>, obsolete IDs are remapped where possible, and unresolved IDs are warned and excluded.</p>
-
-      </article>
+      <p class="small" style="margin-top:10px;"><strong>Recommended trait columns:</strong></p>
+      <table>
+        <thead>
+          <tr><th>Column</th><th>Required</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>query</code></td><td>yes</td><td>Trait text or coded text (for example UKB/ICD10 union-style)</td></tr>
+          <tr><td><code>trait_scale</code></td><td>recommended</td><td>Branch preference: <code>binary</code> or <code>quantitative</code></td></tr>
+          <tr><td><code>code</code></td><td>recommended</td><td>Source code (<code>20002</code>, <code>Union</code>, etc.)</td></tr>
+          <tr><td><code>data_type</code></td><td>recommended</td><td>Source type (<code>UKB Data Field</code>, <code>ICD10</code>, etc.)</td></tr>
+          <tr><td><code>icd10</code></td><td>optional</td><td>Explicit ICD10 code if available</td></tr>
+          <tr><td><code>phecode</code></td><td>optional</td><td>Explicit PheCode if available</td></tr>
+          <tr><td><code>input_type</code></td><td>optional</td><td>Manual route (<code>trait_text</code>, <code>icd10</code>, <code>phecode</code>, <code>ukb_field</code>, <code>auto</code>)</td></tr>
+        </tbody>
+      </table>
+      <pre style="margin-top:10px;">query	trait_scale	code	data_type
+20002#1587#aortic regurgitation | incompetence	binary	20002	UKB Data Field
+Union#M2571#M25.71 Osteophyte (Shoulder region)	binary	Union	ICD10
+41202#M1997#M19.97 Arthrosis | unspecified (Ankle and foot)	binary	41202	UKB Data Field
+Hand grip strength (left)	quantitative	46	UKB Data Field</pre>
+      <p class="small" style="margin-top:10px;">Bundled example file: <code>docs/trait_input_template.tsv</code></p>
     </section>
 
-    <section class="card stage-map" id="mapping-method">
-      <h2>How Mapping Works</h2>
-      <p>Deterministic identity is always preferred; lexical fallback is used only when needed.</p>
-      <h3>1) Cache sources used by runtime</h3>
-      <ul>
-        <li><code>uniprot_aliases.tsv</code> (bundled source) -> <code>uniprot_aliases_light.tsv</code> (generated default for speed).</li>
-        <li><code>metabolite_aliases.tsv</code> (bundled HMDB-derived aliases, optionally rebuilt from pinned HMDB SDF).</li>
-        <li><code>trait_mapping_cache.tsv</code> (bundled curated trait cache).</li>
-        <li><code>efo_measurement_terms_cache.tsv</code> (bundled measurement terms, refreshable via <code>refresh-efo-cache</code>).</li>
-        <li><code>efo.obo</code> (full ontology for trait fallback + obsolete-ID checks; auto-provisioned if missing).</li>
-        <li><code>measurement_index.json</code> (local compiled index from setup).</li>
-      </ul>
-      <div class="note">
-        Measurement cache and full <code>efo.obo</code> are intentionally separate: measurement cache is runtime-optimized for analyte mapping; full OBO is for trait mapping and ontology QC.
-      </div>
-      <h3>2) Mapping order and method</h3>
-      <ul>
-        <li><strong>Protein/metabolite <code>map</code>:</strong> resolve IDs first (UniProt/HMDB/ChEBI/KEGG), then exact/synonym term hits, then token/lexical fallback, then validation gates.</li>
-        <li><strong>Trait <code>trait-map</code>:</strong> cache exact ICD10 -> cache exact PheCode -> cache exact text -> cache fuzzy text (if no ontology-exact) -> exact <code>efo.obo</code> -> fuzzy <code>efo.obo</code>.</li>
-      </ul>
-      <h3>3) Validation</h3>
-      <ul>
-        <li>Identity checks: accession/concept consistency blocks near-name collisions.</li>
-        <li>Context checks: default blood context allows blood/plasma/unlabeled and excludes serum unless added.</li>
-        <li>Safeguards: ratio terms require ratio-like query intent; weak lexical-only matches are withheld.</li>
-        <li>Trait cache QC: cache ontology IDs are checked against <code>efo.obo</code>; obsolete IDs are remapped where possible and unresolved IDs are excluded from auto output.</li>
-      </ul>
-      <h3>4) Withheld triage</h3>
-      <ul>
-        <li>Enable with <code>--withheld-triage-output final_output/withheld_for_review_triage.tsv</code>.</li>
-        <li>Rows are classified as <code>reject_high</code>, <code>review_needed</code>, <code>accept_medium</code>, or <code>accept_high</code>.</li>
-        <li>Includes query label and suggested mapped label/subject for quick manual QC.</li>
-      </ul>
+    <section class="card">
+      <h2>Mapping Priority</h2>
+      <p><strong>Analyte mode (<code>map</code>):</strong></p>
+      <ol>
+        <li>Exact analyte cache</li>
+        <li>UniProt/metabolite identity resolution</li>
+        <li>Exact ontology label/synonym</li>
+        <li>Lexical/token fallback</li>
+        <li>Review queue for non-validated rows</li>
+      </ol>
+      <p style="margin-top:10px;"><strong>Trait mode (<code>trait-map</code>):</strong></p>
+      <ol>
+        <li>Cache exact ICD10 and supplemental ICD10</li>
+        <li>Cache exact PheCode</li>
+        <li>Cache exact UKB field and supplemental UKB field</li>
+        <li>Cache exact/fuzzy text</li>
+        <li><code>efo.obo</code> exact ICD10 xref and exact label/synonym</li>
+        <li><code>efo.obo</code> fuzzy fallback</li>
+        <li>UKB category fallback</li>
+      </ol>
     </section>
 
-    <section class="card workflow-banner stage-optional" id="additional-options">
-      <h2>4. Additional Options</h2>
-      <p>Use these only when you need context tuning, cache refresh, or deeper review outputs.</p>
+    <section class="card">
+      <h2>Trait Output (QC Columns)</h2>
+      <table>
+        <thead>
+          <tr><th>Column Group</th><th>Columns</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Input Trace</td>
+            <td><code>input_row_id</code>, <code>input_query</code>, <code>negation</code>, <code>input_type</code>, <code>input_trait_scale</code>, <code>input_source_code</code>, <code>input_source_data_type</code>, <code>input_icd10</code>, <code>input_icd10_label</code>, <code>input_phecode</code></td>
+          </tr>
+          <tr>
+            <td>UKB Context</td>
+            <td><code>input_ukb_field_id</code>, <code>input_ukb_field_label</code>, <code>input_ukb_category_id</code>, <code>input_ukb_category_label</code>, <code>input_ukb_category_path</code></td>
+          </tr>
+          <tr>
+            <td>Mapping</td>
+            <td><code>mapped_trait_id</code>, <code>mapped_trait_label</code>, <code>confidence</code>, <code>matched_via</code>, <code>matched_on</code>, <code>source_file</code></td>
+          </tr>
+          <tr>
+            <td>QC Flags</td>
+            <td><code>validation</code>, <code>qc_review_flag</code>, <code>term_not_in_efo</code>, <code>mondo_missing_ids</code></td>
+          </tr>
+          <tr>
+            <td>Audit Text</td>
+            <td><code>evidence</code>, <code>provenance</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="small" style="margin-top:10px;"><code>negation</code> is <code>yes</code> when input contains cues such as <code>none</code>, <code>no</code>, <code>not</code>, <code>without</code>, or <code>none of the above</code>. Negation rows are mapped as <code>review_required</code> when a candidate exists; non-informative options like <code>none of the above</code> stay <code>not_mapped</code>. <code>input_trait_scale</code> applies branch preference: <code>quantitative</code> favors measurement terms, <code>binary</code> favors non-measurement terms.</p>
+      <p class="small" style="margin-top:10px;"><span class="warn">Important:</span> if a MONDO mapping is not imported in EFO and no better active EFO-family term is available, <code>term_not_in_efo</code> is set to <code>term not in EFO</code> and the row is review-required.</p>
     </section>
 
-    <section class="card stage-optional" id="measurement-context">
-      <h2>Measurement Context and Optional Arguments</h2>
-      <p>Use <code>--measurement-context</code> to control tissue/matrix filtering and <code>--additional-contexts</code> to opt into extras.</p>
-      <ul>
-        <li><code>--measurement-context blood</code> (default): allows blood + plasma + unlabeled terms, excludes serum.</li>
-        <li><code>--measurement-context plasma</code>: plasma-only context.</li>
-        <li><code>--measurement-context blood --additional-contexts serum</code>: blood/plasma plus serum.</li>
-        <li><code>--measurement-context cerebrospinal_fluid</code>: CSF-only context.</li>
-        <li><code>--additional-context-keywords &lt;phrase&gt;</code>: free-text add-on (for example <code>aorta</code>, <code>adipose tissue</code>).</li>
-      </ul>
-      <pre id="map-cmd-plasma">analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --measurement-context plasma \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-      <div class="btn-row">
-        <button class="btn ghost copy-btn" type="button" data-copy-target="map-cmd-plasma">Copy Plasma-Only Command</button>
-      </div>
-      <pre id="map-cmd-aorta">analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --measurement-context auto \
-  --additional-context-keywords aorta \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-      <div class="btn-row">
-        <button class="btn ghost copy-btn" type="button" data-copy-target="map-cmd-aorta">Copy Aorta Keyword Command</button>
-      </div>
-      <pre id="map-cmd-review-queue">analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --review-queue-output final_output/review_queue.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --entity-type auto \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-      <div class="btn-row">
-        <button class="btn ghost copy-btn" type="button" data-copy-target="map-cmd-review-queue">Copy Optional Full Review Queue Command</button>
-      </div>
-      <pre id="map-cmd-withheld-triage">analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --withheld-triage-output final_output/withheld_for_review_triage.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --entity-type auto \
-  --workers 8 \
-  --parallel-mode process \
-  --progress</pre>
-      <div class="btn-row">
-        <button class="btn ghost copy-btn" type="button" data-copy-target="map-cmd-withheld-triage">Copy Optional Withheld Triage Command</button>
-      </div>
-      <div class="note">
-        Triage works for both proteins and metabolites. Protein rows use accession/gene-symbol consistency; metabolite rows use HMDB/ChEBI/KEGG ID/xref consistency.
-      </div>
-      <ul>
-        <li>Useful optional flags: <code>--top-k</code>, <code>--min-score</code>, <code>--workers</code>, <code>--name-mode</code>, <code>--entity-type</code>, <code>--auto-enrich-uniprot</code>, <code>--metabolite-aliases</code>, <code>--unmapped-output</code>, <code>--review-queue-output</code>, <code>--withheld-triage-output</code>.</li>
-      </ul>
-      <div class="note">
-        <code>--auto-enrich-uniprot</code> is incremental: it fetches missing aliases only for accession-like queries in your current input, writes them to the file set by <code>--uniprot-aliases</code>, then rebuilds the index. It is not a full UniProt rebuild.
-        If you are using lightweight setup, pass <code>--uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv</code>.
-      </div>
-      <div class="note">
-        For full gene-ID coverage in your local lightweight UniProt cache, run:
-        <code>analyte-efo-mapper uniprot-alias-enrich --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv --workers 8</code>
-        (add <code>--refresh-all</code> to refresh every accession row).
-      </div>
+    <section class="card">
+      <h2>Refresh Trait Cache From New Studies TSV</h2>
+      <pre>analyte-efo-mapper trait-cache-refresh \
+  --studies-tsv /path/to/gwas-catalog-studies.tsv</pre>
+      <p style="margin-top:8px;">This refresh writes QC artifacts and updates cache rows using this policy:</p>
+      <ol>
+        <li>High-confidence ontology resolution</li>
+        <li>Unambiguous mapping per normalized trait</li>
+        <li>Specific label overlap filter</li>
+        <li>Skip conflicts with existing curated cache</li>
+      </ol>
+      <p class="small" style="margin-top:8px;">A refresh state file tracks the last processed studies hash. If unchanged, refresh is skipped unless <code>--force-refresh</code> is set.</p>
     </section>
 
-    <section class="card stage-review" id="outputs">
-      <h2>Outputs</h2>
-      <ul>
-        <li><code>final_output/analytes_efo.tsv</code>: main mappings with confidence and validation.</li>
-        <li><code>final_output/withheld_for_review_triage.tsv</code> (optional): triaged withheld rows to prioritize manual review.</li>
-        <li><code>final_output/review_queue.tsv</code> (optional): broader manual-review file with closest unresolved candidates; useful suggestions, but many are likely incorrect.</li>
-        <li><code>final_output/analytes_unmapped.tsv</code>: optional pure unresolved list.</li>
-      </ul>
-      <div class="note">
-        This website is documentation and templates. Mapping runs in your local Python environment.
-      </div>
+    <section class="card">
+      <h2>Bundled Files And Index</h2>
+      <table>
+        <thead>
+          <tr><th>File</th><th>Used For</th><th>Setup Behavior</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>efo_measurement_terms_cache.tsv</code></td><td>Measurement term lookup</td><td>Validated, indexed</td></tr>
+          <tr><td><code>analyte_to_efo_cache.tsv</code></td><td>Deterministic analyte mappings</td><td>Validated, indexed</td></tr>
+          <tr><td><code>uniprot_aliases.tsv</code></td><td>Protein identity resolution</td><td>Validated; light profile optionally generated/indexed</td></tr>
+          <tr><td><code>metabolite_aliases.tsv</code></td><td>HMDB-derived metabolite concept resolution</td><td>Validated, indexed</td></tr>
+          <tr><td><code>trait_mapping_cache.tsv</code></td><td>Trait cache-first mapping</td><td>Validated, used by <code>trait-map</code></td></tr>
+          <tr><td><code>efo.obo</code></td><td>Trait fallback and ontology validation</td><td>Auto-provisioned if missing</td></tr>
+	          <tr><td><code>references/ukb/*</code></td><td>UKB field/category context</td><td>Validated in setup; supplements generated</td></tr>
+	          <tr><td><code>references/icd10/mondo.sssom.tsv</code></td><td>MONDO ICD10 mapping cache</td><td>Downloaded/refreshed in setup</td></tr>
+	          <tr><td><code>references/icd10/icd10_label_index.tsv</code></td><td>ICD10 label cache</td><td>Generated/downloaded in setup from the official CMS ICD10 release when missing</td></tr>
+	          <tr><td><code>references/icd10/icd10_trait_supplement_cache.tsv</code></td><td>ICD10 extension cache</td><td>Generated in setup from EFO ICD10 xrefs + MONDO SSSOM</td></tr>
+        </tbody>
+      </table>
+	      <p class="small" style="margin-top:10px;">Setup writes cache/index audit inventory to <code>final_output/analyte_mapper_cache_manifest.json</code>.</p>
+	      <p class="small" style="margin-top:8px;">Run <code>analyte-efo-mapper cache-status</code> after setup to see required/recommended cache files that are present or missing.</p>
+	      <p class="small" style="margin-top:8px;">Compiled index: <code>measurement_index.json</code> with <code>term_meta</code>, <code>exact_term_index</code>, <code>token_index</code>, <code>analyte_index</code>, <code>accession_alias_index</code>, <code>gene_symbol_accession_index</code>, optional <code>gene_id_accession_index</code> when the UniProt alias cache includes <code>gene_ids</code>, <code>metabolite_alias_index</code>, and <code>metabolite_concept_index</code>. It is generated locally during setup rather than relied on as a tracked Git artifact.</p>
     </section>
 
-    <section class="card stage-review" id="refresh-cache">
-      <h2>Refresh EFO Cache (Optional)</h2>
-      <p>Use this when you want to refresh the full EFO/OBA measurement cache and rebuild the local index. Rebuild is on by default and should usually stay on.</p>
-      <pre id="refresh-efo-cmd">analyte-efo-mapper refresh-efo-cache \
-  --download-url https://github.com/EBISPOT/efo/releases/latest/download/efo.obo \
-  --term-cache skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --analyte-cache skills/pqtl-measurement-mapper/references/analyte_to_efo_cache.tsv \
-  --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv \
-  --metabolite-aliases skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv</pre>
-      <div class="btn-row">
-        <button class="btn ghost copy-btn" type="button" data-copy-target="refresh-efo-cmd">Copy Refresh EFO Cache Command</button>
-      </div>
-      <div class="note">
-        No local OBO file is required. If <code>--efo-obo</code> is not provided, the script downloads from the URL above.
-      </div>
+    <section class="card">
+      <h2>Curator QC Routine</h2>
+      <ol>
+        <li>Run <code>trait-map</code> with <code>--review-output</code>.</li>
+        <li>Start with rows where <code>qc_review_flag=yes</code>.</li>
+        <li>Prioritize rows where <code>term_not_in_efo</code> is populated.</li>
+        <li>Use <code>matched_on</code>, <code>source_file</code>, <code>evidence</code>, and <code>provenance</code> to decide.</li>
+        <li>After decisions, rerun <code>setup-bundled-caches</code> to rebuild supplements/index.</li>
+      </ol>
     </section>
 
-    <section class="card stage-review" id="troubleshooting">
-      <h2>Troubleshooting</h2>
-      <ul>
-        <li><code>python3: command not found</code>: install Python and restart terminal.</li>
-        <li><code>ModuleNotFoundError</code>: activate virtual environment and run <code>python -m pip install -r requirements.txt</code>.</li>
-      </ul>
-    </section>
-
-    <footer>
-      Last updated <span id="today"></span>
-    </footer>
+    <div class="footer">Analyte Mapper documentation for curation workflows.</div>
   </main>
-  <script>
-    document.querySelectorAll(".copy-btn").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const targetId = button.getAttribute("data-copy-target");
-        const target = targetId ? document.getElementById(targetId) : null;
-        if (!target) {
-          return;
-        }
-        const original = button.textContent;
-        const text = target.textContent.trim();
-        try {
-          await navigator.clipboard.writeText(text);
-          button.textContent = "Copied";
-          setTimeout(() => { button.textContent = original; }, 1200);
-        } catch (_err) {
-          button.textContent = "Copy failed";
-          setTimeout(() => { button.textContent = original; }, 1200);
-        }
-      });
-    });
-
-    const today = new Date();
-    document.getElementById("today").textContent = today.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric"
-    });
-  </script>
 </body>
 </html>

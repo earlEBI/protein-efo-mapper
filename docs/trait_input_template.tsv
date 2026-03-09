@@ -1,0 +1,5 @@
+query	trait_scale	code	data_type
+20002#1587#aortic regurgitation | incompetence	binary	20002	UKB Data Field
+Union#M2571#M25.71 Osteophyte (Shoulder region)	binary	Union	ICD10
+41202#M1997#M19.97 Arthrosis | unspecified (Ankle and foot)	binary	41202	UKB Data Field
+Hand grip strength (left)	quantitative	46	UKB Data Field

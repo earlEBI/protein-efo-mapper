@@ -4,5 +4,12 @@ __pycache__/
 .DS_Store
 final_output/
 data/
+# Generated/downloaded mapper artifacts. Fresh clones recreate or download these via setup.
+skills/pqtl-measurement-mapper/references/measurement_index.json
+references/ukb/
+references/icd10/
 skills/pqtl-measurement-mapper/references/efo.obo
 skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv
+monthly_curation/outputs/
+.env
+monthly_curation/.env

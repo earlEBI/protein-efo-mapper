@@ -1,361 +1,257 @@
-# Analyte EFO Mapper Docs
+# Analyte Mapper (Curator Guide)
 
-This folder is a static GitHub Pages site.
+This tool maps analytes, traits, ICD10 codes, PheCodes, and UKB data-field references to ontology terms used in GWAS curation.
 
-## For New Users
+It runs locally and uses bundled caches so most workflows are offline after setup.
 
-The website is documentation and templates only.  
-Actual mapping runs locally with Python.
-
-Quick local setup:
+## 1) Quick Start
 
 ```bash
-git clone https://github.com/earlEBI/analyte-efo-mapper.git
-cd analyte-efo-mapper
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
 python -m pip install -e .
-cp docs/input_template.tsv data/analytes.tsv
+
 analyte-efo-mapper setup-bundled-caches
+analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-By default, setup now builds and uses a lightweight UniProt cache for indexing
-(reviewed-like accessions, gene symbol required) at:
-`skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv`
+`setup-bundled-caches` refreshes MONDO ICD10 mappings and uses them for ICD10 supplement generation in setup.  
+If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.  
+If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.  
+The compiled `measurement_index.json` is generated locally during setup; it is not required in Git history.
 
-To force setup to use the full bundled UniProt cache instead:
-`analyte-efo-mapper setup-bundled-caches --uniprot-profile full`
-
-Bundled offline caches used by setup:
-- `skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv` (protein alias cache)
-- `skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv` (metabolite HMDB-derived alias cache)
-- `skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv` (disease/phenotype trait cache)
-- `references/ukb/fieldsum.txt` (UKB data-field title catalog)
-- `references/ukb/field.txt` (UKB field metadata including main category IDs)
-- `references/ukb/category.txt` (UKB category labels)
-- `references/ukb/catbrowse.txt` (UKB category parent/child tree)
-
-These are local repository files; setup does not download these caches from the internet.
-Trait mapping also needs `skills/pqtl-measurement-mapper/references/efo.obo`. If missing, `setup-bundled-caches`
-and `trait-map` auto-provision it from the bundled pinned URL (default release asset:
-`efo.obo.gz` in this repo).
-If you maintain your own fork/release asset, override with:
-`--efo-obo-bundled-url https://github.com/<owner>/<repo>/releases/latest/download/efo.obo.gz`
-
-Cache provenance and refresh/build path:
-- `uniprot_aliases.tsv`: bundled source alias cache in repo; setup builds `uniprot_aliases_light.tsv` by default for faster mapping.
-- `uniprot_aliases_light.tsv`: generated locally by `setup-bundled-caches` (or `uniprot-alias-build-light`), optional online enrichment via `uniprot-alias-enrich`.
-- `metabolite_aliases.tsv`: bundled HMDB-derived alias cache in repo; can be rebuilt from your pinned HMDB SDF via `metabolite-alias-build`.
-- `trait_mapping_cache.tsv`: bundled curated disease/phenotype cache in repo.
-- `references/ukb/fieldsum.txt`: bundled UKB field title catalog used by `trait-map`.
-- `references/ukb/field.txt`: bundled UKB field metadata used by `trait-map` for category-aware matching.
-- `references/ukb/category.txt`: bundled UKB category label catalog used by `trait-map` when category IDs/titles appear in input.
-- `references/ukb/catbrowse.txt`: bundled UKB category tree used to resolve category-path context in `trait-map`.
-- `efo_measurement_terms_cache.tsv`: bundled measurement-term cache in repo; can be rebuilt from OBO via `refresh-efo-cache`.
-- `measurement_index.json`: local compiled index built from caches by `setup-bundled-caches` or `index-build`.
-- `efo.obo`: local ontology file used by `trait-map` for fallback and obsolete-ID checks.
-- `efo_measurement_terms_cache.tsv` and `efo.obo` are intentionally separate:
-  - measurement cache is optimized for protein/metabolite mapping runtime
-  - full `efo.obo` is used for trait fallback + obsolete-term validation
-
-Optional (recommended if you plan to use `input_type=gene_id` heavily): backfill UniProt gene IDs into the lightweight cache during setup:
+Map analytes:
 
 ```bash
-analyte-efo-mapper setup-bundled-caches --uniprot-light-enrich-gene-ids
-```
-
-Or run enrichment explicitly:
-
-```bash
-analyte-efo-mapper uniprot-alias-enrich \
-  --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv \
-  --workers 8
-```
-
-If you want to rebuild the lightweight cache manually:
-
-```bash
-analyte-efo-mapper uniprot-alias-build-light \
-  --source skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv \
-  --output skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv
-```
-
-CLI command and upgrade:
-
-- Run commands via:
-  - `analyte-efo-mapper ...`
-- Upgrade after new GitHub changes:
-  - `git pull --rebase origin main`
-  - `python -m pip install -e .`
-  - `analyte-efo-mapper setup-bundled-caches`
-
-Quick Start (5 lines):
-
-```bash
-cp docs/input_template.tsv data/analytes.tsv
 analyte-efo-mapper map \
   --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --withheld-triage-output final_output/withheld_for_review_triage.tsv
+  --output final_output/analytes_efo.tsv
 ```
 
-This writes your main results to `final_output/analytes_efo.tsv` and triaged withheld candidates to `final_output/withheld_for_review_triage.tsv`.
-`setup-bundled-caches` is offline/local by default and validates bundled caches, including bundled UKB field/category dictionaries.
-If you add `--uniprot-light-enrich-gene-ids`, setup will also perform optional online UniProt backfill.
-
-Disease/phenotype trait mapping mode (optional):
+Map disease/phenotype traits:
 
 ```bash
 analyte-efo-mapper trait-map \
   --input data/traits.tsv \
   --output final_output/traits_mapped.tsv \
-  --trait-cache skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv \
-  --ukb-field-catalog references/ukb/fieldsum.txt \
-  --efo-obo skills/pqtl-measurement-mapper/references/efo.obo \
-  --min-score 0.82 \
-  --review-output final_output/traits_review.tsv \
-  --stream-output \
-  --flush-every 10 \
-  --memoize-queries \
-  --progress
+  --review-output final_output/traits_review.tsv
 ```
 
-Notes:
-- This mode is cache-first (curated trait cache), then falls back to `efo.obo`.
-- Input can include free-text trait, ICD10, and/or PheCode columns.
-- UKB-aware trait context uses bundled `references/ukb/fieldsum.txt`, `field.txt`, `category.txt`, and `catbrowse.txt` when available.
-- Output includes a per-row `provenance` field suitable for curation notes tabs.
-- Before mapping, trait cache IDs are checked against `efo.obo`; obsolete IDs are remapped via `replaced_by` (or single `consider`) where possible, and unresolved IDs are warned and excluded from auto output.
+## 2) Input Formats
 
-How mapping works (order and method):
+### Analyte mode (`map`)
+Use `.txt`, `.csv`, or `.tsv`.
 
-- Protein/metabolite `map` order:
-  - Normalize query + infer/resolve input type.
-  - Try deterministic identity resolution first:
-    - proteins: UniProt accession, gene symbol/gene ID/mnemonic -> accession
-    - metabolites: HMDB/ChEBI/KEGG IDs, concept aliases
-  - Retrieve candidate EFO/OBA measurement terms (exact label/synonym and indexed lexical/token retrieval).
-  - Rerank candidates by lexical score + identity/context signals.
-  - Validate candidate identity/context gates; emit validated rows.
-  - If best candidate is plausible but blocked by validation, write to withheld/review outputs (if enabled).
+- Query columns accepted: `query`, `id`, `identifier`, `protein_id`, `metabolite_id`, `metabolite_name`, `gene`, `gene_symbol`, `symbol`, `term`
+- Optional type columns: `input_type`, `query_type`, `id_type`, `type`
+- Allowed `input_type`: `accession`, `gene_symbol`, `protein_name`, `metabolite_id`, `metabolite_name`, `auto`
+- Advanced/conditional: `gene_id` routing exists in the code, but the bundled offline UniProt alias caches do not include enough `gene_ids` to recommend it by default. Only use `gene_id` after explicitly enriching or rebuilding the UniProt alias cache with gene IDs.
 
-- Trait `trait-map` order:
-  - Exact cache hit by ICD10.
-  - Exact cache hit by PheCode.
-  - Exact cache hit by reported trait text.
-  - Cache fuzzy text (only when no ontology-exact match exists).
-  - Exact `efo.obo` label/synonym match.
-  - Fuzzy `efo.obo` fallback.
-  - Before all cache-based trait mapping, cache ontology IDs are checked against `efo.obo`; obsolete IDs are remapped (via `replaced_by` or single `consider`) or excluded.
+Recommended analyte columns:
 
-Validation:
+| Column | Required | Purpose |
+|---|---|---|
+| `query` | yes | Input analyte identifier or name |
+| `input_type` | optional | Explicit routing (`accession`, `gene_symbol`, `protein_name`, `metabolite_id`, `metabolite_name`, `auto`) |
 
-- Identity validation:
-  - proteins: accession/alias subject checks prevent near-name drift (including number mismatches).
-  - metabolites: HMDB/ChEBI/KEGG concept consistency checks prevent concept collisions.
-- Context validation:
-  - default `--measurement-context blood`: allows blood/plasma/unlabeled; excludes serum unless explicitly added.
-  - `--additional-contexts` and `--additional-context-keywords` can expand allowed matrices/tissues.
-- Structural safeguards:
-  - ratio terms are blocked unless the query indicates ratio/composite intent.
-  - lower-confidence lexical-only candidates are withheld from auto-validated output.
+Recommended analyte TSV template:
 
-Withheld triage flow:
+```tsv
+query	input_type
+Q9ULI3	accession
+P14625	accession
+LIPC	gene_symbol
+Beta-glucosidase 2	protein_name
+HMDB0000122	metabolite_id
+CHEBI:38553	metabolite_id
+glucose	metabolite_name
+```
 
-- Enable with `--withheld-triage-output final_output/withheld_for_review_triage.tsv`.
-- Mapper writes non-auto-validated top candidates there with triage status:
-  - `reject_high`: likely wrong target.
-  - `review_needed`: unresolved identity.
-  - `accept_medium`: moderate support.
-  - `accept_high`: strong support.
-- Triage includes query label + suggested mapped label/subject to support fast manual QC.
+Bundled example file: `docs/analyte_input_template.tsv`
 
-Practical expectation:
+Analyte context options (`map`):
+- `--measurement-context` controls primary matrix/tissue (`blood`, `plasma`, `serum`, `cerebrospinal_fluid`, `urine`, `saliva`, `tissue`, `auto`)
+- `--additional-contexts` adds allowed contexts
+- `--additional-context-keywords` adds free-text context filters
+- `--matrix-priority` sets tie-break order (default: `plasma,blood,serum`)
 
-- Accession/ID inputs are most reliable.
-- Gene symbol/gene ID are reliable when resolution to a unique accession succeeds.
-- Free-text names are useful but should be treated as review-first for edge cases.
-
-Run mapping (mixed protein + metabolite inputs):
+Example:
 
 ```bash
 analyte-efo-mapper map \
   --input data/analytes.tsv \
   --output final_output/analytes_efo.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --entity-type auto \
-  --workers 8 \
-  --parallel-mode process \
-  --progress
+  --measurement-context blood \
+  --additional-contexts serum \
+  --additional-context-keywords "aorta,adipose tissue" \
+  --matrix-priority plasma,blood,serum
 ```
 
-You can run this directly after clone/install.  
-No local HMDB file is required for normal mapping because the repo ships a metabolite alias cache.
+### Trait mode (`trait-map`)
+Use `.txt`, `.csv`, or `.tsv`.
 
-Optional (recommended for metabolite mapping): pin your HMDB file version, then build cache once:
+- Query columns accepted: `query`, `trait`, `reported_trait`, `disease_trait`, `phenotype`, `term`
+- Recommended curation columns: `query`, `trait_scale`, `code`, `data_type`
+- Optional columns: `icd10`, `phecode`, `input_type`, `trait_scale`, `code`, `data_type`
+- Allowed `input_type`: `trait_text`, `icd10`, `phecode`, `ukb_field`, `auto`
+- Allowed `trait_scale`: `binary`, `quantitative`, `auto`
+
+Recommended trait columns:
+
+| Column | Required | Purpose |
+|---|---|---|
+| `query` | yes | Trait text or coded text (for example UKB/ICD10 union-style) |
+| `trait_scale` | recommended | `binary` or `quantitative` branch preference |
+| `code` | recommended | Source code (`20002`, `Union`, etc.) |
+| `data_type` | recommended | Source type (`UKB Data Field`, `ICD10`, etc.) |
+| `icd10` | optional | Explicit ICD10 code when available |
+| `phecode` | optional | Explicit PheCode when available |
+| `input_type` | optional | Manual route (`trait_text`, `icd10`, `phecode`, `ukb_field`, `auto`) |
+
+Recommended trait TSV template:
+
+```tsv
+query	trait_scale	code	data_type
+20002#1587#aortic regurgitation | incompetence	binary	20002	UKB Data Field
+Union#M2571#M25.71 Osteophyte (Shoulder region)	binary	Union	ICD10
+41202#M1997#M19.97 Arthrosis | unspecified (Ankle and foot)	binary	41202	UKB Data Field
+Hand grip strength (left)	quantitative	46	UKB Data Field
+```
+
+Bundled example file: `docs/trait_input_template.tsv`
+
+`trait-map` auto-routing now distinguishes:
+- ICD10 (including union-like strings such as `Union#A071#A07.1`)
+- UKB data field strings (for example `UKB data field 22435`)
+- PheCode-like values
+- Free text
+
+## 3) Mapping Priority (What Runs First)
+
+### `map` (analytes)
+1. Exact analyte cache
+2. UniProt / metabolite alias identity resolution
+3. Exact ontology label/synonym
+4. Lexical/token fallback
+5. Review queue for non-validated rows
+
+### `trait-map` (traits)
+1. Cache exact ICD10
+2. Cache exact ICD10 supplemental
+3. Cache exact PheCode
+4. Cache exact UKB field ID
+5. Cache exact UKB field supplemental
+6. Cache exact text (trait / UKB field title)
+7. Cache fuzzy text
+8. `efo.obo` exact ICD10 xref
+9. `efo.obo` exact label/synonym
+10. `efo.obo` fuzzy
+11. UKB category fallback
+
+## 4) Output (QC-Friendly Columns)
+
+Trait mapping outputs now include:
+
+- Input trace: `input_row_id`, `input_query`, `negation`, `input_type`, `input_trait_scale`, `input_source_code`, `input_source_data_type`, `input_icd10`, `input_icd10_label`, `input_phecode`
+- UKB context: `input_ukb_field_id`, `input_ukb_field_label`, `input_ukb_category_id`, `input_ukb_category_label`, `input_ukb_category_path`
+- Mapping: `mapped_trait_id`, `mapped_trait_label`, `confidence`, `matched_via`, `matched_on`, `source_file`
+- QC flags: `validation`, `qc_review_flag`, `term_not_in_efo`, `mondo_missing_ids`
+- Audit text: `evidence`, `provenance`
+
+`term_not_in_efo` is set to `term not in EFO` when a MONDO mapping is not imported in EFO and no better active EFO-family term is available.
+`negation` is `yes` when traits contain cues like `none`, `no`, `not`, `without`, or `none of the above`.
+Rows with `negation=yes` are always `review_required` if mapped; non-informative options like `none of the above` remain `not_mapped`.
+`input_trait_scale` influences branch preference: `quantitative` biases toward measurement mappings; `binary` biases toward non-measurement mappings.
+
+## 5) Cache Refresh From New GWAS Studies TSV
+
+New command:
 
 ```bash
-mkdir -p skills/pqtl-measurement-mapper/references/hmdb_source
-cp /path/to/your/structures.sdf skills/pqtl-measurement-mapper/references/hmdb_source/structures.sdf
+analyte-efo-mapper trait-cache-refresh \
+  --studies-tsv /path/to/gwas-catalog-studies.tsv
 ```
 
-Then build aliases (auto-detects local HMDB file):
+Default outputs:
+- `final_output/Catalog-mapped-traits_qc.tsv`
+- `final_output/Catalog-mapped-traits_high_confidence.tsv`
+- `final_output/Catalog-mapped-traits_high_confidence_to_add.tsv`
+- `final_output/Catalog-mapped-traits_qc_summary.json`
+- `final_output/Catalog-mapped-traits_refresh_state.json` (last processed studies hash)
+- Updated trait cache (in place unless `--output-cache` is set)
+
+If the studies TSV hash is unchanged, refresh is skipped automatically (unless `--force-refresh` is set).
+
+Policy used:
+- high confidence ontology resolution
+- unambiguous mapping per normalized trait
+- specific label overlap filter
+- non-conflicting with existing curated cache
+
+## 6) Bundled Cache Files
+
+Setup validates and uses:
+
+- `skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv`
+- `skills/pqtl-measurement-mapper/references/analyte_to_efo_cache.tsv`
+- `skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv`
+- `skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv` (generated if `--uniprot-profile light`)
+- `skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv` (HMDB-derived alias cache)
+- `skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv`
+- `skills/pqtl-measurement-mapper/references/efo.obo`
+- `references/ukb/fieldsum.txt`
+- `references/ukb/field.txt`
+- `references/ukb/category.txt`
+- `references/ukb/catbrowse.txt`
+- `references/ukb/field_trait_supplement_cache.tsv` (generated)
+- `references/icd10/mondo.sssom.tsv` (downloaded/refreshed in setup)
+- `references/icd10/icd10_label_index.tsv` (generated/downloaded from the official CMS ICD10 release when missing)
+- `references/icd10/icd10_trait_supplement_cache.tsv` (generated from EFO ICD10 xrefs plus local MONDO cache)
+
+## 7) What The Final Index Contains
+
+`skills/pqtl-measurement-mapper/references/measurement_index.json` is a generated local artifact produced by `setup-bundled-caches` or `index-build`.
+
+It contains the compiled lookup structures:
+
+- `term_meta`: ontology ID -> label/synonyms/source
+- `exact_term_index`: normalized label/synonym -> ontology IDs
+- `token_index`: token -> ontology IDs
+- `analyte_index`: normalized analyte key -> cached mapping rows
+- `accession_alias_index`: UniProt accession -> alias terms
+- `gene_symbol_accession_index`: symbol -> accessions
+- `gene_id_accession_index`: optional gene ID -> accessions index, only meaningfully populated when the UniProt alias cache includes `gene_ids`
+- `metabolite_alias_index`: metabolite alias/id -> concept IDs
+- `metabolite_concept_index`: concept ID -> labels/aliases/xrefs
+
+The exact JSON bytes do not need to be versioned in Git for a fresh install. A new user can recreate the functional index from the bundled caches plus the setup-generated UKB/ICD10 side caches.
+
+## 8) Setup Audit Manifest
+
+`setup-bundled-caches` now writes a setup inventory JSON (default):
+
+- `final_output/analyte_mapper_cache_manifest.json`
+
+This lists cache file presence/size, whether each file is indexed, and index key counts.
+
+You can run a post-setup cache audit any time:
 
 ```bash
-analyte-efo-mapper metabolite-alias-build \
-  --output skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
-  --no-merge-existing
+analyte-efo-mapper cache-status
 ```
 
-If you already downloaded HMDB locally (for example `structures.sdf`), build from local HMDB only:
+For CI/validation gates:
 
 ```bash
-analyte-efo-mapper metabolite-alias-build \
-  --output skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
-  --hmdb-xml /path/to/structures.sdf \
-  --no-merge-existing
+analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-HMDB download/cache notes:
-- The command auto-detects HMDB files in `skills/pqtl-measurement-mapper/references/hmdb_source/` and `skills/pqtl-measurement-mapper/references/metabolite_downloads/`.
-- If no local HMDB file is found, it auto-downloads from `--hmdb-url` (default: this repo's GitHub release asset).
-- You can point `--hmdb-url` to your own private/public GitHub release bundle.
-- Maintainer setup: upload your pinned `structures.sdf.gz` as a GitHub Release asset so users can fetch the exact same HMDB version.
-- Use `--no-merge-existing` to regenerate a cleaner alias cache (normalized IDs and fewer noisy aliases).
-- Practical model:
-  - End users: no HMDB step needed unless rebuilding aliases.
-  - Rebuild step: pulls your pinned bundle from GitHub release automatically when local HMDB is absent.
-  - Fully offline installs: include `structures.sdf` or `structures.sdf.gz` in `references/hmdb_source/`.
+## 9) Curator QC Routine
 
-Example with explicit pinned bundle URL:
-
-```bash
-analyte-efo-mapper metabolite-alias-build \
-  --output skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
-  --hmdb-url https://github.com/<owner>/<repo>/releases/download/<tag>/structures.sdf.gz \
-  --no-merge-existing
-```
-
-Optional (recommended after upgrading): refresh EFO measurement cache so metabolite xrefs
-(CHEBI/HMDB/KEGG) are available for direct ID-to-term matching:
-
-```bash
-analyte-efo-mapper refresh-efo-cache \
-  --term-cache skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json
-```
-
-Then map with it:
-
-```bash
-analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --metabolite-aliases skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv \
-  --entity-type auto
-```
-
-Optional triaged withheld output:
-
-```bash
-analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --withheld-triage-output final_output/withheld_for_review_triage.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --entity-type auto \
-  --workers 8 \
-  --parallel-mode process \
-  --progress
-```
-
-`final_output/withheld_for_review_triage.tsv` classifies top withheld candidates as:
-
-- `reject_high`: likely wrong target.
-- `review_needed`: unresolved identity, send to manual review.
-- `accept_medium`: accession mismatch but same primary symbol (often alias/isoform-equivalent).
-- `accept_high`: candidate subject resolves to same accession.
-- Includes `query_primary_label` and `suggested_subject` so you can QC full-name alignment directly.
-- For metabolite rows, triage uses metabolite ID/xref overlap (HMDB/ChEBI/KEGG) and emits statuses such as `supports_query_metabolite_id`, `supports_query_metabolite_concept`, and `conflicts_with_query_metabolite`.
-
-Optional broader review queue output:
-
-```bash
-analyte-efo-mapper map \
-  --input data/analytes.tsv \
-  --output final_output/analytes_efo.tsv \
-  --review-queue-output final_output/review_queue.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --entity-type auto \
-  --workers 8 \
-  --parallel-mode process \
-  --progress
-```
-
-`final_output/review_queue.tsv` is for manual review of closest unresolved candidates; it is useful but can contain probable mismatches.
-
-When `--review-output` is not set, triage mode generates an internal temporary withheld-review file automatically.
-
-Refresh EFO/OBA measurement cache and rebuild index:
-
-```bash
-analyte-efo-mapper refresh-efo-cache \
-  --download-url https://github.com/EBISPOT/efo/releases/latest/download/efo.obo \
-  --term-cache skills/pqtl-measurement-mapper/references/efo_measurement_terms_cache.tsv \
-  --index skills/pqtl-measurement-mapper/references/measurement_index.json \
-  --analyte-cache skills/pqtl-measurement-mapper/references/analyte_to_efo_cache.tsv \
-  --uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv \
-  --metabolite-aliases skills/pqtl-measurement-mapper/references/metabolite_aliases.tsv
-```
-
-Notes:
-
-- You do not need a local OBO file for this command.
-- Index rebuild is enabled by default and should usually be kept on.
-
-Defaults and options:
-
-- Default `--measurement-context blood` excludes serum-specific terms.
-- Add serum explicitly with `--additional-contexts serum`.
-Measurement context usage:
-
-- Blood default (blood + plasma + unlabeled, excludes serum):
-  - `--measurement-context blood`
-- Plasma-only:
-  - `--measurement-context plasma`
-- Blood plus serum:
-  - `--measurement-context blood --additional-contexts serum`
-- CSF-only:
-  - `--measurement-context cerebrospinal_fluid`
-- Free-text context add-on:
-  - `--additional-context-keywords aorta`
-  - `--additional-context-keywords "adipose tissue"`
-- Free-text only filter mode:
-  - `--measurement-context auto --additional-context-keywords aorta`
-
-Useful optional arguments:
-
-- `--top-k` number of candidates to keep per input.
-- `--min-score` minimum score threshold.
-- `--workers` parallel workers.
-- `--name-mode strict|fuzzy` handling for name-like inputs.
-- `--entity-type auto|protein|metabolite` routing/validation mode.
-- `--auto-enrich-uniprot` checks UniProt for accession-like queries missing from your local alias file, appends returned aliases to the file set by `--uniprot-aliases`, and rebuilds index before mapping.
-  - It is incremental for current input queries, not a full UniProt rebuild.
-  - If you are using the lightweight setup profile, pass `--uniprot-aliases skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv`.
-- `setup-bundled-caches` default UniProt profile is `light` (reviewed-like + requires gene symbol) for faster index build.
-- `setup-bundled-caches --uniprot-profile full` uses the full bundled UniProt alias cache.
-- `uniprot-alias-build-light` creates/refreshes a lightweight UniProt cache from a source alias TSV.
-- `uniprot-alias-enrich` backfills missing UniProt gene IDs (and aliases) across a chosen UniProt alias cache file (for example `uniprot_aliases_light.tsv`).
-  - Use `--refresh-all` if you want to refresh all rows, not only rows with empty `gene_ids`.
-- `--metabolite-aliases` local metabolite concept aliases for HMDB/ChEBI/KEGG/name resolution.
-- `--unmapped-output` write unresolved rows to a separate TSV.
-- `--review-queue-output` write optional broader manual-review suggestions (`review_queue.tsv`).
-- `--withheld-triage-output` triage top withheld candidates into accept/reject/review buckets.
-
-The published site URL is:
-
-`https://earlebi.github.io/analyte-efo-mapper/`
+1. Run `trait-map` with `--review-output`.
+2. Start with `validation=review_required` rows.
+3. Prioritize rows where `term_not_in_efo` is set.
+4. Use `matched_on`, `source_file`, `evidence`, and `provenance` for decisions.
+5. Keep final curated mappings in trait cache and rerun setup to refresh supplements/index.

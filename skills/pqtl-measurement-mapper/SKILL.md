@@ -20,7 +20,8 @@ Provide an input file with one analyte per row:
   - Query column (one of):
   - `query`, `id`, `identifier`, `protein_id`, `metabolite_id`, `metabolite_name`, `gene`, `gene_symbol`, `symbol`, `term`
 - Optional type column (one of): `input_type`, `query_type`, `id_type`, `type`
-  - Allowed values: `accession`, `gene_symbol`, `gene_id`, `protein_name`, `metabolite_id`, `metabolite_name`, `auto`
+  - Allowed values: `accession`, `gene_symbol`, `protein_name`, `metabolite_id`, `metabolite_name`, `auto`
+- Advanced/conditional route: `gene_id` is only reliable when the UniProt alias cache has been explicitly enriched with `gene_ids`; the bundled offline caches are too sparse to recommend it by default.
 - If no known column exists, the first column is used.
 
 Recommended TSV template:
@@ -30,7 +31,6 @@ query	input_type
 Q9ULI3	accession
 LIPC	gene_symbol
 Beta-glucosidase 2	protein_name
-ENSG00000172137	gene_id
 CHEBI:17234	metabolite_id
 glucose	metabolite_name
 ```
@@ -56,9 +56,16 @@ Write a TSV with one or more candidate mappings per input:
 Preferred downstream use: keep rows with `validation=validated`, then manually review medium-confidence rows.
 
 Disease/phenotype mode (`trait-map`) writes:
-- `input_query`, `input_type`, `input_icd10`, `input_phecode`
-- `mapped_trait_id`, `mapped_trait_label`
-- `confidence`, `matched_via`, `validation`, `evidence`, `provenance`
+- input trace: `input_row_id`, `input_query`, `negation`, `input_type`, `input_trait_scale`, `input_source_code`, `input_source_data_type`, `input_icd10`, `input_icd10_label`, `input_phecode`
+- UKB context: `input_ukb_field_id`, `input_ukb_field_label`, `input_ukb_category_id`, `input_ukb_category_label`, `input_ukb_category_path`
+- mapping: `mapped_trait_id`, `mapped_trait_label`, `confidence`, `matched_via`, `matched_on`, `source_file`
+- QC flags: `validation`, `qc_review_flag`, `term_not_in_efo`, `mondo_missing_ids`
+- audit: `evidence`, `provenance`
+- `negation=yes` rows are forced to review if mapped; non-informative options (for example `none of the above`) remain not-mapped.
+- `input_trait_scale` can be set to `binary` or `quantitative` to bias non-measurement vs measurement branch mapping.
+
+Recommended trait input columns for curation runs:
+- `query`, `trait_scale`, `code`, `data_type`
 
 Cache files used by default:
 - `references/analyte_to_efo_cache.tsv` (exact analyte -> EFO mappings)
@@ -147,6 +154,9 @@ Alternative from a local UniProt export file:
   --output-index skills/pqtl-measurement-mapper/references/measurement_index.json
 ```
 
+Note:
+- `measurement_index.json` is a generated local artifact. For fresh installs prefer `setup-bundled-caches`, which can auto-provision missing UKB metadata, build the ICD10 label cache, and rebuild the index locally.
+
 Build metabolite alias table from pinned HMDB source (optional, recommended for metabolite mapping):
 
 ```bash
@@ -229,6 +239,15 @@ Disease/phenotype mapping (cache + efo.obo fallback):
   --flush-every 10 \
   --memoize-queries \
   --progress
+```
+
+Refresh catalog-derived trait cache from updated GWAS Catalog studies TSV:
+
+```bash
+.venv/bin/python skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py \
+  trait-cache-refresh \
+  --studies-tsv /path/to/gwas-catalog-studies.tsv \
+  --trait-cache skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv
 ```
 
 Allow serum alongside blood (optional):
