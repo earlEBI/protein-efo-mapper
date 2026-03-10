@@ -7,6 +7,9 @@ It runs locally and uses bundled caches so most workflows are offline after setu
 ## 1) Quick Start
 
 ```bash
+git clone https://github.com/earlEBI/analyte-efo-mapper.git
+cd analyte-efo-mapper
+
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
