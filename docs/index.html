@@ -222,6 +222,14 @@ HMDB0000122	metabolite_id
 CHEBI:38553	metabolite_id
 glucose	metabolite_name</pre>
       <p class="small" style="margin-top:10px;">Bundled analyte example file: <code>docs/analyte_input_template.tsv</code></p>
+      <p class="small" style="margin-top:8px;">Create a starter analyte input file:</p>
+      <pre style="margin-top:10px;">mkdir -p data
+cat &gt; data/analytes.tsv &lt;&lt;'EOF'
+query	input_type
+Q9ULI3	accession
+LIPC	gene_symbol
+glucose	metabolite_name
+EOF</pre>
       <p class="small" style="margin-top:8px;"><code>gene_id</code> routing is an advanced/conditional path only. The bundled offline UniProt alias caches are too sparse in <code>gene_ids</code> to recommend it by default.</p>
       <p class="small" style="margin-top:10px;"><strong>Analyte context options (<code>map</code>):</strong> <code>--measurement-context</code>, <code>--additional-contexts</code>, <code>--additional-context-keywords</code>, <code>--matrix-priority</code>.</p>
       <pre style="margin-top:10px;">analyte-efo-mapper map \
@@ -253,6 +261,13 @@ Union#M2571#M25.71 Osteophyte (Shoulder region)	binary	Union	ICD10
 41202#M1997#M19.97 Arthrosis | unspecified (Ankle and foot)	binary	41202	UKB Data Field
 Hand grip strength (left)	quantitative	46	UKB Data Field</pre>
       <p class="small" style="margin-top:10px;">Bundled example file: <code>docs/trait_input_template.tsv</code></p>
+      <p class="small" style="margin-top:8px;">Create a starter trait input file:</p>
+      <pre style="margin-top:10px;">mkdir -p data
+cat &gt; data/traits.tsv &lt;&lt;'EOF'
+query	trait_scale	code	data_type
+20002#1587#aortic regurgitation | incompetence	binary	20002	UKB Data Field
+Hand grip strength (left)	quantitative	46	UKB Data Field
+EOF</pre>
     </section>
 
     <section class="card">

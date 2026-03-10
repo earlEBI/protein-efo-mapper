@@ -109,6 +109,18 @@ glucose	metabolite_name
 
 Bundled example file: `docs/analyte_input_template.tsv`
 
+Create a starter analyte input file:
+
+```bash
+mkdir -p data
+cat > data/analytes.tsv <<'EOF'
+query	input_type
+Q9ULI3	accession
+LIPC	gene_symbol
+glucose	metabolite_name
+EOF
+```
+
 Analyte context options (`map`):
 - `--measurement-context` controls primary matrix/tissue (`blood`, `plasma`, `serum`, `cerebrospinal_fluid`, `urine`, `saliva`, `tissue`, `auto`)
 - `--additional-contexts` adds allowed contexts
@@ -159,6 +171,17 @@ Hand grip strength (left)	quantitative	46	UKB Data Field
 ```
 
 Bundled example file: `docs/trait_input_template.tsv`
+
+Create a starter trait input file:
+
+```bash
+mkdir -p data
+cat > data/traits.tsv <<'EOF'
+query	trait_scale	code	data_type
+20002#1587#aortic regurgitation | incompetence	binary	20002	UKB Data Field
+Hand grip strength (left)	quantitative	46	UKB Data Field
+EOF
+```
 
 `trait-map` auto-routing now distinguishes:
 - ICD10 (including union-like strings such as `Union#A071#A07.1`)
