@@ -446,6 +446,46 @@ CACHE_REQUIREMENT_BY_NAME = {
     "hmdb_source_dir": "optional",
     "metabolite_download_dir": "optional",
 }
+CACHE_ROLE_BY_NAME = {
+    "index": "runtime_index",
+    "term_cache": "runtime_source",
+    "analyte_cache": "runtime_source",
+    "uniprot_aliases_source": "rebuild_source",
+    "uniprot_aliases_index": "derived_runtime_source",
+    "metabolite_aliases": "runtime_source",
+    "trait_cache": "runtime_source",
+    "ukb_field_catalog": "supporting_metadata",
+    "ukb_field_metadata": "supporting_metadata",
+    "ukb_category_catalog": "supporting_metadata",
+    "ukb_category_tree": "supporting_metadata",
+    "ukb_field_supplement_cache": "derived_supporting_cache",
+    "icd10_supplement_cache": "derived_supporting_cache",
+    "icd10_label_cache": "supporting_cache",
+    "efo_obo": "ontology_source",
+    "mondo_sssom_cache": "refresh_cache",
+    "hmdb_source_dir": "source_workspace",
+    "metabolite_download_dir": "download_workspace",
+}
+CACHE_DESCRIPTION_BY_NAME = {
+    "index": "Primary runtime JSON used by mapper lookups.",
+    "term_cache": "Measurement term TSV used to build the runtime index.",
+    "analyte_cache": "Curated exact analyte-to-EFO TSV mappings.",
+    "uniprot_aliases_source": "Full UniProt alias TSV kept for reproducible rebuilds.",
+    "uniprot_aliases_index": "Lightweight UniProt alias TSV used during index build.",
+    "metabolite_aliases": "Metabolite concept and alias TSV used during index build.",
+    "trait_cache": "Trait mapping TSV used by disease/phenotype workflows.",
+    "ukb_field_catalog": "UK Biobank field catalog listing available fields.",
+    "ukb_field_metadata": "UK Biobank field metadata with titles and categories.",
+    "ukb_category_catalog": "UK Biobank category catalog.",
+    "ukb_category_tree": "UK Biobank category hierarchy.",
+    "ukb_field_supplement_cache": "Derived UKB trait supplement cache built during setup.",
+    "icd10_supplement_cache": "Derived ICD10 trait supplement cache built during setup.",
+    "icd10_label_cache": "Optional ICD10 label lookup cache.",
+    "efo_obo": "Local EFO ontology fallback used for trait resolution.",
+    "mondo_sssom_cache": "Optional MONDO SSSOM cache used when refreshing ICD10 mappings.",
+    "hmdb_source_dir": "Optional HMDB source workspace for metabolite refreshes.",
+    "metabolite_download_dir": "Optional download workspace for metabolite refreshes.",
+}
 # Token-retrieved candidates are noisier than exact/synonym matches. Keep them
 # out of auto-validated output unless confidence remains reasonably high.
 TOKEN_SUBJECT_EXACT_AUTO_VALIDATE_MIN_SCORE = 0.70
@@ -11237,12 +11277,17 @@ def write_setup_cache_manifest(
 ) -> None:
     def file_entry(name: str, path: Path, indexed: bool) -> dict[str, Any]:
         exists = path.exists()
+        format_label, schema_preview = describe_cache_file_contents(path) if exists else ("", [])
         return {
             "name": name,
             "path": str(path),
             "exists": exists,
             "size_bytes": path.stat().st_size if exists else 0,
             "indexed": indexed,
+            "role": cache_role(name, indexed),
+            "description": cache_description(name),
+            "content_format": format_label,
+            "schema_preview": schema_preview,
         }
 
     manifest = {
@@ -11255,9 +11300,9 @@ def write_setup_cache_manifest(
             "exact_term_index": len(index.get("exact_term_index", {})),
             "token_index": len(index.get("token_index", {})),
             "accession_alias_index": len(index.get("accession_alias_index", {})),
-            "gene_symbol_accession_index": len(index.get("gene_symbol_accession_index", {})),
-            "gene_id_accession_index": len(index.get("gene_id_accession_index", {})),
-            "metabolite_alias_index": len(index.get("metabolite_alias_index", {})),
+            "symbol_accession_index": len(index.get("symbol_accession_index", {})),
+            "alias_accession_index": len(index.get("alias_accession_index", {})),
+            "metabolite_alias_concept_index": len(index.get("metabolite_alias_concept_index", {})),
             "metabolite_concept_index": len(index.get("metabolite_concept_index", {})),
         },
         "files": [file_entry(name, path, indexed) for name, path, indexed in file_entries],
@@ -11273,6 +11318,88 @@ class CacheStatusSpec:
     path: Path
     indexed: bool
     requirement: str
+
+
+def cache_role(name: str, indexed: bool) -> str:
+    role = CACHE_ROLE_BY_NAME.get(name, "")
+    if role:
+        return role
+    return "runtime_source" if indexed else "supporting_file"
+
+
+def cache_description(name: str) -> str:
+    return CACHE_DESCRIPTION_BY_NAME.get(name, "")
+
+
+def detect_delimited_header(path: Path) -> tuple[str, list[str]]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            first_line = handle.readline().strip()
+    except Exception:
+        return "", []
+    if not first_line:
+        return "", []
+    delimiter = "\t" if "\t" in first_line else "," if "," in first_line else ""
+    if not delimiter:
+        return "", []
+    header = [normalize(part) for part in first_line.split(delimiter)]
+    header = [part for part in header if part]
+    if not header:
+        return "", []
+    return delimiter, header
+
+
+def describe_cache_file_contents(path: Path) -> tuple[str, list[str]]:
+    if not path.exists():
+        return "", []
+    if path.is_dir():
+        try:
+            children = sorted(child.name for child in path.iterdir())[:5]
+        except Exception:
+            children = []
+        preview = f"entries={len(children)}" if children else "directory"
+        return preview, children
+
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return "json", []
+        if isinstance(payload, dict):
+            keys = [normalize(str(key)) for key in list(payload.keys())[:8] if normalize(str(key))]
+            return "json_keys", keys
+        if isinstance(payload, list):
+            return "json_list", []
+        return "json", []
+
+    delimiter, header = detect_delimited_header(path)
+    if header:
+        format_label = "tsv_columns" if delimiter == "\t" else "csv_columns"
+        return format_label, header[:8]
+
+    return f"{suffix.lstrip('.')}_file" if suffix else "file", []
+
+
+def summarize_runtime_index(index_path: Path) -> dict[str, int]:
+    if not index_path.exists() or index_path.is_dir():
+        return {}
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "term_meta": len(payload.get("term_meta", {})),
+        "exact_term_index": len(payload.get("exact_term_index", {})),
+        "token_index": len(payload.get("token_index", {})),
+        "accession_alias_index": len(payload.get("accession_alias_index", {})),
+        "symbol_accession_index": len(payload.get("symbol_accession_index", {})),
+        "alias_accession_index": len(payload.get("alias_accession_index", {})),
+        "metabolite_alias_concept_index": len(payload.get("metabolite_alias_concept_index", {})),
+        "metabolite_concept_index": len(payload.get("metabolite_concept_index", {})),
+    }
 
 
 def setup_ukb_paths(ukb_field_catalog_path: Path | None) -> tuple[Path, Path, Path, Path]:
@@ -11406,6 +11533,7 @@ def load_cache_status_specs_from_manifest(manifest_path: Path) -> tuple[list[Cac
         "loaded": False,
         "generated_at_utc": "",
         "error": "",
+        "index_summary": {},
     }
     if not manifest_path.exists():
         return [], manifest_meta
@@ -11418,12 +11546,17 @@ def load_cache_status_specs_from_manifest(manifest_path: Path) -> tuple[list[Cac
 
     manifest_meta["loaded"] = True
     manifest_meta["generated_at_utc"] = normalize(str(payload.get("generated_at_utc", "")))
+    manifest_index_summary = payload.get("index_summary", {})
+    manifest_meta["index_summary"] = manifest_index_summary if isinstance(manifest_index_summary, dict) else {}
 
     specs: list[CacheStatusSpec] = []
     seen_keys: set[tuple[str, str]] = set()
 
     index_path = normalize(str(payload.get("index_path", "")))
     if index_path:
+        fresh_index_summary = summarize_runtime_index(Path(index_path))
+        if fresh_index_summary:
+            manifest_meta["index_summary"] = fresh_index_summary
         index_spec = CacheStatusSpec(
             name="index",
             path=Path(index_path),
@@ -11467,8 +11600,11 @@ def evaluate_cache_status_specs(
         exists = spec.path.exists()
         size_bytes = spec.path.stat().st_size if exists else 0
         mtime_utc = ""
+        content_format = ""
+        schema_preview: list[str] = []
         if exists:
             mtime_utc = datetime.fromtimestamp(spec.path.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z")
+            content_format, schema_preview = describe_cache_file_contents(spec.path)
         path_type = "dir" if exists and spec.path.is_dir() else "file"
         status = "present" if exists else "missing"
         summary[f"{spec.requirement}_{status}"] += 1
@@ -11478,11 +11614,15 @@ def evaluate_cache_status_specs(
                 "path": str(spec.path),
                 "exists": exists,
                 "indexed": spec.indexed,
+                "role": cache_role(spec.name, spec.indexed),
+                "description": cache_description(spec.name),
                 "requirement": spec.requirement,
                 "status": status,
                 "path_type": path_type,
                 "size_bytes": size_bytes,
                 "mtime_utc": mtime_utc,
+                "content_format": content_format,
+                "schema_preview": schema_preview,
             }
         )
 
@@ -11533,15 +11673,39 @@ def print_cache_status_report(report: dict[str, Any]) -> None:
         f"recommended_missing={summary.get('recommended_missing', 0)}, "
         f"optional_missing={summary.get('optional_missing', 0)})"
     )
+    index_summary = manifest.get("index_summary", {})
+    if isinstance(index_summary, dict) and index_summary:
+        summary_bits = [
+            f"term_meta={int(index_summary.get('term_meta', 0))}",
+            f"exact_term_index={int(index_summary.get('exact_term_index', 0))}",
+            f"token_index={int(index_summary.get('token_index', 0))}",
+            f"accession_alias_index={int(index_summary.get('accession_alias_index', 0))}",
+            f"symbol_accession_index={int(index_summary.get('symbol_accession_index', 0))}",
+            f"alias_accession_index={int(index_summary.get('alias_accession_index', 0))}",
+            f"metabolite_alias_concept_index={int(index_summary.get('metabolite_alias_concept_index', 0))}",
+            f"metabolite_concept_index={int(index_summary.get('metabolite_concept_index', 0))}",
+        ]
+        print(f"[OK] runtime index summary ({', '.join(summary_bits)})")
     for row in report.get("files", []):
         status_flag = "OK" if row.get("exists") else "MISSING"
+        role = normalize(str(row.get("role", ""))).replace("_", " ")
+        description = normalize(str(row.get("description", "")))
+        format_label = normalize(str(row.get("content_format", "")))
+        schema_preview = row.get("schema_preview", [])
+        preview_suffix = ""
+        if isinstance(schema_preview, list) and schema_preview:
+            preview_suffix = f" preview={','.join(str(item) for item in schema_preview[:6])}"
         print(
             f"[{status_flag}] requirement={row.get('requirement', 'optional')} "
             f"name={row.get('name', '')} "
+            f"role={role or 'supporting file'} "
             f"indexed={bool(row.get('indexed', False))} "
             f"size_bytes={int(row.get('size_bytes', 0))} "
+            f"format={format_label or row.get('path_type', 'file')} "
             f"path={row.get('path', '')}"
         )
+        if description:
+            print(f"[INFO] {row.get('name', '')}: {description}{preview_suffix}")
 
 
 def file_sha256(path: Path) -> str:
@@ -13120,6 +13284,7 @@ def main() -> int:
                 "loaded": False,
                 "generated_at_utc": "",
                 "error": "",
+                "index_summary": {},
             }
             specs: list[CacheStatusSpec] = []
             if bool(args.prefer_manifest):

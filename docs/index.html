@@ -343,8 +343,8 @@ Hand grip strength (left)	quantitative	46	UKB Data Field</pre>
         </tbody>
       </table>
 	      <p class="small" style="margin-top:10px;">Setup writes cache/index audit inventory to <code>final_output/analyte_mapper_cache_manifest.json</code>.</p>
-	      <p class="small" style="margin-top:8px;">Run <code>analyte-efo-mapper cache-status</code> after setup to see required/recommended cache files that are present or missing.</p>
-	      <p class="small" style="margin-top:8px;">Compiled index: <code>measurement_index.json</code> with <code>term_meta</code>, <code>exact_term_index</code>, <code>token_index</code>, <code>analyte_index</code>, <code>accession_alias_index</code>, <code>gene_symbol_accession_index</code>, optional <code>gene_id_accession_index</code> when the UniProt alias cache includes <code>gene_ids</code>, <code>metabolite_alias_index</code>, and <code>metabolite_concept_index</code>. It is generated locally during setup rather than relied on as a tracked Git artifact.</p>
+	      <p class="small" style="margin-top:8px;">Run <code>analyte-efo-mapper cache-status</code> after setup to see required/recommended cache files, their roles, and lightweight schema/header previews.</p>
+	      <p class="small" style="margin-top:8px;">Compiled index: <code>measurement_index.json</code> with <code>term_meta</code>, <code>exact_term_index</code>, <code>token_index</code>, <code>analyte_index</code>, <code>accession_alias_index</code>, <code>symbol_accession_index</code>, <code>alias_accession_index</code>, <code>metabolite_alias_concept_index</code>, and <code>metabolite_concept_index</code>. It is generated locally during setup rather than relied on as a tracked Git artifact.</p>
     </section>
 
     <section class="card">

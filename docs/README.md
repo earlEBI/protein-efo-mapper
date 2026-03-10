@@ -259,9 +259,9 @@ It contains the compiled lookup structures:
 - `token_index`: token -> ontology IDs
 - `analyte_index`: normalized analyte key -> cached mapping rows
 - `accession_alias_index`: UniProt accession -> alias terms
-- `gene_symbol_accession_index`: symbol -> accessions
-- `gene_id_accession_index`: optional gene ID -> accessions index, only meaningfully populated when the UniProt alias cache includes `gene_ids`
-- `metabolite_alias_index`: metabolite alias/id -> concept IDs
+- `symbol_accession_index`: symbol-like alias -> accessions
+- `alias_accession_index`: normalized alias phrase -> accessions
+- `metabolite_alias_concept_index`: metabolite alias/id -> concept IDs
 - `metabolite_concept_index`: concept ID -> labels/aliases/xrefs
 
 The exact JSON bytes do not need to be versioned in Git for a fresh install. A new user can recreate the functional index from the bundled caches plus the setup-generated UKB/ICD10 side caches.
@@ -272,7 +272,7 @@ The exact JSON bytes do not need to be versioned in Git for a fresh install. A n
 
 - `final_output/analyte_mapper_cache_manifest.json`
 
-This lists cache file presence/size, whether each file is indexed, and index key counts.
+This lists cache file presence/size, cache role, schema/header previews, and runtime index key counts.
 
 You can run a post-setup cache audit any time:
 
