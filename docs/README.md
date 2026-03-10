@@ -7,6 +7,9 @@ It runs locally and uses bundled caches so most workflows are offline after setu
 ## 1) Quick Start
 
 ```bash
+mkdir -p ~/src
+cd ~/src
+
 git clone https://github.com/earlEBI/analyte-efo-mapper.git
 cd analyte-efo-mapper
 
@@ -30,6 +33,9 @@ The compiled `measurement_index.json` is generated locally during setup; it is n
 For a clean machine starting from GitHub:
 
 ```bash
+mkdir -p ~/src
+cd ~/src
+
 git clone https://github.com/earlEBI/analyte-efo-mapper.git
 cd analyte-efo-mapper
 
