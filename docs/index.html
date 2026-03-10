@@ -173,14 +173,15 @@ cd analyte-efo-mapper
 
 python3 -m venv .venv
 source .venv/bin/activate
-	python -m pip install -U pip
-		python -m pip install -r requirements.txt
-		python -m pip install -e .
-		analyte-efo-mapper setup-bundled-caches
-		analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json</pre>
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+
+analyte-efo-mapper setup-bundled-caches
+analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json</pre>
 	      <p class="small" style="margin-top:8px;"><code>setup-bundled-caches</code> reuses bundled UKB and ICD10 side caches when present, auto-downloads missing official UKB metadata, refreshes MONDO ICD10 mappings only when the ICD10 supplement must be rebuilt, builds the ICD10 label cache when missing, and rebuilds the local index. If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache.</p>
 	      <pre>analyte-efo-mapper map --input data/analytes.tsv --output final_output/analytes_efo.tsv
-	analyte-efo-mapper trait-map --input data/traits.tsv --output final_output/traits_mapped.tsv --review-output final_output/traits_review.tsv</pre>
+analyte-efo-mapper trait-map --input data/traits.tsv --output final_output/traits_mapped.tsv --review-output final_output/traits_review.tsv</pre>
     </section>
 
     <section class="card">
