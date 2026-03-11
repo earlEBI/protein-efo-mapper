@@ -199,15 +199,12 @@ EOF
 5. Review queue for non-validated rows
 
 ### `trait-map` (traits)
-1. Cache exact ICD10
-2. Cache exact ICD10 supplemental
-3. Cache exact PheCode
-4. Cache exact UKB field ID
-5. Cache exact UKB field supplemental
-6. Cache exact text (trait / UKB field title)
-7. Cache fuzzy text
-8. `efo.obo` exact ICD10 xref
-9. `efo.obo` exact label/synonym
+1. `efo.obo` exact ICD10 xref
+2. `efo.obo` exact label/synonym
+3. `efo.obo` fuzzy fallback
+4. Historical cache exact ICD10 / PheCode / UKB field fallback
+5. Historical cache exact text fallback
+6. Historical cache fuzzy text fallback
 10. `efo.obo` fuzzy
 11. UKB category fallback
 
@@ -225,6 +222,8 @@ Trait mapping outputs now include:
 `negation` is `yes` when traits contain cues like `none`, `no`, `not`, `without`, or `none of the above`.
 Rows with `negation=yes` are always `review_required` if mapped; non-informative options like `none of the above` remain `not_mapped`.
 `input_trait_scale` influences branch preference: `quantitative` biases toward measurement mappings; `binary` biases toward non-measurement mappings.
+UKB response-category fields are post-harmonized at the field level when they clearly represent one questionnaire concept, so ordinal rows such as insomnia, daytime sleepiness, and smoking-status response options map to one shared measurement/status term across the field.
+Cancer-register text rows are also protected from collapse to over-broad cache terms when a more specific in-situ or behaviour mapping is available, for example carcinoma-in-situ rows and benign tumour-behaviour rows.
 
 ## 5) Cache Refresh From New GWAS Studies TSV
 

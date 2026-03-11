@@ -282,12 +282,11 @@ EOF</pre>
       </ol>
       <p style="margin-top:10px;"><strong>Trait mode (<code>trait-map</code>):</strong></p>
       <ol>
-        <li>Cache exact ICD10 and supplemental ICD10</li>
-        <li>Cache exact PheCode</li>
-        <li>Cache exact UKB field and supplemental UKB field</li>
-        <li>Cache exact/fuzzy text</li>
-        <li><code>efo.obo</code> exact ICD10 xref and exact label/synonym</li>
+        <li><code>efo.obo</code> exact ICD10 xref</li>
+        <li><code>efo.obo</code> exact label/synonym</li>
         <li><code>efo.obo</code> fuzzy fallback</li>
+        <li>Historical cache exact ICD10 / PheCode / UKB field fallback</li>
+        <li>Historical cache exact/fuzzy text fallback</li>
         <li>UKB category fallback</li>
       </ol>
     </section>
@@ -323,6 +322,8 @@ EOF</pre>
       </table>
       <p class="small" style="margin-top:10px;"><code>negation</code> is <code>yes</code> when input contains cues such as <code>none</code>, <code>no</code>, <code>not</code>, <code>without</code>, or <code>none of the above</code>. Negation rows are mapped as <code>review_required</code> when a candidate exists; non-informative options like <code>none of the above</code> stay <code>not_mapped</code>. <code>input_trait_scale</code> applies branch preference: <code>quantitative</code> favors measurement terms, <code>binary</code> favors non-measurement terms.</p>
       <p class="small" style="margin-top:10px;"><span class="warn">Important:</span> if a MONDO mapping is not imported in EFO and no better active EFO-family term is available, <code>term_not_in_efo</code> is set to <code>term not in EFO</code> and the row is review-required.</p>
+      <p class="small" style="margin-top:10px;">UKB response-category fields are harmonized after row-level mapping when they clearly measure one questionnaire concept, so ordinal rows such as insomnia, daytime sleepiness, and smoking-status responses resolve to one shared measurement/status term per field.</p>
+      <p class="small" style="margin-top:10px;">Cancer-register text rows are also protected from collapse to over-broad cache terms when a more specific in-situ or tumour-behaviour mapping is available.</p>
     </section>
 
     <section class="card">
