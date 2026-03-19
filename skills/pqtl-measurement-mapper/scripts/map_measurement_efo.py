@@ -4843,7 +4843,21 @@ def parse_mondo_sssom_icd10_mappings(path: Path) -> dict[str, set[str]]:
     if not path.exists():
         return mapping
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
+        header_line = ""
+        for raw_line in handle:
+            if not raw_line:
+                continue
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            header_line = raw_line
+            break
+
+        if not header_line:
+            return mapping
+
+        fieldnames = header_line.rstrip("\r\n").split("\t")
+        reader = csv.DictReader(handle, fieldnames=fieldnames, delimiter="\t")
         for row in reader:
             subject_id = normalize(row.get("subject_id", ""))
             object_id = normalize(row.get("object_id", ""))
@@ -4973,7 +4987,8 @@ def build_icd10_supplement_cache(
     ontology_icd10_xref_index: dict[str, set[str]] = ontology_index.get("icd10_xref_index", {})
 
     code_to_term_ids: dict[str, set[str]] = {}
-    code_sources: dict[str, set[str]] = {}
+    efo_code_to_term_ids: dict[str, set[str]] = {}
+    mondo_code_to_term_ids: dict[str, set[str]] = {}
     for raw_code, term_ids in ontology_icd10_xref_index.items():
         code = normalize_icd10_code(raw_code)
         if not code:
@@ -4982,7 +4997,7 @@ def build_icd10_supplement_cache(
             oid = canonicalize_trait_ontology_id(term_id)
             if oid in ontology_terms:
                 code_to_term_ids.setdefault(code, set()).add(oid)
-                code_sources.setdefault(code, set()).add("efo_obo_xref")
+                efo_code_to_term_ids.setdefault(code, set()).add(oid)
 
     mondo_codes_added = 0
     mondo_terms_not_in_efo = 0
@@ -5020,12 +5035,15 @@ def build_icd10_supplement_cache(
                         mondo_terms_not_in_efo += 1
                 if not valid_terms:
                     continue
-                before = len(code_to_term_ids.get(code, set()))
-                code_to_term_ids.setdefault(code, set()).update(valid_terms)
-                after = len(code_to_term_ids.get(code, set()))
-                if after > before:
-                    mondo_codes_added += 1
-                code_sources.setdefault(code, set()).add("mondo_sssom")
+                mondo_code_to_term_ids.setdefault(code, set()).update(valid_terms)
+                # Keep EFO ICD10-xref mappings stable; MONDO only backfills codes
+                # that have no direct EFO ICD10 xref candidates.
+                if code not in efo_code_to_term_ids:
+                    before = len(code_to_term_ids.get(code, set()))
+                    code_to_term_ids.setdefault(code, set()).update(valid_terms)
+                    after = len(code_to_term_ids.get(code, set()))
+                    if after > before:
+                        mondo_codes_added += 1
         except Exception as exc:  # noqa: BLE001 - setup should degrade gracefully offline.
             if not mondo_download_error:
                 mondo_download_error = str(exc)
@@ -5034,13 +5052,6 @@ def build_icd10_supplement_cache(
     supplement_rows: list[dict[str, str]] = []
     total_codes = 0
     base_covered_codes = 0
-
-    def method_for_sources(sources: set[str]) -> str:
-        if "mondo_sssom" in sources and "efo_obo_xref" in sources:
-            return "icd10_supplement_mondo_sssom_efo_obo_xref"
-        if "mondo_sssom" in sources:
-            return "icd10_supplement_mondo_sssom"
-        return "icd10_supplement_efo_obo_xref"
 
     sortable_codes = sorted(
         code_to_term_ids.keys(),
@@ -5051,11 +5062,20 @@ def build_icd10_supplement_cache(
         if code in base_icd10_codes:
             base_covered_codes += 1
             continue
-        selected = pick_preferred_ontology_term(code_to_term_ids.get(code, set()), ontology_terms=ontology_terms)
+        selected_from_efo = code in efo_code_to_term_ids
+        if selected_from_efo:
+            candidate_term_ids = efo_code_to_term_ids.get(code, set())
+        else:
+            candidate_term_ids = mondo_code_to_term_ids.get(code, set()) or code_to_term_ids.get(code, set())
+        selected = pick_preferred_ontology_term(candidate_term_ids, ontology_terms=ontology_terms)
         if selected is None:
             continue
         mapped_id, mapped_label = selected
-        method = method_for_sources(code_sources.get(code, set()))
+        method = (
+            "icd10_supplement_efo_obo_xref"
+            if selected_from_efo
+            else "icd10_supplement_mondo_sssom"
+        )
         method_counts[method] += 1
         supplement_rows.append(
             {
