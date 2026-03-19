@@ -4984,18 +4984,36 @@ def build_icd10_supplement_cache(
     base_icd10_codes = set(trait_cache_index.get("icd10_index", {}).keys())
     ontology_index = load_trait_ontology_index(efo_obo_path)
     ontology_terms: dict[str, TraitOntologyTerm] = ontology_index.get("terms", {})
+    obsolete_terms: dict[str, TraitObsoleteTerm] = ontology_index.get("obsolete_terms", {})
     ontology_icd10_xref_index: dict[str, set[str]] = ontology_index.get("icd10_xref_index", {})
 
     code_to_term_ids: dict[str, set[str]] = {}
     efo_code_to_term_ids: dict[str, set[str]] = {}
     mondo_code_to_term_ids: dict[str, set[str]] = {}
+    def resolve_active_term_ids(raw_term_id: str) -> tuple[str, ...]:
+        canonical = canonicalize_trait_ontology_id(raw_term_id)
+        if not canonical:
+            return ()
+        if canonical in ontology_terms:
+            return (canonical,)
+        obsolete_meta = obsolete_terms.get(canonical)
+        if obsolete_meta is None:
+            return ()
+        replacements = [rid for rid in obsolete_meta.replaced_by if rid in ontology_terms]
+        if replacements:
+            return tuple(dict.fromkeys(replacements))
+        consider = [cid for cid in obsolete_meta.consider if cid in ontology_terms]
+        if len(consider) == 1:
+            return (consider[0],)
+        return ()
+
     for raw_code, term_ids in ontology_icd10_xref_index.items():
         code = normalize_icd10_code(raw_code)
         if not code:
             continue
         for term_id in term_ids:
-            oid = canonicalize_trait_ontology_id(term_id)
-            if oid in ontology_terms:
+            resolved_ids = resolve_active_term_ids(term_id)
+            for oid in resolved_ids:
                 code_to_term_ids.setdefault(code, set()).add(oid)
                 efo_code_to_term_ids.setdefault(code, set()).add(oid)
 
@@ -5026,12 +5044,12 @@ def build_icd10_supplement_cache(
             for code, term_ids in mondo_mapping.items():
                 valid_terms: set[str] = set()
                 for term_id in term_ids:
-                    canonical = canonicalize_trait_ontology_id(term_id)
-                    if not canonical:
+                    resolved_ids = resolve_active_term_ids(term_id)
+                    if resolved_ids:
+                        valid_terms.update(resolved_ids)
                         continue
-                    if canonical in ontology_terms:
-                        valid_terms.add(canonical)
-                    elif trait_ontology_prefix(canonical) == "MONDO":
+                    canonical = canonicalize_trait_ontology_id(term_id)
+                    if canonical and trait_ontology_prefix(canonical) == "MONDO":
                         mondo_terms_not_in_efo += 1
                 if not valid_terms:
                     continue
@@ -14935,6 +14953,16 @@ def harmonize_trait_rows_by_query_constraints(
             if ecoli_override_id and ecoli_override_id in ontology_terms
             else "escherichia coli infection"
         )
+        dry_eye_override_id = ""
+        if "MONDO_0006733" in ontology_terms:
+            dry_eye_override_id = "MONDO_0006733"
+        elif "EFO_1000906" in ontology_terms:
+            dry_eye_override_id = "EFO_1000906"
+        dry_eye_override_label = (
+            normalize(ontology_terms[dry_eye_override_id].label)
+            if dry_eye_override_id and dry_eye_override_id in ontology_terms
+            else "dry eye syndrome"
+        )
 
         # High-value ICD10 overrides to avoid broad regressions in generic
         # status/context chapters and preserve clinically meaningful traits.
@@ -14993,6 +15021,23 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_ids = [canonicalize_trait_ontology_id(ecoli_override_id)]
                 mapped_labels = [ecoli_override_label]
                 mapped_label_keys = [norm_key(ecoli_override_label)]
+            elif (
+                icd10_code.startswith("H04")
+                and "dry eye" in query_key
+                and dry_eye_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=dry_eye_override_id,
+                    mapped_label=dry_eye_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=h04_dry_eye_to_dry_eye_syndrome",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(dry_eye_override_id)]
+                mapped_labels = [dry_eye_override_label]
+                mapped_label_keys = [norm_key(dry_eye_override_label)]
             elif icd10_code.startswith("A04"):
                 set_multi_mapping(
                     row,
