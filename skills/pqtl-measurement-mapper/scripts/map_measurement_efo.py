@@ -14925,6 +14925,16 @@ def harmonize_trait_rows_by_query_constraints(
         query_similarity_text = normalize_trait_text_for_similarity(query_label) or query_key
         query_tokens = informative_trait_tokens(query_similarity_text)
         mapped_label_keys = [norm_key(label) for label in mapped_labels]
+        ecoli_override_id = ""
+        if "MONDO_0020920" in ontology_terms:
+            ecoli_override_id = "MONDO_0020920"
+        elif "EFO_1001318" in ontology_terms:
+            ecoli_override_id = "EFO_1001318"
+        ecoli_override_label = (
+            normalize(ontology_terms[ecoli_override_id].label)
+            if ecoli_override_id and ecoli_override_id in ontology_terms
+            else "escherichia coli infection"
+        )
 
         # High-value ICD10 overrides to avoid broad regressions in generic
         # status/context chapters and preserve clinically meaningful traits.
@@ -14970,7 +14980,20 @@ def harmonize_trait_rows_by_query_constraints(
             ("H52", "HP_0000539", "Abnormality of refraction", "icd10_specific_override=h52_to_abnormality_of_refraction"),
         )
         if icd10_code:
-            if icd10_code.startswith("A04"):
+            if icd10_code.startswith("B96.2") and ecoli_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=ecoli_override_id,
+                    mapped_label=ecoli_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=b96_2_to_escherichia_coli_infection",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(ecoli_override_id)]
+                mapped_labels = [ecoli_override_label]
+                mapped_label_keys = [norm_key(ecoli_override_label)]
+            elif icd10_code.startswith("A04"):
                 set_multi_mapping(
                     row,
                     mapped_ids_text="EFO_0009431|EFO_0000771",
