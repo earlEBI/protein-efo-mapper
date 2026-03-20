@@ -16124,6 +16124,84 @@ def harmonize_trait_rows_by_query_constraints(
             if cutaneous_melanoma_override_id and cutaneous_melanoma_override_id in ontology_terms
             else "cutaneous melanoma"
         )
+        psoriatic_arthritis_override_id = ""
+        if "MONDO_0011849" in ontology_terms:
+            psoriatic_arthritis_override_id = "MONDO_0011849"
+        psoriatic_arthritis_override_label = (
+            normalize(ontology_terms[psoriatic_arthritis_override_id].label)
+            if psoriatic_arthritis_override_id and psoriatic_arthritis_override_id in ontology_terms
+            else "psoriatic arthritis"
+        )
+        non_melanoma_skin_override_id = ""
+        if "EFO_0009260" in ontology_terms:
+            non_melanoma_skin_override_id = "EFO_0009260"
+        elif "MONDO_0002656" in ontology_terms:
+            non_melanoma_skin_override_id = "MONDO_0002656"
+        non_melanoma_skin_override_label = (
+            normalize(ontology_terms[non_melanoma_skin_override_id].label)
+            if non_melanoma_skin_override_id and non_melanoma_skin_override_id in ontology_terms
+            else "non-melanoma skin carcinoma"
+        )
+        lung_neoplasm_override_id = ""
+        if "MONDO_0021117" in ontology_terms:
+            lung_neoplasm_override_id = "MONDO_0021117"
+        elif "MONDO_0008903" in ontology_terms:
+            lung_neoplasm_override_id = "MONDO_0008903"
+        lung_neoplasm_override_label = (
+            normalize(ontology_terms[lung_neoplasm_override_id].label)
+            if lung_neoplasm_override_id and lung_neoplasm_override_id in ontology_terms
+            else "lung neoplasm"
+        )
+        spontaneous_abortion_override_id = ""
+        if "EFO_1001255" in ontology_terms:
+            spontaneous_abortion_override_id = "EFO_1001255"
+        elif "HP_0005268" in ontology_terms:
+            spontaneous_abortion_override_id = "HP_0005268"
+        spontaneous_abortion_override_label = (
+            normalize(ontology_terms[spontaneous_abortion_override_id].label)
+            if spontaneous_abortion_override_id and spontaneous_abortion_override_id in ontology_terms
+            else "spontaneous abortion"
+        )
+        diabetic_neuropathy_override_id = ""
+        if "MONDO_0006626" in ontology_terms:
+            diabetic_neuropathy_override_id = "MONDO_0006626"
+        diabetic_neuropathy_override_label = (
+            normalize(ontology_terms[diabetic_neuropathy_override_id].label)
+            if diabetic_neuropathy_override_id and diabetic_neuropathy_override_id in ontology_terms
+            else "diabetic neuropathy"
+        )
+        chronic_obstructive_asthma_override_id = ""
+        if "EFO_0009759" in ontology_terms:
+            chronic_obstructive_asthma_override_id = "EFO_0009759"
+        chronic_obstructive_asthma_override_label = (
+            normalize(ontology_terms[chronic_obstructive_asthma_override_id].label)
+            if chronic_obstructive_asthma_override_id and chronic_obstructive_asthma_override_id in ontology_terms
+            else "chronic obstructive asthma"
+        )
+        asthma_override_id = "MONDO_0004979" if "MONDO_0004979" in ontology_terms else ""
+        asthma_override_label = (
+            normalize(ontology_terms[asthma_override_id].label)
+            if asthma_override_id and asthma_override_id in ontology_terms
+            else "asthma"
+        )
+        copd_override_id = "MONDO_0005002" if "MONDO_0005002" in ontology_terms else ""
+        copd_override_label = (
+            normalize(ontology_terms[copd_override_id].label)
+            if copd_override_id and copd_override_id in ontology_terms
+            else "chronic obstructive pulmonary disease"
+        )
+        family_history_override_id = "EFO_0000493" if "EFO_0000493" in ontology_terms else ""
+        family_history_override_label = (
+            normalize(ontology_terms[family_history_override_id].label)
+            if family_history_override_id and family_history_override_id in ontology_terms
+            else "family history"
+        )
+        colorectal_cancer_override_id = "MONDO_0005575" if "MONDO_0005575" in ontology_terms else ""
+        colorectal_cancer_override_label = (
+            normalize(ontology_terms[colorectal_cancer_override_id].label)
+            if colorectal_cancer_override_id and colorectal_cancer_override_id in ontology_terms
+            else "colorectal cancer"
+        )
         skin_disorder_override_id = ""
         if "MONDO_0005093" in ontology_terms:
             skin_disorder_override_id = "MONDO_0005093"
@@ -16133,6 +16211,24 @@ def harmonize_trait_rows_by_query_constraints(
             normalize(ontology_terms[skin_disorder_override_id].label)
             if skin_disorder_override_id and skin_disorder_override_id in ontology_terms
             else "skin disorder"
+        )
+        anemia_disease_override_id = ""
+        if "MONDO_0002280" in ontology_terms:
+            anemia_disease_override_id = "MONDO_0002280"
+        anemia_disease_override_label = (
+            normalize(ontology_terms[anemia_disease_override_id].label)
+            if anemia_disease_override_id and anemia_disease_override_id in ontology_terms
+            else "anemia"
+        )
+        eyelid_cancer_override_id = ""
+        if "MONDO_0021313" in ontology_terms:
+            eyelid_cancer_override_id = "MONDO_0021313"
+        elif "MONDO_0002235" in ontology_terms:
+            eyelid_cancer_override_id = "MONDO_0002235"
+        eyelid_cancer_override_label = (
+            normalize(ontology_terms[eyelid_cancer_override_id].label)
+            if eyelid_cancer_override_id and eyelid_cancer_override_id in ontology_terms
+            else "eyelid cancer"
         )
         mapped_label_key_text = " ".join(mapped_label_keys)
 
@@ -16275,6 +16371,235 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_labels = [neurogenic_label]
                 mapped_label_keys = [norm_key(neurogenic_label)]
                 mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            ("psoriatic arthropathy" in query_key or "arthropathic psoriasis" in query_key)
+            and psoriatic_arthritis_override_id
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=psoriatic_arthritis_override_id,
+                mapped_label=psoriatic_arthritis_override_label,
+                matched_via="icd10_specific_override" if icd10_code else "query_phrase_harmonized",
+                note=(
+                    "icd10_specific_override=psoriatic_arthropathy_to_psoriatic_arthritis"
+                    if icd10_code
+                    else "query_phrase_harmonized=psoriatic_arthropathy_to_psoriatic_arthritis"
+                ),
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(psoriatic_arthritis_override_id)]
+            mapped_labels = [psoriatic_arthritis_override_label]
+            mapped_label_keys = [norm_key(psoriatic_arthritis_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if re.search(r"\bnon[- ]?melanoma skin (?:cancer|carcinoma)\b", query_key) and non_melanoma_skin_override_id:
+            set_single_mapping(
+                row,
+                mapped_id=non_melanoma_skin_override_id,
+                mapped_label=non_melanoma_skin_override_label,
+                matched_via="icd10_specific_override" if icd10_code else "query_phrase_harmonized",
+                note=(
+                    "icd10_specific_override=non_melanoma_skin_cancer_to_non_melanoma_skin_carcinoma"
+                    if icd10_code
+                    else "query_phrase_harmonized=non_melanoma_skin_cancer_to_non_melanoma_skin_carcinoma"
+                ),
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(non_melanoma_skin_override_id)]
+            mapped_labels = [non_melanoma_skin_override_label]
+            mapped_label_keys = [norm_key(non_melanoma_skin_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            re.search(r"\bmalignant melanoma of (?:skin|trunk|upper limb|lower limb)\b", query_key)
+            and cutaneous_melanoma_override_id
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=cutaneous_melanoma_override_id,
+                mapped_label=cutaneous_melanoma_override_label,
+                matched_via="icd10_specific_override" if icd10_code else "query_phrase_harmonized",
+                note=(
+                    "icd10_specific_override=malignant_melanoma_site_to_cutaneous_melanoma"
+                    if icd10_code
+                    else "query_phrase_harmonized=malignant_melanoma_site_to_cutaneous_melanoma"
+                ),
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(cutaneous_melanoma_override_id)]
+            mapped_labels = [cutaneous_melanoma_override_label]
+            mapped_label_keys = [norm_key(cutaneous_melanoma_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            "malignant neoplasm" in query_key
+            and "lung" in query_key
+            and ("bronchus" in query_key or "lobe" in query_key)
+            and lung_neoplasm_override_id
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=lung_neoplasm_override_id,
+                mapped_label=lung_neoplasm_override_label,
+                matched_via="icd10_specific_override" if icd10_code else "query_phrase_harmonized",
+                note=(
+                    "icd10_specific_override=malignant_lung_phrase_to_lung_neoplasm"
+                    if icd10_code
+                    else "query_phrase_harmonized=malignant_lung_phrase_to_lung_neoplasm"
+                ),
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(lung_neoplasm_override_id)]
+            mapped_labels = [lung_neoplasm_override_label]
+            mapped_label_keys = [norm_key(lung_neoplasm_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            ("neuropathy" in query_key)
+            and ("diabetes" in query_key or re.search(r"\bt2d\b", query_key))
+            and "nephropathy" not in query_key
+            and diabetic_neuropathy_override_id
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=diabetic_neuropathy_override_id,
+                mapped_label=diabetic_neuropathy_override_label,
+                matched_via="icd10_specific_override" if icd10_code else "query_phrase_harmonized",
+                note=(
+                    "icd10_specific_override=diabetes_neuropathy_to_diabetic_neuropathy"
+                    if icd10_code
+                    else "query_phrase_harmonized=diabetes_neuropathy_to_diabetic_neuropathy"
+                ),
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(diabetic_neuropathy_override_id)]
+            mapped_labels = [diabetic_neuropathy_override_label]
+            mapped_label_keys = [norm_key(diabetic_neuropathy_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if re.search(r"\basthma[- ]?(?:copd|chronic obstructive pulmonary disease) overlap syndrome\b", query_key):
+            if chronic_obstructive_asthma_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=chronic_obstructive_asthma_override_id,
+                    mapped_label=chronic_obstructive_asthma_override_label,
+                    matched_via="query_phrase_harmonized",
+                    note="query_phrase_harmonized=asthma_copd_overlap_to_chronic_obstructive_asthma",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(chronic_obstructive_asthma_override_id)]
+                mapped_labels = [chronic_obstructive_asthma_override_label]
+                mapped_label_keys = [norm_key(chronic_obstructive_asthma_override_label)]
+                mapped_label_key_text = mapped_label_keys[0]
+            elif asthma_override_id and copd_override_id:
+                set_multi_mapping(
+                    row,
+                    mapped_ids_text=f"{asthma_override_id}|{copd_override_id}",
+                    mapped_labels_text=f"{asthma_override_label}|{copd_override_label}",
+                    matched_via="query_phrase_harmonized",
+                    note="query_phrase_harmonized=asthma_copd_overlap_to_dual_asthma_copd",
+                    confidence_floor=0.820,
+                    force_review=True,
+                )
+                mapped_ids = [
+                    canonicalize_trait_ontology_id(asthma_override_id),
+                    canonicalize_trait_ontology_id(copd_override_id),
+                ]
+                mapped_labels = [asthma_override_label, copd_override_label]
+                mapped_label_keys = [norm_key(asthma_override_label), norm_key(copd_override_label)]
+                mapped_label_key_text = " ".join(mapped_label_keys)
+
+        if (
+            family_history_override_id
+            and colorectal_cancer_override_id
+            and ("family history" in query_key or "illnesses of " in query_key)
+            and any(token in query_key for token in ("bowel cancer", "colon cancer", "sigmoid cancer", "rectal cancer"))
+        ):
+            set_multi_mapping(
+                row,
+                mapped_ids_text=f"{family_history_override_id}|{colorectal_cancer_override_id}",
+                mapped_labels_text=f"{family_history_override_label}|{colorectal_cancer_override_label}",
+                matched_via="family_history_specific_harmonized",
+                note="family_history_specific_harmonized=bowel_cancer_to_family_history_plus_colorectal_cancer",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [
+                canonicalize_trait_ontology_id(family_history_override_id),
+                canonicalize_trait_ontology_id(colorectal_cancer_override_id),
+            ]
+            mapped_labels = [family_history_override_label, colorectal_cancer_override_label]
+            mapped_label_keys = [norm_key(family_history_override_label), norm_key(colorectal_cancer_override_label)]
+            mapped_label_key_text = " ".join(mapped_label_keys)
+
+        if (
+            icd10_code.startswith("O02.1")
+            and "missed abortion" in query_key
+            and spontaneous_abortion_override_id
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=spontaneous_abortion_override_id,
+                mapped_label=spontaneous_abortion_override_label,
+                matched_via="icd10_specific_override",
+                note="icd10_specific_override=o02_1_missed_abortion_to_spontaneous_abortion",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(spontaneous_abortion_override_id)]
+            mapped_labels = [spontaneous_abortion_override_label]
+            mapped_label_keys = [norm_key(spontaneous_abortion_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            icd10_code
+            and anemia_disease_override_id
+            and re.search(r"\bana?emia\b", query_key)
+            and len(mapped_ids) == 1
+            and canonicalize_trait_ontology_id(mapped_ids[0]) == "EFO_0004272"
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=anemia_disease_override_id,
+                mapped_label=anemia_disease_override_label,
+                matched_via="icd10_specific_override",
+                note="icd10_specific_override=generic_anemia_phenotype_to_mondo_anemia_disease",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(anemia_disease_override_id)]
+            mapped_labels = [anemia_disease_override_label]
+            mapped_label_keys = [norm_key(anemia_disease_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            (
+                "malignant neoplasm of skin of eyelid" in query_key
+                or "skin of eyelid cancer" in query_key
+            )
+            and not icd10_code
+            and eyelid_cancer_override_id
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=eyelid_cancer_override_id,
+                mapped_label=eyelid_cancer_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=eyelid_malignant_neoplasm_to_eyelid_cancer",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(eyelid_cancer_override_id)]
+            mapped_labels = [eyelid_cancer_override_label]
+            mapped_label_keys = [norm_key(eyelid_cancer_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
 
         # High-value ICD10 overrides to avoid broad regressions in generic
         # status/context chapters and preserve clinically meaningful traits.
@@ -16556,6 +16881,19 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id(myopia_id)]
                     mapped_labels = [myopia_label]
                     mapped_label_keys = [norm_key(myopia_label)]
+            if icd10_code.startswith("C44.1") and eyelid_cancer_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=eyelid_cancer_override_id,
+                    mapped_label=eyelid_cancer_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=c44_1_to_eyelid_cancer",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(eyelid_cancer_override_id)]
+                mapped_labels = [eyelid_cancer_override_label]
+                mapped_label_keys = [norm_key(eyelid_cancer_override_label)]
             if icd10_code.startswith("C25") and pancreatic_neoplasm_override_id:
                 set_single_mapping(
                     row,
