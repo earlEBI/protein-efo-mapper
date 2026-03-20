@@ -825,6 +825,15 @@ TRAIT_MULTI_COMPONENT_MODIFIER_PENALTY_TOKENS = {
     "stricture",
     "remission",
 }
+TRAIT_PEDIATRIC_CONTEXT_TOKENS = {
+    "child",
+    "childhood",
+    "pediatric",
+    "paediatric",
+    "adolescent",
+    "infant",
+    "juvenile",
+}
 TRAIT_NEGATION_CUES = {
     "non",
     "without",
@@ -3259,6 +3268,7 @@ def build_multi_concept_exact_candidate(
     ontology_exact_index: dict[str, set[str]],
     ontology_terms: dict[str, TraitOntologyTerm],
     measurement_term_ids: set[str],
+    icd10_mode: bool = False,
 ) -> Candidate | None:
     query_norm = normalize_trait_text_for_similarity(query_text)
     if not query_norm:
@@ -3300,6 +3310,14 @@ def build_multi_concept_exact_candidate(
                 term = ontology_terms.get(oid)
                 if term is None:
                     continue
+                if icd10_mode and size == 1 and len(ngram) <= 4 and ngram.isalpha():
+                    # Guard ICD10 multi-exact decomposition against short-token
+                    # acronym collisions (for example "face" -> "FACE").
+                    term_label_tokens = informative_trait_tokens(
+                        normalize_trait_text_for_similarity(term.label)
+                    )
+                    if ngram not in term_label_tokens:
+                        continue
                 branch = trait_term_branch(
                     term_id=oid,
                     label=term.label,
@@ -4571,6 +4589,38 @@ def candidate_is_laterality_only_entity(candidate: Candidate) -> bool:
 
 def candidate_is_descriptor_only_entity(candidate: Candidate) -> bool:
     return norm_key(candidate.label) in TRAIT_DESCRIPTOR_ONLY_KEYS
+
+
+def trait_text_has_pediatric_context(text: str) -> bool:
+    key = normalize_trait_text_for_similarity(text) or norm_key(text)
+    if not key:
+        return False
+    return bool(set(tokenize(key)) & TRAIT_PEDIATRIC_CONTEXT_TOKENS)
+
+
+def trait_query_has_pediatric_context(query_text: str) -> bool:
+    return trait_text_has_pediatric_context(query_text)
+
+
+def candidate_has_pediatric_component(
+    candidate: Candidate,
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm] | None = None,
+) -> bool:
+    ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(candidate.efo_id)]
+    ids = [item for item in ids if item]
+    if ids:
+        labels = split_multi_labels(candidate.label, expected_n=len(ids))
+        for idx, term_id in enumerate(ids):
+            label_text = normalize(labels[idx] if idx < len(labels) else "")
+            if not label_text and ontology_terms is not None:
+                term = ontology_terms.get(term_id)
+                if term is not None:
+                    label_text = normalize(term.label)
+            if trait_text_has_pediatric_context(label_text):
+                return True
+        return False
+    return trait_text_has_pediatric_context(candidate.label)
 
 
 NONHUMAN_ANIMAL_HINT_TOKENS = {
@@ -9887,6 +9937,7 @@ def map_trait_queries(
                 ontology_exact_index=ontology_exact_index,
                 ontology_terms=ontology_terms,
                 measurement_term_ids=measurement_term_ids,
+                icd10_mode=input_type == "icd10",
             )
             if multi_exact_candidate is not None:
                 candidates.append(multi_exact_candidate)
@@ -10812,15 +10863,14 @@ def map_trait_queries(
             if (
                 input_type == "icd10"
                 and candidate.matched_via == "efo_obo_exact_multi"
-                and "childhood cancer" in norm_key(candidate.label)
+                and not trait_query_has_pediatric_context(query_for_matching)
+                and candidate_has_pediatric_component(candidate, ontology_terms=ontology_terms)
             ):
-                query_key = normalize_trait_text_for_similarity(query_for_matching) or norm_key(query_for_matching)
-                if not any(tok in query_key for tok in ("child", "pediatric", "paediatric", "adolescent", "infant")):
-                    candidate.evidence = (
-                        f"{candidate.evidence}; blocked childhood-cancer multi-candidate for non-pediatric ICD10 query"
-                    )
-                    blocked_review_candidates.append(candidate)
-                    continue
+                candidate.evidence = (
+                    f"{candidate.evidence}; blocked pediatric multi-candidate for non-pediatric ICD10 query"
+                )
+                blocked_review_candidates.append(candidate)
+                continue
             if candidate_has_forbidden_trait_mapping(candidate.efo_id, candidate.label):
                 candidate.evidence = f"{candidate.evidence}; blocked forbidden trait mapping (normal)"
                 blocked_review_candidates.append(candidate)
@@ -10865,6 +10915,17 @@ def map_trait_queries(
                     )
                     blocked_review_candidates.append(candidate)
                     continue
+            if (
+                input_type == "icd10"
+                and candidate.matched_via == "efo_obo_exact_multi"
+                and not trait_query_has_pediatric_context(query_for_matching)
+                and candidate_has_pediatric_component(candidate, ontology_terms=ontology_terms)
+            ):
+                candidate.evidence = (
+                    f"{candidate.evidence}; blocked pediatric multi-candidate for non-pediatric ICD10 query"
+                )
+                blocked_review_candidates.append(candidate)
+                continue
             if candidate_has_forbidden_trait_mapping(candidate.efo_id, candidate.label):
                 candidate.evidence = f"{candidate.evidence}; blocked forbidden trait mapping (normal)"
                 blocked_review_candidates.append(candidate)
@@ -10927,10 +10988,7 @@ def map_trait_queries(
                         f"{candidate.evidence}; removed generic covariate component 'age at assessment' for interview-timing query"
                     )
         if input_type == "icd10":
-            query_key = normalize_trait_text_for_similarity(query_for_matching) or norm_key(query_for_matching)
-            pediatric_context = any(
-                tok in query_key for tok in ("child", "pediatric", "paediatric", "adolescent", "infant")
-            )
+            pediatric_context = trait_query_has_pediatric_context(query_for_matching)
             for candidate in candidates:
                 if candidate.matched_via != "efo_obo_exact_multi" or pediatric_context:
                     continue
@@ -10941,14 +10999,18 @@ def map_trait_queries(
                 keep_pairs: list[tuple[str, str]] = []
                 for idx, term_id in enumerate(ids):
                     term_label = normalize(labels[idx] if idx < len(labels) else "")
-                    if norm_key(term_label) == "childhood cancer":
+                    if not term_label:
+                        term = ontology_terms.get(canonicalize_trait_ontology_id(term_id))
+                        if term is not None:
+                            term_label = normalize(term.label)
+                    if trait_text_has_pediatric_context(term_label):
                         continue
                     keep_pairs.append((term_id, term_label))
                 if keep_pairs and len(keep_pairs) < len(ids):
                     candidate.efo_id = "|".join(term_id for term_id, _ in keep_pairs)
                     candidate.label = "|".join(label for _, label in keep_pairs)
                     candidate.evidence = (
-                        f"{candidate.evidence}; removed childhood-cancer component for non-pediatric ICD10 query"
+                        f"{candidate.evidence}; removed pediatric component for non-pediatric ICD10 query"
                     )
         if input_type == "icd10":
             has_icd10_exact_xref = any(
@@ -12584,6 +12646,7 @@ def map_trait_queries(
                         ontology_exact_index=ontology_exact_index,
                         ontology_terms=ontology_terms,
                         measurement_term_ids=measurement_term_ids,
+                        icd10_mode=input_type == "icd10",
                     )
                     if multi_history_candidate is not None:
                         multi_ids = [
@@ -13207,10 +13270,9 @@ def map_trait_queries(
                 )
             )
         ]
-        rescue_query_key = normalize_trait_text_for_similarity(query_for_matching) or norm_key(query_for_matching)
         rescue_non_pediatric_icd10 = (
             input_type == "icd10"
-            and not any(tok in rescue_query_key for tok in ("child", "pediatric", "paediatric", "adolescent", "infant"))
+            and not trait_query_has_pediatric_context(query_for_matching)
         )
         if not emitted and blocked_review_candidates:
             rescue_candidates = [
@@ -13241,7 +13303,7 @@ def map_trait_queries(
                 and not (
                     rescue_non_pediatric_icd10
                     and candidate.matched_via == "efo_obo_exact_multi"
-                    and "childhood cancer" in norm_key(candidate.label)
+                    and candidate_has_pediatric_component(candidate, ontology_terms=ontology_terms)
                 )
             ]
             if rescue_candidates:
@@ -13275,7 +13337,7 @@ def map_trait_queries(
                     if not (
                         rescue_non_pediatric_icd10
                         and candidate.matched_via == "efo_obo_exact_multi"
-                        and "childhood cancer" in norm_key(candidate.label)
+                        and candidate_has_pediatric_component(candidate, ontology_terms=ontology_terms)
                     )
                 ]
                 fallback_candidates.sort(
@@ -16894,6 +16956,23 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_ids = [canonicalize_trait_ontology_id(eyelid_cancer_override_id)]
                 mapped_labels = [eyelid_cancer_override_label]
                 mapped_label_keys = [norm_key(eyelid_cancer_override_label)]
+            if (
+                icd10_code.startswith("C44")
+                and not icd10_code.startswith("C44.1")
+                and non_melanoma_skin_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=non_melanoma_skin_override_id,
+                    mapped_label=non_melanoma_skin_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=c44_to_non_melanoma_skin_carcinoma",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(non_melanoma_skin_override_id)]
+                mapped_labels = [non_melanoma_skin_override_label]
+                mapped_label_keys = [norm_key(non_melanoma_skin_override_label)]
             if icd10_code.startswith("C25") and pancreatic_neoplasm_override_id:
                 set_single_mapping(
                     row,
