@@ -3065,7 +3065,11 @@ def trait_query_contradicts_candidate(query_text: str, candidate: Candidate) -> 
     label_key_spaced = label_key.replace("-", " ")
     query_tokens = set(tokenize(query_key))
     label_tokens = set(tokenize(label_key))
-    if "cutaneous" in label_tokens and query_tokens.isdisjoint({"cutaneous", "skin", "dermal", "epidermal"}):
+    if (
+        "cutaneous" in label_tokens
+        and query_tokens.isdisjoint({"cutaneous", "skin", "dermal", "epidermal"})
+        and query_tokens.isdisjoint({"superficial", "mycosis", "mycoses", "fungal"})
+    ):
         return True
     if "vomiting" in query_tokens and "nausea" not in query_tokens and {"vomiting", "nausea"}.issubset(label_tokens):
         return True
@@ -16100,6 +16104,36 @@ def harmonize_trait_rows_by_query_constraints(
             if macula_degeneration_override_id and macula_degeneration_override_id in ontology_terms
             else "degeneration of macula and posterior pole"
         )
+        pancreatic_neoplasm_override_id = ""
+        if "MONDO_0009831" in ontology_terms:
+            pancreatic_neoplasm_override_id = "MONDO_0009831"
+        elif "EFO_0002618" in ontology_terms:
+            pancreatic_neoplasm_override_id = "EFO_0002618"
+        pancreatic_neoplasm_override_label = (
+            normalize(ontology_terms[pancreatic_neoplasm_override_id].label)
+            if pancreatic_neoplasm_override_id and pancreatic_neoplasm_override_id in ontology_terms
+            else "malignant pancreatic neoplasm"
+        )
+        cutaneous_melanoma_override_id = ""
+        if "MONDO_0005012" in ontology_terms:
+            cutaneous_melanoma_override_id = "MONDO_0005012"
+        elif "EFO_0000756" in ontology_terms:
+            cutaneous_melanoma_override_id = "EFO_0000756"
+        cutaneous_melanoma_override_label = (
+            normalize(ontology_terms[cutaneous_melanoma_override_id].label)
+            if cutaneous_melanoma_override_id and cutaneous_melanoma_override_id in ontology_terms
+            else "cutaneous melanoma"
+        )
+        skin_disorder_override_id = ""
+        if "MONDO_0005093" in ontology_terms:
+            skin_disorder_override_id = "MONDO_0005093"
+        elif "EFO_0000701" in ontology_terms:
+            skin_disorder_override_id = "EFO_0000701"
+        skin_disorder_override_label = (
+            normalize(ontology_terms[skin_disorder_override_id].label)
+            if skin_disorder_override_id and skin_disorder_override_id in ontology_terms
+            else "skin disorder"
+        )
         mapped_label_key_text = " ".join(mapped_label_keys)
 
         if (
@@ -16522,6 +16556,45 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id(myopia_id)]
                     mapped_labels = [myopia_label]
                     mapped_label_keys = [norm_key(myopia_label)]
+            if icd10_code.startswith("C25") and pancreatic_neoplasm_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=pancreatic_neoplasm_override_id,
+                    mapped_label=pancreatic_neoplasm_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=c25_to_malignant_pancreatic_neoplasm",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(pancreatic_neoplasm_override_id)]
+                mapped_labels = [pancreatic_neoplasm_override_label]
+                mapped_label_keys = [norm_key(pancreatic_neoplasm_override_label)]
+            if icd10_code.startswith("C43") and cutaneous_melanoma_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=cutaneous_melanoma_override_id,
+                    mapped_label=cutaneous_melanoma_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=c43_to_cutaneous_melanoma",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(cutaneous_melanoma_override_id)]
+                mapped_labels = [cutaneous_melanoma_override_label]
+                mapped_label_keys = [norm_key(cutaneous_melanoma_override_label)]
+            if icd10_code.startswith("L90.5") and skin_disorder_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=skin_disorder_override_id,
+                    mapped_label=skin_disorder_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=l90_5_to_skin_disorder",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(skin_disorder_override_id)]
+                mapped_labels = [skin_disorder_override_label]
+                mapped_label_keys = [norm_key(skin_disorder_override_label)]
             if icd10_code.startswith("K76") and re.search(r"\b(?:other|unspecified)\b", query_key):
                 liver_id, liver_label = preferred_exact_term_for_phrase(
                     "liver disorder",
