@@ -16258,6 +16258,14 @@ def harmonize_trait_rows_by_query_constraints(
             if family_history_override_id and family_history_override_id in ontology_terms
             else "family history"
         )
+        encounter_health_service_override_id = ""
+        if "EFO_0009786" in ontology_terms:
+            encounter_health_service_override_id = "EFO_0009786"
+        encounter_health_service_override_label = (
+            normalize(ontology_terms[encounter_health_service_override_id].label)
+            if encounter_health_service_override_id and encounter_health_service_override_id in ontology_terms
+            else "encounter with health service"
+        )
         colorectal_cancer_override_id = "MONDO_0005575" if "MONDO_0005575" in ontology_terms else ""
         colorectal_cancer_override_label = (
             normalize(ontology_terms[colorectal_cancer_override_id].label)
@@ -16322,6 +16330,28 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_labels = [celiac_label]
                 mapped_label_keys = [norm_key(celiac_label)]
                 mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            encounter_health_service_override_id
+            and len(mapped_ids) == 1
+            and len(mapped_label_keys) == 1
+            and mapped_label_keys[0] == "checkup"
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=encounter_health_service_override_id,
+                mapped_label=encounter_health_service_override_label,
+                matched_via="mapping_harmonized",
+                note="mapping_harmonized=checkup_to_encounter_with_health_service",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            row["validation"] = "validated"
+            row["qc_review_flag"] = "no"
+            mapped_ids = [canonicalize_trait_ontology_id(encounter_health_service_override_id)]
+            mapped_labels = [encounter_health_service_override_label]
+            mapped_label_keys = [norm_key(encounter_health_service_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
 
         if (
             "vomiting" in query_key
