@@ -3840,40 +3840,76 @@ def load_trait_query_inputs(path: Path, *, default_trait_scale: str = "auto") ->
     if not path.exists():
         raise FileNotFoundError(f"Input file not found: {path}")
     default_scale_norm = normalize_trait_scale(default_trait_scale)
-
-    suffix = path.suffix.lower()
-    if suffix in {".txt", ".list"}:
-        rows: list[dict[str, str]] = []
-        for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            query = normalize(line)
-            if not query:
-                continue
-            rows.append(
-                {
-                    "row_id": str(idx),
-                    "query": query,
-                    "input_type": "auto",
-                    "trait_scale": default_scale_norm,
-                    "source_code": "",
-                    "source_data_type": "",
-                    "additional_info": "",
-                    "icd10": "",
-                    "phecode": "",
-                }
-            )
-        return rows
-
-    delimiter = "\t" if suffix in {".tsv", ".tab"} else ","
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        parsed_rows = list(csv.reader(handle, delimiter=delimiter))
-    if not parsed_rows:
-        return []
-
     trait_query_column_keys = [
         normalize_trait_column_key(name)
         for name in TRAIT_QUERY_COLUMNS
         if normalize_trait_column_key(name)
     ]
+    known_tabular_column_keys: set[str] = set(trait_query_column_keys)
+    for columns in (
+        TRAIT_ICD10_COLUMNS,
+        TRAIT_PHECODE_COLUMNS,
+        TRAIT_INPUT_TYPE_COLUMNS,
+        TRAIT_SCALE_COLUMNS,
+        TRAIT_CODE_COLUMNS,
+        TRAIT_DATA_TYPE_COLUMNS,
+        TRAIT_ADDITIONAL_INFO_COLUMNS,
+    ):
+        for name in columns:
+            key = normalize_trait_column_key(name)
+            if key:
+                known_tabular_column_keys.add(key)
+
+    suffix = path.suffix.lower()
+    if suffix in {".txt", ".list"}:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+        parsed_rows: list[list[str]] = []
+        detected_delimiter = ""
+        first_nonempty_line = next((line for line in raw_lines if normalize(line)), "")
+        if "\t" in first_nonempty_line:
+            detected_delimiter = "\t"
+        elif "," in first_nonempty_line:
+            detected_delimiter = ","
+        if detected_delimiter:
+            candidate_rows = list(csv.reader(raw_lines, delimiter=detected_delimiter))
+            if candidate_rows:
+                header_keys = {
+                    normalize_trait_column_key(cell)
+                    for cell in candidate_rows[0]
+                    if normalize_trait_column_key(cell)
+                }
+                has_query_column = any(key in trait_query_column_keys for key in header_keys)
+                has_known_tabular_columns = any(key in known_tabular_column_keys for key in header_keys)
+                if has_query_column and has_known_tabular_columns and len(candidate_rows[0]) > 1:
+                    parsed_rows = candidate_rows
+        if not parsed_rows:
+            rows: list[dict[str, str]] = []
+            for idx, line in enumerate(raw_lines, start=1):
+                query = normalize(line)
+                if not query:
+                    continue
+                rows.append(
+                    {
+                        "row_id": str(idx),
+                        "query": query,
+                        "input_type": "auto",
+                        "trait_scale": default_scale_norm,
+                        "source_code": "",
+                        "source_data_type": "",
+                        "additional_info": "",
+                        "icd10": "",
+                        "phecode": "",
+                    }
+                )
+            return rows
+        delimiter = detected_delimiter
+    else:
+        delimiter = "\t" if suffix in {".tsv", ".tab"} else ","
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            parsed_rows = list(csv.reader(handle, delimiter=delimiter))
+
+    if not parsed_rows:
+        return []
 
     if parsed_rows and len(parsed_rows[0]) == 1 and all(len(r) <= 1 for r in parsed_rows):
         first = normalize(parsed_rows[0][0] if parsed_rows[0] else "")
