@@ -754,6 +754,8 @@ TRAIT_LOCATION_NONSPECIFIC_TOKENS = {
     "unknown",
     "other",
     "nos",
+    "joint",
+    "arthritic",
     "arthrosis",
     "osteoarthritis",
     "arthritis",
