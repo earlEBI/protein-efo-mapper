@@ -2162,9 +2162,10 @@ def query_has_leading_icd10_token(query_text: str, candidate_code: str) -> bool:
             re.IGNORECASE,
         ):
             return True
-    # Union/hash-formatted rows often encode field/code tokens as prefixes
-    # (for example Union#M2571#M25.71 ...). Treat those as ICD-leading inputs.
-    if "#" in query_norm and re.match(r"^\s*(?:Union#)?\d{1,7}#", query_norm, re.IGNORECASE):
+    # Union/hash-formatted rows often encode ICD10 tokens directly in the
+    # first few hash segments (for example Union#M2571#M25.71 ...). Treat
+    # those as ICD-leading inputs even when the leading segment is not numeric.
+    if "#" in query_norm:
         hash_parts = [normalize(part) for part in query_norm.split("#") if normalize(part)]
         for part in hash_parts[:3]:
             part_code = normalize_icd10_code(part)
