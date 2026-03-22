@@ -4244,6 +4244,7 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
     token_freq: Counter[str] = Counter()
     icd10_xref_index: dict[str, set[str]] = {}
     xref_label_hints: dict[str, str] = {}
+    xref_active_term_index: dict[str, set[str]] = {}
     term_parents: dict[str, tuple[str, ...]] = {}
 
     current_id = ""
@@ -4376,6 +4377,12 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
                 if parent_id not in parents:
                     parents.append(parent_id)
             term_parents[current_id] = tuple(parents)
+            for xref_id in current_preferred_xrefs:
+                if not xref_id or xref_id == current_id:
+                    continue
+                if trait_ontology_prefix(xref_id) not in TRAIT_PREFERRED_PREFIX_ORDER:
+                    continue
+                xref_active_term_index.setdefault(xref_id, set()).add(current_id)
 
             phrases = {term.label, *term.synonyms}
             for phrase in phrases:
@@ -4507,6 +4514,18 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
         "token_index": token_index,
         "token_freq": token_freq,
         "icd10_xref_index": icd10_xref_index,
+        "xref_active_term_index": {
+            xref_id: tuple(
+                sorted(
+                    term_ids,
+                    key=lambda tid: (
+                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        tid,
+                    ),
+                )
+            )
+            for xref_id, term_ids in xref_active_term_index.items()
+        },
         "term_parents": term_parents,
         "measurement_term_ids": measurement_term_ids,
     }
@@ -4521,6 +4540,7 @@ def build_trait_cache_term_resolution(
     records: list[TraitCacheRecord] = trait_cache_index.get("records", [])
     ontology_terms: dict[str, TraitOntologyTerm] = ontology_index.get("terms", {})
     obsolete_terms: dict[str, TraitObsoleteTerm] = ontology_index.get("obsolete_terms", {})
+    xref_active_term_index: dict[str, tuple[str, ...]] = ontology_index.get("xref_active_term_index", {})
 
     resolution: dict[int, tuple[tuple[str, ...], tuple[str, ...]]] = {}
     stats: dict[str, int] = {
@@ -4535,6 +4555,8 @@ def build_trait_cache_term_resolution(
         "ids_obsolete_consider_single": 0,
         "ids_obsolete_unresolved": 0,
         "ids_unknown": 0,
+        "ids_unknown_xref_rescued": 0,
+        "ids_unknown_xref_ambiguous": 0,
     }
     issues: list[str] = []
 
@@ -4544,7 +4566,7 @@ def build_trait_cache_term_resolution(
         row_has_obsolete = False
         row_has_unresolved = False
 
-        for raw_id in rec.mapped_ids:
+        for idx, raw_id in enumerate(rec.mapped_ids):
             oid = canonicalize_trait_ontology_id(raw_id)
             if not oid:
                 continue
@@ -4582,6 +4604,52 @@ def build_trait_cache_term_resolution(
                     issues.append(
                         f"row {rec.rownum}: unresolved obsolete id {oid} "
                         f"for '{rec.reported_trait or rec.lookup_text}'"
+                    )
+                continue
+
+            xref_rescue_candidates = [
+                term_id
+                for term_id in xref_active_term_index.get(oid, ())
+                if term_id in ontology_terms
+            ]
+            if xref_rescue_candidates:
+                ordered_candidates = sorted(
+                    dict.fromkeys(xref_rescue_candidates),
+                    key=lambda term_id: (
+                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+                        term_id,
+                    ),
+                )
+                if len(ordered_candidates) > 1:
+                    mapped_label_key = ""
+                    if idx < len(rec.mapped_labels):
+                        mapped_label_key = norm_key(normalize(rec.mapped_labels[idx]))
+                    if mapped_label_key:
+                        exact_label_matched = [
+                            term_id
+                            for term_id in ordered_candidates
+                            if (
+                                ontology_terms[term_id].label_key == mapped_label_key
+                                or mapped_label_key in ontology_terms[term_id].exact_synonym_keys
+                            )
+                        ]
+                        if exact_label_matched:
+                            ordered_candidates = exact_label_matched
+                if len(ordered_candidates) == 1:
+                    stats["ids_unknown_xref_rescued"] += 1
+                    rescued_id = ordered_candidates[0]
+                    if rescued_id not in resolved_ids:
+                        resolved_ids.append(rescued_id)
+                    continue
+                stats["ids_unknown_xref_ambiguous"] += 1
+                row_has_unresolved = True
+                if len(issues) < issue_sample_limit:
+                    preview = ",".join(ordered_candidates[:4])
+                    if len(ordered_candidates) > 4:
+                        preview += ",..."
+                    issues.append(
+                        f"row {rec.rownum}: id {oid} has ambiguous active xref targets "
+                        f"({preview}) for '{rec.reported_trait or rec.lookup_text}'"
                     )
                 continue
 
@@ -11648,13 +11716,39 @@ def map_trait_queries(
                 exact_icd10_query_context,
                 preferred_exact_icd10.label,
             )
+            exact_icd10_support_overlap = exact_icd10_overlap
+            exact_icd10_support_anchor_overlap = exact_icd10_anchor_overlap
+            exact_icd10_exact_query_agreement = candidate_has_exact_query_agreement(preferred_exact_icd10)
+            preferred_exact_ids = [
+                canonicalize_trait_ontology_id(term_id)
+                for term_id in split_multi_ids(preferred_exact_icd10.efo_id)
+                if canonicalize_trait_ontology_id(term_id)
+            ]
+            for term_id in preferred_exact_ids:
+                term = ontology_terms.get(term_id)
+                if term is None:
+                    continue
+                for synonym in term.synonyms:
+                    syn_overlap = trait_query_label_overlap_ratio(exact_icd10_query_context, synonym)
+                    if syn_overlap > exact_icd10_support_overlap:
+                        exact_icd10_support_overlap = syn_overlap
+                    if not exact_icd10_support_anchor_overlap and trait_has_anchor_overlap(
+                        exact_icd10_query_context,
+                        synonym,
+                    ):
+                        exact_icd10_support_anchor_overlap = True
             exact_icd10_is_generic = (
                 is_generic_trait_label(preferred_exact_icd10.label)
                 or candidate_is_broad_umbrella_trait(preferred_exact_icd10)
             )
             exact_icd10_is_strict_manual = candidate_is_strict_manual_icd10_cache(preferred_exact_icd10)
             promote_exact_icd10 = True
-            if not exact_icd10_is_strict_manual and exact_icd10_overlap < 0.45 and not exact_icd10_anchor_overlap:
+            if (
+                not exact_icd10_is_strict_manual
+                and exact_icd10_support_overlap < 0.45
+                and not exact_icd10_support_anchor_overlap
+                and not exact_icd10_exact_query_agreement
+            ):
                 promote_exact_icd10 = False
             if promote_exact_icd10 and exact_icd10_is_generic and not exact_icd10_is_strict_manual and candidates:
                 top_existing_candidate = candidates[0]
@@ -11674,7 +11768,7 @@ def map_trait_queries(
                     not top_existing_is_generic
                     and (
                         top_existing_anchor_overlap
-                        or top_existing_overlap > (exact_icd10_overlap + 0.05)
+                        or top_existing_overlap > (exact_icd10_support_overlap + 0.05)
                     )
                 ):
                     promote_exact_icd10 = False
@@ -11686,6 +11780,15 @@ def map_trait_queries(
                     preferred_exact_icd10.score = max(preferred_exact_icd10.score, 0.96)
                 preferred_exact_icd10.evidence = (
                     f"{preferred_exact_icd10.evidence}; prioritized exact ICD10 cache mapping ahead of ontology fuzzy candidates"
+                    + (
+                        "; lexical support rescued via exact ontology synonym"
+                        if (
+                            exact_icd10_support_overlap > exact_icd10_overlap
+                            or (exact_icd10_support_anchor_overlap and not exact_icd10_anchor_overlap)
+                            or exact_icd10_exact_query_agreement
+                        )
+                        else ""
+                    )
                 )
                 candidates = [
                     preferred_exact_icd10,
