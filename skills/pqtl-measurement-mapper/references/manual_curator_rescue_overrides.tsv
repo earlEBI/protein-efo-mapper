@@ -1,0 +1,274 @@
+input_query	input_icd10	mapped_trait_id	mapped_trait_label	note	decision_reason
+ICD10 R19: Other symptoms and signs involving the digestive system and abdomen	R19	MONDO_0004335	digestive system disorder	pmid34662886_manual_better_row_15	manual_anchor_token_match_exceeds_current
+ICD10 C44: Other and unspecified malignant neoplasm of skin (Gene-based burden)	C44	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_103	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C44.3: Other and unspecified malignant neoplasm of skin of other and unspecified parts of face (Gene-based burden)	C44.3	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_109	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C44.4: Other and unspecified malignant neoplasm of skin of scalp and neck (Gene-based burden)	C44.4	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_111	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C44.5: Other and unspecified malignant neoplasm of skin of trunk (Gene-based burden)	C44.5	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_113	manual_unique_id_with_strong_query_similarity_gain
+ICD10 J22: Unspecified acute lower respiratory infection	J22	MONDO_0000270	lower respiratory tract disorder	pmid34662886_manual_better_row_161	manual_unique_id_with_strong_query_similarity_gain
+ICD10 F10: Alcohol related disorders (Gene-based burden)	F10	MONDO_0021698	alcohol-related disorders	pmid34662886_manual_better_row_278	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI9 concept interpolation - tall (UKB data field 5556) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_528	current_generic_manual_more_specific
+ICD10 C16: Malignant neoplasm of stomach (Gene-based burden)	C16	MONDO_0021085	gastric neoplasm	pmid34662886_manual_better_row_581	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C44.4: Other and unspecified malignant neoplasm of skin of scalp and neck	C44.4	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_652	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C16: Malignant neoplasm of stomach	C16	MONDO_0021085	gastric neoplasm	pmid34662886_manual_better_row_672	manual_unique_id_with_strong_query_similarity_gain
+ICD10 J02.9: Acute pharyngitis, unspecified	J02.9	MONDO_0020600	acute pharyngitis	pmid34662886_manual_better_row_741	manual_unique_id_with_strong_query_similarity_gain
+ICD10 S42: fracture clavicle collar bone	S42	EFO_0009614	clavicle fracture	pmid34662886_manual_better_row_920	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I20.0: Unstable angina	I20.0	EFO_0003913	angina pectoris	pmid34662886_manual_better_row_1020	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - cease (UKB data field 5001) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1036	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - close (UKB data field 20177) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1038	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - close (UKB data field 5001) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1040	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - pause (UKB data field 20177) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1042	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - pause (UKB data field 5001) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1044	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - rest (UKB data field 5001) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1046	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 25 (UKB data field 20179) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1048	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 26 (UKB data field 20179) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1050	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 27 (UKB data field 20179) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1052	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 28 (UKB data field 20179) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1054	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 29 (UKB data field 20179) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1056	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 25 (UKB data field 5012) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1058	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 26 (UKB data field 5012) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1060	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 27 (UKB data field 5012) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1062	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 28 (UKB data field 5012) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1064	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 29 (UKB data field 5012) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1066	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI9 concept interpolation - long (UKB data field 20181) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1068	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - long (UKB data field 5556) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1071	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - metres (UKB data field 20181) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1072	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - metres (UKB data field 5556) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1074	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - tall (UKB data field 20181) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_1075	current_generic_manual_more_specific
+ICD10 F10: Alcohol related disorders	F10	MONDO_0021698	alcohol-related disorders	pmid34662886_manual_better_row_1151	manual_unique_id_with_strong_query_similarity_gain
+ICD10 R19: Other symptoms and signs involving the digestive system and abdomen (Gene-based burden)	R19	MONDO_0004335	digestive system disorder	pmid34662886_manual_better_row_1154	manual_anchor_token_match_exceeds_current
+ICD10 R20.2: Paresthesia of skin (Gene-based burden)	R20.2	HP_0003401	Paresthesia	pmid34662886_manual_better_row_1170	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I44.2: Atrioventricular block, complete	I44.2	MONDO_0000465	atrioventricular block	pmid34662886_manual_better_row_1234	manual_unique_id_with_strong_query_similarity_gain
+ICD10 S22.4: Multiple fractures of ribs (Gene-based burden)	S22.4	EFO_0009513	multiple bone fractures	pmid34662886_manual_better_row_1333	manual_unique_id_with_strong_query_similarity_gain
+Shingles		EFO_0008401	susceptibility to shingles measurement	pmid34662886_manual_better_row_1466	manual_unique_id_with_strong_query_similarity_gain
+ICD10 M85: Other disorders of bone density and structure	M85	HP_0004348	Abnormality of bone mineral density	pmid34662886_manual_better_row_1507	current_generic_manual_more_specific
+ICD10 C44: Other and unspecified malignant neoplasm of skin	C44	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_1773	manual_unique_id_with_strong_query_similarity_gain
+ICD10 L60.0: Ingrowing nail (Gene-based burden)	L60.0	MONDO_0019283	nail anomaly	pmid34662886_manual_better_row_1869	manual_unique_id_with_strong_query_similarity_gain
+ICD10 S62: Fracture at wrist and hand level (Gene-based burden)	S62	EFO_0009515	wrist fracture	pmid34662886_manual_better_row_1885	manual_unique_id_with_strong_query_similarity_gain
+ICD10 J43: Emphysema (Gene-based burden)	J43	MONDO_0004849	pulmonary emphysema	pmid34662886_manual_better_row_2044	manual_unique_id_with_strong_query_similarity_gain
+ICD10 L02: Cutaneous abscess, furuncle and carbuncle (Gene-based burden)	L02	HP_0031292	Cutaneous abscess	pmid34662886_manual_better_row_2276	manual_unique_id_with_strong_query_similarity_gain
+ICD10 J43: Emphysema	J43	MONDO_0004849	pulmonary emphysema	pmid34662886_manual_better_row_2354	manual_unique_id_with_strong_query_similarity_gain
+Disc degeneration		MONDO_0044339	lumbar disk degenerative disorder	pmid34662886_manual_better_row_2687	manual_unique_id_with_strong_query_similarity_gain
+ICD10 M51: disc degeneration	M51	MONDO_0044339	lumbar disk degenerative disorder	pmid34662886_manual_better_row_2790	manual_anchor_token_match_exceeds_current
+ICD10 R5382: chronic fatigue syndrome	R5382	MONDO_0005404	myalgic encephalomeyelitis/chronic fatigue syndrome	pmid34662886_manual_better_row_2813	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I10: hypertension	I10	HP_0000822	Hypertension	pmid34662886_manual_better_row_2827	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I21.0: ST elevation (STEMI) myocardial infarction of anterior wall (Gene-based burden)	I21.0	EFO_0008585	ST Elevation Myocardial Infarction	pmid34662886_manual_better_row_2902	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I21.1: ST elevation (STEMI) myocardial infarction of inferior wall (Gene-based burden)	I21.1	EFO_0008585	ST Elevation Myocardial Infarction	pmid34662886_manual_better_row_2904	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I25: Chronic ischemic heart disease (Gene-based burden)	I25	MONDO_0005267	heart disorder	pmid34662886_manual_better_row_2918	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I20.0: Unstable angina (Gene-based burden)	I20.0	EFO_0003913	angina pectoris	pmid34662886_manual_better_row_2944	manual_unique_id_with_strong_query_similarity_gain
+ICD10 J02.9: Acute pharyngitis, unspecified (Gene-based burden)	J02.9	MONDO_0020600	acute pharyngitis	pmid34662886_manual_better_row_2987	manual_unique_id_with_strong_query_similarity_gain
+Disc degeneration (Gene-based burden)		MONDO_0044339	lumbar disk degenerative disorder	pmid34662886_manual_better_row_3217	manual_unique_id_with_strong_query_similarity_gain
+ICD10 M51: disc degeneration (Gene-based burden)	M51	MONDO_0044339	lumbar disk degenerative disorder	pmid34662886_manual_better_row_3219	manual_anchor_token_match_exceeds_current
+Cognitive function - FI2 identify largest number - 714 (UKB data field 4946)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3250	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 987 (UKB data field 4946)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3252	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - adult (UKB data field 4957)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3258	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - develop (UKB data field 4957)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3260	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - grow (UKB data field 4957)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3262	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 714 (UKB data field 20167)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3351	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 987 (UKB data field 20167)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3353	current_generic_manual_more_specific
+Cognitive function - FI1 numeric addition test - 14 (20165)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3355	current_generic_manual_more_specific
+Cognitive function - FI1 numeric addition test - 15 (20165)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3357	current_generic_manual_more_specific
+Cognitive function - FI1 numeric addition test - 16 (20165)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3359	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - adult (UKB data field 20169)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3361	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - develop (UKB data field 20169)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3363	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - grow (UKB data field 20169)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3365	current_generic_manual_more_specific
+Cognitive function - FI4 positional arithmetic - 5 (UKB data field 20171)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3367	manual_unique_id_with_strong_query_similarity_gain
+Sensitive stomach (UKB data field 21064) (Gene-based burden)		MONDO_0004298	stomach disorder	pmid34662886_manual_better_row_3386	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 25 (UKB data field 5012)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3389	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 26 (UKB data field 5012)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3391	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 27 (UKB data field 5012)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3393	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 28 (UKB data field 5012)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3395	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 29 (UKB data field 5012)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3397	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 68 (UKB data field 20175)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3403	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 69 (UKB data field 20175)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3405	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 70 (UKB data field 20175)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3407	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 71 (UKB data field 20175)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3409	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 72 (UKB data field 20175)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3411	manual_unique_id_with_strong_query_similarity_gain
+Visual acuity - mean spherical equivalent (UKB data field 20261)		EFO_0008385	visual acuity measurement	pmid34662886_manual_better_row_3413	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI10 arithmetic sequence recognition - 92 (UKB data field 5699)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3438	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 93 (UKB data field 5699)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3440	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 94 (UKB data field 5699)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3442	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 95 (UKB data field 5699)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3444	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 96 (UKB data field 5699)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_3446	current_generic_manual_more_specific
+Irritability (UKB data field 1940)		HP_0000737	Irritability	pmid34662886_manual_better_row_3587	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C44.3: Other and unspecified malignant neoplasm of skin of other and unspecified parts of face	C44.3	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_3665	manual_unique_id_with_strong_query_similarity_gain
+Insulin levels (UKB data field 6177) (Gene-based burden)		EFO_0004467	insulin measurement	pmid34662886_manual_better_row_3879	manual_unique_id_with_strong_query_similarity_gain
+ICD10 R5382: chronic fatigue syndrome (Gene-based burden)	R5382	MONDO_0005404	myalgic encephalomeyelitis/chronic fatigue syndrome	pmid34662886_manual_better_row_3961	manual_unique_id_with_strong_query_similarity_gain
+ICD10 N84: uterine polyps	N84	MONDO_0004701	uterine polyp	pmid34662886_manual_better_row_3982	manual_unique_id_with_strong_query_similarity_gain
+Family history of IBS (UKB data field 21065)		EFO_0000493	family history	pmid34662886_manual_better_row_4063	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 68 (UKB data field 4990)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4080	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 69 (UKB data field 4990)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4082	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 70 (UKB data field 4990)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4084	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 71 (UKB data field 4990)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4086	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 72 (UKB data field 4990)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4088	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 25 (UKB data field 20179)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4139	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 26 (UKB data field 20179)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4140	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 27 (UKB data field 20179)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4142	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 28 (UKB data field 20179)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4144	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI8 chained arithmetic - 29 (UKB data field 20179)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4146	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 72 (UKB data field 20175) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4252	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 68 (UKB data field 4990) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4254	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 69 (UKB data field 4990) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4256	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 70 (UKB data field 4990) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4258	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 71 (UKB data field 4990) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4260	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 72 (UKB data field 4990) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4261	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - break (UKB data field 5001) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4264	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - cease (UKB data field 20177) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4266	manual_unique_id_with_strong_query_similarity_gain
+Visual acuity - mean spherical equivalent (UKB data field 20261) (Gene-based burden)		EFO_0008385	visual acuity measurement	pmid34662886_manual_better_row_4277	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI5 family relationship calculation - aunt (UKB data field 4979) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4301	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - cousin (UKB data field 20173) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4303	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - cousin (UKB data field 4979) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4305	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - niece (UKB data field 20173) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4306	current_generic_manual_more_specific
+ICD10 M79.65: Pain in thigh	M79.65	HP_0012531	Pain	pmid34662886_manual_better_row_4308	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI5 family relationship calculation - niece (UKB data field 4979) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4309	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - no relation (UKB data field 20173) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4311	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - no relation (UKB data field 4979) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4313	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - sister (UKB data field 20173) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4315	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - sister (UKB data field 4979) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4317	current_generic_manual_more_specific
+Cognitive function - FI6 conditional arithmetic - 68 (UKB data field 20175) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4319	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 69 (UKB data field 20175) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4321	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 70 (UKB data field 20175) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4323	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI6 conditional arithmetic - 71 (UKB data field 20175) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4325	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI3 word interpolation - grow (UKB data field 20169) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4327	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - grow (UKB data field 4957) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4329	current_generic_manual_more_specific
+Cognitive function - FI4 positional arithmetic - 5 (UKB data field 20171) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4332	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 5 (UKB data field 4968) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4333	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 6 (UKB data field 20171) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4335	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 6 (UKB data field 4968) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4337	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 7 (UKB data field 20171) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4339	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 7 (UKB data field 4968) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4341	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 8 (UKB data field 20171) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4343	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 8 (UKB data field 4968) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4345	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI5 family relationship calculation - aunt (UKB data field 20173) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4347	current_generic_manual_more_specific
+Cognitive function - FI4 positional arithmetic - 9 (UKB data field 20171) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4348	manual_unique_id_with_strong_query_similarity_gain
+Non-alcoholic fatty liver disease - Composite		MONDO_0013209	metabolic dysfunction-associated steatotic liver disease	pmid34662886_manual_better_row_4484	manual_unique_id_with_strong_query_similarity_gain
+Irritability (UKB data field 1940) (Gene-based burden)		HP_0000737	Irritability	pmid34662886_manual_better_row_4668	manual_unique_id_with_strong_query_similarity_gain
+ICD10 N84: uterine polyps (Gene-based burden)	N84	MONDO_0004701	uterine polyp	pmid34662886_manual_better_row_4824	manual_unique_id_with_strong_query_similarity_gain
+Sensitive stomach (UKB data field 21064)		MONDO_0004298	stomach disorder	pmid34662886_manual_better_row_4882	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI5 family relationship calculation - aunt (UKB data field 4979)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4896	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - cousin (UKB data field 4979)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4898	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - niece (UKB data field 4979)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4900	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - no relation (UKB data field 4979)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4902	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - sister (UKB data field 4979)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_4904	current_generic_manual_more_specific
+ICD10 I21.0: ST elevation (STEMI) myocardial infarction of anterior wall	I21.0	EFO_0008585	ST Elevation Myocardial Infarction	pmid34662886_manual_better_row_5007	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I21.1: ST elevation (STEMI) myocardial infarction of inferior wall	I21.1	EFO_0008585	ST Elevation Myocardial Infarction	pmid34662886_manual_better_row_5009	manual_unique_id_with_strong_query_similarity_gain
+ICD10 J22: Unspecified acute lower respiratory infection (Gene-based burden)	J22	MONDO_0000270	lower respiratory tract disorder	pmid34662886_manual_better_row_5115	manual_unique_id_with_strong_query_similarity_gain
+Non-alcoholic fatty liver disease - Cirrhosis		MONDO_0013209	metabolic dysfunction-associated steatotic liver disease	pmid34662886_manual_better_row_5125	manual_unique_id_with_strong_query_similarity_gain
+Non-alcoholic fatty liver disease - Cirrhosis (Gene-based burden)		MONDO_0013209	metabolic dysfunction-associated steatotic liver disease	pmid34662886_manual_better_row_5281	manual_unique_id_with_strong_query_similarity_gain
+Non-alcoholic fatty liver disease - Composite (Gene-based burden)		MONDO_0013209	metabolic dysfunction-associated steatotic liver disease	pmid34662886_manual_better_row_5283	manual_unique_id_with_strong_query_similarity_gain
+Type 2 diabetes Nephropathy Loose (Gene-based burden)		EFO_0004997	type 2 diabetes nephropathy	pmid34662886_manual_better_row_5354	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - cease (UKB data field 20177)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5389	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - close (UKB data field 20177)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5391	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - pause (UKB data field 20177)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5393	manual_unique_id_with_strong_query_similarity_gain
+Shingles (Gene-based burden)		EFO_0008401	susceptibility to shingles measurement	pmid34662886_manual_better_row_5452	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism angle right (UKB data field 5088)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_5489	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI9 concept interpolation - long (UKB data field 20181)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5619	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - metres (UKB data field 20181)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5621	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - tall (UKB data field 20181)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5623	current_generic_manual_more_specific
+Cognitive function - FI13 subset inclusion logic - Neither true nor false (UKB data field 5866)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5648	manual_anchor_token_match_exceeds_current
+Cognitive function - FI13 subset inclusion logic (UKB data field 5866)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5650	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 987 (UKB data field 4946) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5667	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - adult (UKB data field 20169) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5669	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - adult (UKB data field 4957) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5670	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - develop (UKB data field 20169) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5671	current_generic_manual_more_specific
+Cognitive function - FI3 word interpolation - develop (UKB data field 4957) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_5675	current_generic_manual_more_specific
+Smoking status - Current (UKB data field 20116)		EFO_0006527	smoking status measurement	pmid34662886_manual_better_row_5726	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 5 (UKB data field 4968)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6122	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 6 (UKB data field 4968)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6124	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI1 numeric addition test - 14 (4935)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6152	current_generic_manual_more_specific
+Cognitive function - FI1 numeric addition test - 15 (4935)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6154	current_generic_manual_more_specific
+ICD10 S42: fracture clavicle collar bone (Gene-based burden)	S42	EFO_0009614	clavicle fracture	pmid34662886_manual_better_row_6155	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI1 numeric addition test - 16 (4935)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6156	current_generic_manual_more_specific
+Cognitive function - FI1 numeric addition test - 17 (4935)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6158	current_generic_manual_more_specific
+Cognitive function - FI1 numeric addition test - 13 (4935)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6160	current_generic_manual_more_specific
+Cognitive function - FI4 positional arithmetic - 7 (UKB data field 4968)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6176	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 8 (UKB data field 4968)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6178	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI9 concept interpolation - tall (UKB data field 5556)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6226	current_generic_manual_more_specific
+Cognitive function - FI7 synonym - cease (UKB data field 5001)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6252	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - close (UKB data field 5001)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6254	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - pause (UKB data field 5001)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6256	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - rest (UKB data field 5001)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6258	manual_unique_id_with_strong_query_similarity_gain
+Insulin levels (UKB data field 6177)		EFO_0004467	insulin measurement	pmid34662886_manual_better_row_6283	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI7 synonym - break (UKB data field 5001)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6300	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI9 concept interpolation - long (UKB data field 5556)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6347	current_generic_manual_more_specific
+Cognitive function - FI9 concept interpolation - metres (UKB data field 5556)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6349	current_generic_manual_more_specific
+Astigmatism angle left (UKB data field 5089)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_6442	manual_unique_id_with_strong_query_similarity_gain
+ICD10 S62: Fracture at wrist and hand level	S62	EFO_0009515	wrist fracture	pmid34662886_manual_better_row_6586	manual_unique_id_with_strong_query_similarity_gain
+ICD10 M85: Other disorders of bone density and structure (Gene-based burden)	M85	HP_0004348	Abnormality of bone mineral density	pmid34662886_manual_better_row_6595	current_generic_manual_more_specific
+ICD10 R20.2: Paresthesia of skin	R20.2	HP_0003401	Paresthesia	pmid34662886_manual_better_row_6649	manual_unique_id_with_strong_query_similarity_gain
+ICD10 L02: Cutaneous abscess, furuncle and carbuncle	L02	HP_0031292	Cutaneous abscess	pmid34662886_manual_better_row_6669	manual_unique_id_with_strong_query_similarity_gain
+ICD10 M79.66: Pain in lower leg (Gene-based burden)	M79.66	HP_0012514	Lower limb pain	pmid34662886_manual_better_row_6672	current_generic_manual_more_specific
+ICD10 I10: hypertension (Gene-based burden)	I10	HP_0000822	Hypertension	pmid34662886_manual_better_row_6860	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI5 family relationship calculation - aunt (UKB data field 20173)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6904	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - cousin (UKB data field 20173)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6906	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - niece (UKB data field 20173)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6908	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - no relation (UKB data field 20173)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6909	current_generic_manual_more_specific
+Cognitive function - FI5 family relationship calculation - sister (UKB data field 20173)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6912	current_generic_manual_more_specific
+Cognitive function - FI4 positional arithmetic - 6 (UKB data field 20171)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6928	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 7 (UKB data field 20171)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6930	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 8 (UKB data field 20171)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6932	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI4 positional arithmetic - 9 (UKB data field 20171)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_6934	manual_unique_id_with_strong_query_similarity_gain
+Smoking status - Current (UKB data field 20116) (Gene-based burden)		EFO_0006527	smoking status measurement	pmid34662886_manual_better_row_6988	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI13 subset inclusion logic - False (UKB data field 5866)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7007	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 48 (UKB data field 5790)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7026	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 49 (UKB data field 5790)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7027	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 50 (UKB data field 5790)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7029	current_generic_manual_more_specific
+Seropositivity for Merkel Cell Polyomavirus (UKB data field 23067)		EFO_0010906	merkel cell virus seropositivity	pmid34662886_manual_better_row_7067	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI12 square sequence recognition - 45 (UKB data field 5790)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7073	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 49 (UKB data field 20187)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7077	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 50 (UKB data field 20187)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7079	current_generic_manual_more_specific
+Astigmatism - both eyes (UKB data field 5855) (Gene-based burden)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7111	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism - left eye (UKB data field 5855) (Gene-based burden)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7112	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism - right eye (UKB data field 5855) (Gene-based burden)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7114	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI12 square sequence recognition - 45 (UKB data field 20187)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7123	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 47 (UKB data field 20187)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7125	current_generic_manual_more_specific
+Family history of IBS (UKB data field 21065) (Gene-based burden)		EFO_0000493	family history	pmid34662886_manual_better_row_7217	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism angle left (UKB data field 5089) (Gene-based burden)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7295	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism angle right (UKB data field 5088) (Gene-based burden)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7297	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI12 square sequence recognition - 50 (UKB data field 20187) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7301	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 45 (UKB data field 5790) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7303	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 48 (UKB data field 5790) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7305	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 49 (UKB data field 5790) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7308	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 50 (UKB data field 5790) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7309	current_generic_manual_more_specific
+Cognitive function - FI13 subset inclusion logic - False (UKB data field 5866) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7311	current_generic_manual_more_specific
+Cognitive function - FI13 subset inclusion logic - Neither true nor false (UKB data field 5866) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7313	manual_anchor_token_match_exceeds_current
+Cognitive function - FI13 subset inclusion logic (UKB data field 5866) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7315	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 714 (UKB data field 20167) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7316	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 987 (UKB data field 20167) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7319	current_generic_manual_more_specific
+Cognitive function - FI2 identify largest number - 714 (UKB data field 4946) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7321	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 93 (UKB data field 5699) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7323	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 94 (UKB data field 5699) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7324	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 95 (UKB data field 5699) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7326	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 96 (UKB data field 5699) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7328	current_generic_manual_more_specific
+Cognitive function - FI11 antonym - calm (UKB data field 5779) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7334	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - tense (UKB data field 20185) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7336	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - tense (UKB data field 5779) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7338	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - worried (UKB data field 5779) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7340	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI12 square sequence recognition - 45 (UKB data field 20187) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7342	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 47 (UKB data field 20187) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7344	current_generic_manual_more_specific
+Cognitive function - FI12 square sequence recognition - 49 (UKB data field 20187) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7346	current_generic_manual_more_specific
+ICD10 L60.0: Ingrowing nail	L60.0	MONDO_0019283	nail anomaly	pmid34662886_manual_better_row_7358	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI10 arithmetic sequence recognition - 92 (UKB data field 20183) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7385	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 93 (UKB data field 20183) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7387	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 94 (UKB data field 20183) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7389	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 95 (UKB data field 20183) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7390	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 96 (UKB data field 20183) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7393	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 92 (UKB data field 5699) (Gene-based burden)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7395	current_generic_manual_more_specific
+ICD10 I25: Chronic ischemic heart disease	I25	MONDO_0005267	heart disorder	pmid34662886_manual_better_row_7407	manual_unique_id_with_strong_query_similarity_gain
+ICD10 I44.2: Atrioventricular block, complete (Gene-based burden)	I44.2	MONDO_0000465	atrioventricular block	pmid34662886_manual_better_row_7416	manual_unique_id_with_strong_query_similarity_gain
+ICD10 C44.5: Other and unspecified malignant neoplasm of skin of trunk	C44.5	MONDO_0002531	skin neoplasm	pmid34662886_manual_better_row_7467	manual_unique_id_with_strong_query_similarity_gain
+Seropositivity for Merkel Cell Polyomavirus (UKB data field 23067) (Gene-based burden)		EFO_0010906	merkel cell virus seropositivity	pmid34662886_manual_better_row_7533	manual_unique_id_with_strong_query_similarity_gain
+Type 2 diabetes Nephropathy Loose		EFO_0004997	type 2 diabetes nephropathy	pmid34662886_manual_better_row_7843	manual_unique_id_with_strong_query_similarity_gain
+ICD10 S22.4: Multiple fractures of ribs	S22.4	EFO_0009513	multiple bone fractures	pmid34662886_manual_better_row_7856	manual_unique_id_with_strong_query_similarity_gain
+Malignant neoplasm of brain (UKB data field 40006) (Gene-based burden)		MONDO_0021211	brain neoplasm	pmid34662886_manual_better_row_7883	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI10 arithmetic sequence recognition - 93 (UKB data field 20183)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7898	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 94 (UKB data field 20183)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7900	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 95 (UKB data field 20183)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7902	current_generic_manual_more_specific
+Cognitive function - FI10 arithmetic sequence recognition - 96 (UKB data field 20183)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7904	current_generic_manual_more_specific
+Astigmatism - both eyes (UKB data field 5855)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7914	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism - left eye (UKB data field 5855)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7916	manual_unique_id_with_strong_query_similarity_gain
+Astigmatism - right eye (UKB data field 5855)		HP_0000483	Astigmatism	pmid34662886_manual_better_row_7918	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - tense (UKB data field 20185)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7938	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - calm (UKB data field 5779)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7949	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - tense (UKB data field 5779)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7951	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI11 antonym - worried (UKB data field 5779)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7953	manual_unique_id_with_strong_query_similarity_gain
+Cognitive function - FI10 arithmetic sequence recognition - 92 (UKB data field 20183)		EFO_0008354	cognitive function measurement	pmid34662886_manual_better_row_7957	current_generic_manual_more_specific
