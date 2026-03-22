@@ -1098,6 +1098,7 @@ DISEASE_HINT_TOKENS = {
     "paralysis",
     "paresis",
     "palsy",
+    "infarction",
 }
 ENZYME_CUE_TOKENS = {
     "aminotransferase",
@@ -15397,16 +15398,46 @@ def _resolve_low_confidence_ids_and_labels(
     mapped_id_text: str,
     *,
     ontology_terms: dict[str, TraitOntologyTerm],
+    obsolete_terms: dict[str, TraitObsoleteTerm] | None = None,
 ) -> tuple[str, str]:
-    canonical_ids = [
-        canonicalize_trait_ontology_id(part)
-        for part in split_multi_ids(mapped_id_text)
-    ]
-    canonical_ids = [item for item in canonical_ids if item and item in ontology_terms]
-    if not canonical_ids:
+    resolved_ids: list[str] = []
+    seen_ids: set[str] = set()
+    obsolete_index = obsolete_terms or {}
+
+    for raw_part in split_multi_ids(mapped_id_text):
+        term_id = canonicalize_trait_ontology_id(raw_part)
+        if not term_id:
+            continue
+        candidate_ids: list[str] = []
+        if term_id in ontology_terms:
+            candidate_ids = [term_id]
+        else:
+            obsolete_meta = obsolete_index.get(term_id)
+            if obsolete_meta is not None:
+                replacement_ids = [rid for rid in obsolete_meta.replaced_by if rid in ontology_terms]
+                if not replacement_ids:
+                    consider_ids = [cid for cid in obsolete_meta.consider if cid in ontology_terms]
+                    if len(consider_ids) == 1:
+                        replacement_ids = [consider_ids[0]]
+                if replacement_ids:
+                    replacement_ids = sorted(
+                        dict.fromkeys(replacement_ids),
+                        key=lambda rid: (
+                            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(rid), 999),
+                            rid,
+                        ),
+                    )
+                    candidate_ids = list(replacement_ids)
+        for candidate_id in candidate_ids:
+            if candidate_id in seen_ids:
+                continue
+            seen_ids.add(candidate_id)
+            resolved_ids.append(candidate_id)
+
+    if not resolved_ids:
         return "", ""
-    mapped_ids = "|".join(format_ontology_id_for_output(item) for item in canonical_ids)
-    mapped_labels = "|".join(normalize(ontology_terms[item].label) for item in canonical_ids)
+    mapped_ids = "|".join(format_ontology_id_for_output(item) for item in resolved_ids)
+    mapped_labels = "|".join(normalize(ontology_terms[item].label) for item in resolved_ids)
     return mapped_ids, mapped_labels
 
 
@@ -15414,6 +15445,7 @@ def apply_low_confidence_not_mapped_fallbacks(
     rows: list[dict[str, str]],
     *,
     ontology_terms: dict[str, TraitOntologyTerm],
+    obsolete_terms: dict[str, TraitObsoleteTerm] | None = None,
 ) -> list[dict[str, str]]:
     def apply_fallback(
         row: dict[str, str],
@@ -15425,6 +15457,7 @@ def apply_low_confidence_not_mapped_fallbacks(
         mapped_ids, mapped_labels = _resolve_low_confidence_ids_and_labels(
             mapped_id_text,
             ontology_terms=ontology_terms,
+            obsolete_terms=obsolete_terms,
         )
         if not mapped_ids or not mapped_labels:
             return False
@@ -15452,6 +15485,17 @@ def apply_low_confidence_not_mapped_fallbacks(
         reason_note = f"low-confidence fallback suggestion: {reason}"
         row["evidence"] = f"{prior_evidence}; {reason_note}" if prior_evidence else reason_note
         return True
+
+    injury_fallback_id = ""
+    if "MONDO_0021178" in ontology_terms:
+        injury_fallback_id = "MONDO_0021178"
+    elif "EFO_0000546" in ontology_terms:
+        injury_fallback_id = "EFO_0000546"
+    fall_fallback_id = ""
+    if "EFO_0009631" in ontology_terms:
+        fall_fallback_id = "EFO_0009631"
+    elif "HP_0002527" in ontology_terms:
+        fall_fallback_id = "HP_0002527"
 
     for row in rows:
         if normalize(row.get("validation", "")) != "not_mapped":
@@ -15736,10 +15780,18 @@ def apply_low_confidence_not_mapped_fallbacks(
             )
             continue
 
-        if icd10 and icd10[:1] in {"V", "W", "X"}:
+        if re.match(r"^W(?:0[0-9]|1[0-9])(?:\.|$)", icd10) and fall_fallback_id:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0000546",
+                mapped_id_text=fall_fallback_id,
+                confidence=0.300,
+                reason="fall external-cause ICD10 code fallback to fall",
+            )
+            continue
+        if icd10 and icd10[:1] in {"V", "W", "X"} and injury_fallback_id:
+            apply_fallback(
+                row,
+                mapped_id_text=injury_fallback_id,
                 confidence=0.230,
                 reason="ICD10 external-cause/place code fallback to broad injury",
             )
@@ -15823,10 +15875,10 @@ def apply_low_confidence_not_mapped_fallbacks(
                 reason="spinal-ligament sprain ICD10 code fallback to sprain",
             )
             continue
-        if icd10.startswith(("S99", "S06")):
+        if icd10.startswith(("S99", "S06")) and injury_fallback_id:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0000546",
+                mapped_id_text=injury_fallback_id,
                 confidence=0.290,
                 reason="injury ICD10 code fallback to injury",
             )
@@ -16310,18 +16362,18 @@ def apply_low_confidence_not_mapped_fallbacks(
                 reason="abnormal-finding/symptom ICD10 code fallback to sign or symptom",
             )
             continue
-        if icd10.startswith(("Y04", "Y86")):
+        if icd10.startswith(("Y04", "Y86")) and injury_fallback_id:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0000546",
+                mapped_id_text=injury_fallback_id,
                 confidence=0.260,
                 reason="external-cause ICD10 code fallback to injury",
             )
             continue
-        if icd10.startswith("Y92"):
+        if icd10.startswith("Y92") and injury_fallback_id:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0000546",
+                mapped_id_text=injury_fallback_id,
                 confidence=0.230,
                 reason="place-of-occurrence ICD10 code fallback to injury context",
             )
@@ -16593,10 +16645,10 @@ def apply_low_confidence_not_mapped_fallbacks(
                 reason="generic eye-condition wording fallback to eye disease",
             )
             continue
-        if "muscle or soft tissue injuries" in query_key:
+        if "muscle or soft tissue injuries" in query_key and injury_fallback_id:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0000546",
+                mapped_id_text=injury_fallback_id,
                 confidence=0.250,
                 reason="soft-tissue injuries wording fallback to injury",
             )
@@ -18694,6 +18746,16 @@ def harmonize_trait_rows_by_query_constraints(
             if fall_trait_override_id and fall_trait_override_id in ontology_terms
             else "fall"
         )
+        injury_trait_override_id = ""
+        if "MONDO_0021178" in ontology_terms:
+            injury_trait_override_id = "MONDO_0021178"
+        elif "EFO_0000546" in ontology_terms:
+            injury_trait_override_id = "EFO_0000546"
+        injury_trait_override_label = (
+            normalize(ontology_terms[injury_trait_override_id].label)
+            if injury_trait_override_id and injury_trait_override_id in ontology_terms
+            else "injury"
+        )
         diabetes_drug_use_override_id = "EFO_0009924" if "EFO_0009924" in ontology_terms else ""
         diabetes_drug_use_override_label = (
             normalize(ontology_terms[diabetes_drug_use_override_id].label)
@@ -19575,7 +19637,7 @@ def harmonize_trait_rows_by_query_constraints(
             ("Z75", "EFO_0007869", "wellbeing measurement", "icd10_specific_override=z75_to_wellbeing_measurement"),
             ("Z73", "EFO_0007869", "wellbeing measurement", "icd10_specific_override=z73_to_wellbeing_measurement"),
             ("Z71", "EFO_0007869", "wellbeing measurement", "icd10_specific_override=z71_to_wellbeing_measurement"),
-            ("Y92", "EFO_0000546", "injury", "icd10_specific_override=y92_to_injury"),
+            ("Y92", injury_trait_override_id or "MONDO_0021178", injury_trait_override_label, "icd10_specific_override=y92_to_injury"),
             ("R53.83", "HP_0012378", "Fatigue", "icd10_specific_override=r53_83_to_fatigue"),
             ("R92", "EFO_0000720", "test result", "icd10_specific_override=r92_to_test_result"),
             ("R89", "EFO_0000720", "test result", "icd10_specific_override=r89_to_test_result"),
@@ -19637,16 +19699,16 @@ def harmonize_trait_rows_by_query_constraints(
                 else:
                     set_single_mapping(
                         row,
-                        mapped_id="EFO_0000546",
-                        mapped_label="injury",
+                        mapped_id=injury_trait_override_id or "MONDO_0021178",
+                        mapped_label=injury_trait_override_label,
                         matched_via="icd10_external_cause_harmonized",
                         note="icd10_external_cause_harmonized=external_cause_to_injury",
                         confidence_floor=0.760,
                         force_review=True,
                     )
-                    mapped_ids = [canonicalize_trait_ontology_id("EFO_0000546")]
-                    mapped_labels = ["injury"]
-                    mapped_label_keys = ["injury"]
+                    mapped_ids = [canonicalize_trait_ontology_id(injury_trait_override_id or "MONDO_0021178")]
+                    mapped_labels = [injury_trait_override_label]
+                    mapped_label_keys = [norm_key(injury_trait_override_label)]
             if (
                 icd10_code.startswith(("S", "T"))
                 and re.search(r"\b(?:injury|superficial injury|wound|trauma|contusion|laceration)\b", query_key)
@@ -19660,16 +19722,16 @@ def harmonize_trait_rows_by_query_constraints(
                 if not mapped_injury_like:
                     set_single_mapping(
                         row,
-                        mapped_id="EFO_0000546",
-                        mapped_label="injury",
+                        mapped_id=injury_trait_override_id or "MONDO_0021178",
+                        mapped_label=injury_trait_override_label,
                         matched_via="icd10_injury_chapter_harmonized",
                         note="icd10_injury_chapter_harmonized=injury_phrase_to_injury",
                         confidence_floor=0.760,
                         force_review=True,
                     )
-                    mapped_ids = [canonicalize_trait_ontology_id("EFO_0000546")]
-                    mapped_labels = ["injury"]
-                    mapped_label_keys = ["injury"]
+                    mapped_ids = [canonicalize_trait_ontology_id(injury_trait_override_id or "MONDO_0021178")]
+                    mapped_labels = [injury_trait_override_label]
+                    mapped_label_keys = [norm_key(injury_trait_override_label)]
             if (
                 icd10_code.startswith("S63")
                 and "dislocation" in query_key
@@ -31615,6 +31677,7 @@ def main() -> int:
                 rows = apply_low_confidence_not_mapped_fallbacks(
                     rows,
                     ontology_terms=ontology_index["terms"],
+                    obsolete_terms=ontology_index["obsolete_terms"],
                 )
                 rows = apply_regression_rescue_overrides(
                     rows,
@@ -31681,6 +31744,7 @@ def main() -> int:
                 rows = apply_low_confidence_not_mapped_fallbacks(
                     rows,
                     ontology_terms=ontology_index["terms"],
+                    obsolete_terms=ontology_index["obsolete_terms"],
                 )
                 rows = apply_regression_rescue_overrides(
                     rows,
