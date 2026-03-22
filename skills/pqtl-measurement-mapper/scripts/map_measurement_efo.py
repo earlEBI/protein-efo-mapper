@@ -915,6 +915,10 @@ TRAIT_CANONICAL_SIMILARITY_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\banaemia\b"), "anemia"),
     # Align morphological adjective forms for robust cancer site consistency checks.
     (re.compile(r"\bcolonic\b"), "colon"),
+    (re.compile(r"\boesophageal\b"), "esophagus"),
+    (re.compile(r"\besophageal\b"), "esophagus"),
+    (re.compile(r"\bcorneal\b"), "cornea"),
+    (re.compile(r"\bretinal\b"), "retina"),
     (re.compile(r"\bskin\s+colou?r\b"), "skin pigmentation"),
     (re.compile(r"\bhair\s+colou?r(?:\s+natural\s+before\s+greying)?\b"), "hair color"),
     (re.compile(r"\benlarged\s+prostate\b"), "benign prostatic hyperplasia"),
@@ -14939,7 +14943,15 @@ def apply_low_confidence_not_mapped_fallbacks(
             )
             continue
 
-        if icd10.startswith(("Y40", "Y42", "Y43", "Y45", "Y52", "Y57")):
+        if icd10.startswith("Y40"):
+            apply_fallback(
+                row,
+                mapped_id_text="GO_0009410",
+                confidence=0.360,
+                reason="systemic-antibiotic adverse-effect ICD10 fallback to response to xenobiotic stimulus",
+            )
+            continue
+        if icd10.startswith(("Y42", "Y43", "Y45", "Y52", "Y57")):
             apply_fallback(
                 row,
                 mapped_id_text="EFO_0009658",
@@ -15163,6 +15175,8 @@ def apply_low_confidence_not_mapped_fallbacks(
         if (
             icd10.startswith("R79")
             or icd10.startswith("R87.615")
+            or icd10.startswith("R87.618")
+            or icd10.startswith("R87.619")
             or icd10.startswith("R89")
             or icd10.startswith("R92")
         ):
@@ -16213,6 +16227,7 @@ def apply_regression_rescue_overrides(
         "E07": ("MONDO_0003240", "icd10_e07_to_thyroid_gland_disorder"),
         "E53.8": ("MONDO_0042976", "icd10_e53_8_to_vitamin_b_deficiency"),
         "H33.0": ("MONDO_0008375", "icd10_h33_0_to_retinal_detachment"),
+        "H18": ("EFO_0009464", "icd10_h18_to_corneal_disorder"),
         "H93.2": ("MONDO_0002409", "icd10_h93_2_to_auditory_system_disorder"),
         "H93.29": ("MONDO_0002409", "icd10_h93_29_to_auditory_system_disorder"),
         "I24": ("MONDO_0005267", "icd10_i24_to_heart_disorder"),
@@ -16237,6 +16252,8 @@ def apply_regression_rescue_overrides(
         "K64": ("MONDO_0004872", "icd10_k64_to_hemorrhoid"),
         "K64.0": ("MONDO_0004872", "icd10_k64_0_to_hemorrhoid"),
         "K64.9": ("MONDO_0004872", "icd10_k64_9_to_hemorrhoid"),
+        "K62.5": ("HP_0002239", "icd10_k62_5_to_gastrointestinal_hemorrhage"),
+        "K22": ("EFO_0009544", "icd10_k22_to_esophageal_disorder"),
         "K31.7": ("MONDO_0008277", "icd10_k31_7_to_stomach_polyp"),
         "K62.6": ("MONDO_0002519", "icd10_k62_6_to_anus_disorder"),
         "K83.8": ("MONDO_0004868", "icd10_k83_8_to_biliary_tract_disorder"),
@@ -16270,6 +16287,7 @@ def apply_regression_rescue_overrides(
         "T93": ("EFO_0009509", "icd10_t93_to_limb_injury"),
         "Y60": ("MONDO_0021178", "icd10_y60_to_injury"),
         "Y60.0": ("MONDO_0021178", "icd10_y60_0_to_injury"),
+        "Y40": ("GO_0009410", "icd10_y40_to_response_to_xenobiotic_stimulus"),
         "Z00.0": ("EFO_0009786", "icd10_z00_0_to_encounter_with_health_service"),
         "Z01.3": ("EFO_0009786", "icd10_z01_3_to_encounter_with_health_service"),
         "Z01.8": ("EFO_0009786", "icd10_z01_8_to_encounter_with_health_service"),
@@ -16455,6 +16473,52 @@ def apply_regression_rescue_overrides(
                     mapped_id_text="MONDO_0004872",
                     note="icd10_i84_to_hemorrhoid",
                 )
+            continue
+        if (
+            icd10_code_matches(icd10, "R87.618", include_descendants=True)
+            or icd10_code_matches(icd10, "R87.619", include_descendants=True)
+            or "abnormal smear cervix" in query_key
+            or ("abnormal" in query_key and "pap smear" in query_key)
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009511",
+                note="icd10_r87_618_619_to_abnormal_pap_smear",
+            )
+            continue
+        if (
+            icd10_code_matches(icd10, "R87.61", include_descendants=True)
+            and not icd10_code_matches(icd10, "R87.615", include_descendants=True)
+            and not icd10_code_matches(icd10, "R87.618", include_descendants=True)
+            and not icd10_code_matches(icd10, "R87.619", include_descendants=True)
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0000008",
+                note="icd10_r87_61_to_abnormal_female_genital_morphology",
+            )
+            continue
+        if icd10 in {"R87", "R87.6"}:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0000008",
+                note="icd10_r87_or_r87_6_to_abnormal_female_genital_morphology",
+            )
+            continue
+        if icd10_code_matches(icd10, "Y40", include_descendants=True):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="GO_0009410",
+                note="icd10_y40_to_response_to_xenobiotic_stimulus",
+            )
+            continue
+        if "retinal problem" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0003839",
+                note="retinal_problem_phrase_to_retinal_disorder",
+                confidence_floor=0.920,
+            )
             continue
         exact_rescue = exact_icd10_rescue_mappings.get(icd10)
         if exact_rescue is not None:
