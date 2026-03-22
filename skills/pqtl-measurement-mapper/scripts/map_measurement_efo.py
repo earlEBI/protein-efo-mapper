@@ -360,7 +360,7 @@ KEGG_ID_RE = re.compile(r"^(?:KEGG[:_])?(?:CPD:|DR:)?([CD]\d{5})$", re.IGNORECAS
 EFO_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
 ALLOWED_ONTOLOGY_ID_RE = re.compile(r"^(EFO|OBA)[:_]\d+$", re.IGNORECASE)
 MONDO_CURIE_RE = re.compile(r"MONDO[:_]\d+", re.IGNORECASE)
-ICD10_CODE_HEAD_RE = r"[A-TV-Z][0-9][0-9A-Z]"
+ICD10_CODE_HEAD_RE = r"[A-Z][0-9][0-9A-Z]"
 ICD10_XREF_RE = re.compile(
     rf"(?:ICD10(?:CM|WHO)?)[_:]({ICD10_CODE_HEAD_RE}(?:\.[0-9A-Z]{{1,4}}|[0-9A-Z]{{1,4}})?)",
     re.IGNORECASE,
@@ -411,6 +411,12 @@ DEFAULT_UKB_CATEGORY_CATALOG_URL = "https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi
 DEFAULT_UKB_CATEGORY_TREE_URL = "https://biobank.ndph.ox.ac.uk/ukb/scdown.cgi?fmt=txt&id=13"
 DEFAULT_UKB_FIELD_SUPPLEMENT_CACHE = REPO_ROOT / "references" / "ukb" / "field_trait_supplement_cache.tsv"
 DEFAULT_ICD10_SUPPLEMENT_CACHE = REPO_ROOT / "references" / "icd10" / "icd10_trait_supplement_cache.tsv"
+DEFAULT_MANUAL_CURATOR_SEED_CACHE = (
+    SKILL_DIR / "references" / "manual_curator_seed_cache.tsv"
+)
+DEFAULT_MANUAL_CURATOR_RESCUE_OVERRIDES = (
+    SKILL_DIR / "references" / "manual_curator_rescue_overrides.tsv"
+)
 DEFAULT_ICD10_LABEL_CACHE = REPO_ROOT / "references" / "icd10" / "icd10_label_index.tsv"
 DEFAULT_ICD10_LABEL_ALIAS_CACHE = REPO_ROOT / "references" / "icd10" / "icd10_label_alias_index.tsv"
 DEFAULT_MONDO_SSSOM_CACHE = REPO_ROOT / "references" / "icd10" / "mondo.sssom.tsv"
@@ -425,6 +431,7 @@ DEFAULT_CATALOG_SUMMARY_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-tr
 DEFAULT_CATALOG_REFRESH_STATE_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_refresh_state.json"
 DEFAULT_TRAIT_QC_RISK_SUFFIX = "_qc_risk.tsv"
 DEFAULT_TRAIT_QC_SUMMARY_SUFFIX = "_qc_summary.json"
+DEFAULT_TRAIT_NEW_EFO_SUGGESTIONS_SUFFIX = "_suggested_new_efo_terms.tsv"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
 DEFAULT_MATRIX_PRIORITY = ["plasma", "blood", "serum"]
 DEFAULT_MEASUREMENT_CONTEXT = "blood"
@@ -531,7 +538,10 @@ MEASUREMENT_CONTEXT_ALIASES = {
 TRAIT_QUERY_COLUMNS = [
     "query",
     "trait",
+    "reportedtrait",
     "reported_trait",
+    "reported trait",
+    "reported-trait",
     "disease_trait",
     "phenotype",
     "term",
@@ -738,6 +748,7 @@ UKB_MEDICATION_USE_CLASS_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\b(?:lansoprazole|omeprazole|gaviscon|ranitidine)\b", re.IGNORECASE), "EFO_0009923", "Peptic ulcer and gastro-oesophageal reflux disease (GORD) drug use measurement"),
     (re.compile(r"\b(?:methotrexate|azathioprine)\b", re.IGNORECASE), "EFO_0009934", "Immunosuppressant use measurement"),
     (re.compile(r"\b(?:alendronate|actonel|risedronate)\b", re.IGNORECASE), "EFO_0009936", "Drugs affecting bone structure and mineralization use measurement"),
+    (re.compile(r"\b(?:coenzyme\s*-?\s*q10|ubiquinone|bio[-\s]?quinone)\b", re.IGNORECASE), "EFO_0007010", "drug use measurement"),
 )
 TRAIT_LOCATION_NONSPECIFIC_TOKENS = {
     "unspecified",
@@ -900,6 +911,9 @@ TRAIT_CANONICAL_SIMILARITY_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bworri(?:er|ed|es|ing)?\s+(?:anxious\s+)?feelings?\b"), "worry"),
     (re.compile(r"\bhyperthyroidism\s+thyrotoxicosis\b"), "thyrotoxicosis"),
     (re.compile(r"\bhypothyroidism\s+myxoedema\b"), "hypothyroidism myxedema"),
+    # UK/US clinical spelling harmonization so exact-key lookup does not
+    # accidentally prefer HP-only UK spellings (for example Anaemia -> Anemia).
+    (re.compile(r"\banaemia\b"), "anemia"),
     # Align morphological adjective forms for robust cancer site consistency checks.
     (re.compile(r"\bcolonic\b"), "colon"),
     (re.compile(r"\bskin\s+colou?r\b"), "skin pigmentation"),
@@ -1178,12 +1192,14 @@ GENERIC_TRAIT_LABEL_KEYS = {
     "anthropometric measurement",
     "behavior trait",
     "complex trait",
+    "volume",
 }
 FORBIDDEN_TRAIT_IDS = {"PATO_0000461"}
 FORBIDDEN_TRAIT_LABEL_KEYS = {
     "normal",
     "mental health",
     "family relationship",
+    "volume",
 }
 STANDALONE_TEMPORAL_TRAIT_KEYS = {
     "age at diagnosis",
@@ -1205,6 +1221,17 @@ TRAIT_QC_RISK_FIELDS = [
     "specificity_loss_notes",
     "risk_reasons",
     "evidence",
+]
+TRAIT_NEW_EFO_SUGGESTION_FIELDS = [
+    "candidate_term",
+    "proposed_parent_or_related",
+    "why_new_term",
+    "evidence_count_in_run",
+    "example_input_query",
+    "example_input_row_id",
+    "example_input_icd10",
+    "search_utility",
+    "alternative_if_no_new_term",
 ]
 ICD10_PARENT_FALLBACK_METHODS = {
     "cache_parent_icd10",
@@ -1962,6 +1989,11 @@ def normalize_trait_data_type(value: str) -> str:
     return TRAIT_DATA_TYPE_ALIASES.get(key, "auto")
 
 
+@lru_cache(maxsize=50_000)
+def normalize_trait_column_key(value: str) -> str:
+    return norm_key(value).replace("-", "_").replace(" ", "_")
+
+
 @lru_cache(maxsize=200_000)
 def normalize_icd10_code(value: str) -> str:
     token = normalize(value).upper()
@@ -2017,17 +2049,117 @@ def is_context_free_icd10_code(value: str) -> bool:
     return bool(token and CONTEXT_FREE_ICD10_CODE_RE.fullmatch(token))
 
 
+@lru_cache(maxsize=1_000_000)
+def icd10_code_matches(code: str, target: str, *, include_descendants: bool = True) -> bool:
+    """Match ICD10 codes with boundary-aware exact/family semantics.
+
+    - Exact mode: code == target
+    - Family mode:
+      - target with dot: prefix family (for example M54.4 -> M54.40)
+      - 3-char target without dot: chapter-category family (for example C44 -> C44.6)
+      - non-strict short targets (for example "S", "T", "V"): raw prefix fallback
+    """
+    code_norm = normalize_icd10_code(code)
+    target_norm = normalize_icd10_code(target)
+    code_strict = is_strict_icd10_code(code_norm)
+    target_strict = is_strict_icd10_code(target_norm)
+    if code_strict and target_strict:
+        if code_norm == target_norm:
+            return True
+        if not include_descendants:
+            return False
+        if "." in target_norm:
+            return code_norm.startswith(target_norm)
+        return code_norm.startswith(f"{target_norm}.")
+
+    code_raw = normalize(code).upper().strip()
+    target_raw = normalize(target).upper().strip()
+    if not code_raw or not target_raw:
+        return False
+    if include_descendants:
+        return code_raw.startswith(target_raw)
+    return code_raw == target_raw
+
+
+def icd10_code_matches_any(
+    code: str,
+    targets: tuple[str, ...],
+    *,
+    include_descendants: bool = True,
+) -> bool:
+    return any(
+        icd10_code_matches(code, target, include_descendants=include_descendants)
+        for target in targets
+    )
+
+
+class ICD10CodeMatchView(str):
+    """String wrapper with boundary-aware ICD10 family matching on startswith()."""
+
+    def startswith(  # type: ignore[override]
+        self,
+        prefix: str | tuple[str, ...],
+        start: int = 0,
+        end: int | None = None,
+    ) -> bool:
+        # Keep native substring behavior if explicit start/end are used.
+        if start != 0 or end is not None:
+            return super().startswith(prefix, start, len(self) if end is None else end)
+        if isinstance(prefix, tuple):
+            targets = tuple(str(item) for item in prefix)
+            return icd10_code_matches_any(str(self), targets, include_descendants=True)
+        return icd10_code_matches(str(self), str(prefix), include_descendants=True)
+
+
 def query_explicitly_mentions_icd10(text: str) -> bool:
     return bool(re.search(r"\bICD\s*-?\s*10\b", normalize(text), re.IGNORECASE))
+
+
+@lru_cache(maxsize=500_000)
+def query_has_leading_icd10_token(query_text: str, candidate_code: str) -> bool:
+    query_norm = normalize(query_text)
+    code = normalize_icd10_code(candidate_code)
+    if not query_norm or not is_strict_icd10_code(code):
+        return False
+    code_variants: list[str] = [code]
+    compact_code = code.replace(".", "")
+    if compact_code and compact_code not in code_variants:
+        code_variants.append(compact_code)
+    for variant in code_variants:
+        if re.match(
+            rf"^\s*(?:ICD\s*-?\s*10\s*)?{re.escape(variant)}(?:\b|[:\-\s]|$)",
+            query_norm,
+            re.IGNORECASE,
+        ):
+            return True
+    # Union/hash-formatted rows often encode field/code tokens as prefixes
+    # (for example Union#M2571#M25.71 ...). Treat those as ICD-leading inputs.
+    if "#" in query_norm and re.match(r"^\s*(?:Union#)?\d{1,7}#", query_norm, re.IGNORECASE):
+        hash_parts = [normalize(part) for part in query_norm.split("#") if normalize(part)]
+        for part in hash_parts[:3]:
+            part_code = normalize_icd10_code(part)
+            if part_code == code and is_strict_icd10_code(part_code):
+                return True
+    return False
 
 
 def query_supports_inferred_icd10(query_text: str, candidate_code: str) -> bool:
     code = normalize_icd10_code(candidate_code)
     if not is_strict_icd10_code(code):
         return False
+    query_key = norm_key(query_text)
+    # Guard against HLA-B27 marker rows (for example "B27 positive/negative")
+    # being misinterpreted as infectious-mononucleosis ICD10 code B27.
+    if code == "B27" and (
+        bool(re.search(r"\bb27\b\s*(?:positive|negative)\b", query_key))
+        or "ankylosing spondylitis" in query_key
+    ):
+        return False
     if query_explicitly_mentions_icd10(query_text):
         return True
-    return is_context_free_icd10_code(code)
+    if not is_context_free_icd10_code(code):
+        return False
+    return query_has_leading_icd10_token(query_text, code)
 
 
 @lru_cache(maxsize=500_000)
@@ -3144,6 +3276,9 @@ def trait_query_contradicts_candidate(query_text: str, candidate: Candidate) -> 
             "melanoma",
             "tumor",
             "tumour",
+            "gland",
+            "organ",
+            "system",
             "site",
             "sites",
             "unspecified",
@@ -3202,6 +3337,47 @@ def trait_query_contradicts_candidate(query_text: str, candidate: Candidate) -> 
             return True
         elif site_tokens and not (site_tokens & label_tokens):
             return True
+    if query_tokens and query_tokens.issubset(
+        {"cancer", "carcinoma", "neoplasm", "tumor", "tumour", "malignant", "situ"}
+    ):
+        label_location_hints = {
+            tok
+            for tok in trait_location_hint_tokens(label_key)
+            if tok not in TRAIT_LOCATION_NONSPECIFIC_TOKENS
+        }
+        # Generic cancer wording should not map to a specific site cancer when
+        # the query itself does not carry a site hint.
+        if label_location_hints:
+            return True
+    unspecified_site_query = bool(
+        re.search(r"\b(?:other and )?unspecified\b", query_key_spaced)
+        and (
+            "site" in query_key_spaced
+            or "sites" in query_key_spaced
+            or "genital organ" in query_key_spaced
+            or "genital organs" in query_key_spaced
+            or "parts of" in query_key_spaced
+        )
+    )
+    if unspecified_site_query:
+        query_hints = {
+            tok
+            for tok in trait_location_hint_tokens(query_key)
+            if tok not in TRAIT_LOCATION_NONSPECIFIC_TOKENS
+        }
+        label_hints = {
+            tok
+            for tok in trait_location_hint_tokens(label_key)
+            if tok not in TRAIT_LOCATION_NONSPECIFIC_TOKENS
+        }
+        # "other/unspecified site" inputs should not be narrowed to a
+        # concrete organ/site unless that site is explicit in the query.
+        if label_hints and (not query_hints or label_hints.isdisjoint(query_hints)):
+            return True
+    if "malignant" in query_tokens and "benign" in label_tokens:
+        return True
+    if "benign" in query_tokens and "malignant" in label_tokens:
+        return True
     if (
         ("bipolar i disorder" in query_key_spaced or "bipolar ii disorder" in query_key_spaced)
         and "bipolar" not in label_key_spaced
@@ -3627,9 +3803,16 @@ def load_trait_query_inputs(path: Path, *, default_trait_scale: str = "auto") ->
     if not parsed_rows:
         return []
 
+    trait_query_column_keys = [
+        normalize_trait_column_key(name)
+        for name in TRAIT_QUERY_COLUMNS
+        if normalize_trait_column_key(name)
+    ]
+
     if parsed_rows and len(parsed_rows[0]) == 1 and all(len(r) <= 1 for r in parsed_rows):
         first = normalize(parsed_rows[0][0] if parsed_rows[0] else "")
-        start_idx = 1 if first.lower() in TRAIT_QUERY_COLUMNS else 0
+        first_key = normalize_trait_column_key(first)
+        start_idx = 1 if first_key in trait_query_column_keys else 0
         rows: list[dict[str, str]] = []
         for idx, row in enumerate(parsed_rows[start_idx:], start=1):
             query = normalize(row[0] if row else "")
@@ -3651,9 +3834,9 @@ def load_trait_query_inputs(path: Path, *, default_trait_scale: str = "auto") ->
         return rows
 
     fieldnames = parsed_rows[0]
-    field_lookup = {normalize(field).lower(): field for field in fieldnames}
+    field_lookup = {normalize_trait_column_key(field): field for field in fieldnames}
 
-    query_field = next((field_lookup[name] for name in TRAIT_QUERY_COLUMNS if name in field_lookup), fieldnames[0])
+    query_field = next((field_lookup[name] for name in trait_query_column_keys if name in field_lookup), fieldnames[0])
     icd_field = next((field_lookup[name] for name in TRAIT_ICD10_COLUMNS if name in field_lookup), None)
     phe_field = next((field_lookup[name] for name in TRAIT_PHECODE_COLUMNS if name in field_lookup), None)
     type_field = next((field_lookup[name] for name in TRAIT_INPUT_TYPE_COLUMNS if name in field_lookup), None)
@@ -3768,7 +3951,7 @@ def load_trait_query_inputs(path: Path, *, default_trait_scale: str = "auto") ->
                 continue
 
             if input_type == "auto":
-                normalized_icd10 = normalize_icd10_code(raw_icd or raw_query)
+                normalized_icd10 = normalize_icd10_code(raw_icd or parsed_query_icd10 or raw_query)
                 if query_supports_inferred_icd10(raw_query, normalized_icd10):
                     input_type = "icd10"
                     if not raw_icd:
@@ -3853,6 +4036,17 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
                 reported_trait = normalize(row.get("Curated reported trait") or row.get("DISEASE/TRAIT") or "")
                 lookup_text = normalize(row.get("Lookup text") or row.get("DISEASE/TRAIT") or reported_trait)
                 icd10 = normalize_icd10_code(row.get("ICD10") or "")
+                # Some cache sources store ICD10 only inside the reported trait
+                # text (for example "ICD10 G40.3: ...") and leave the ICD10
+                # column empty. Index those rows as ICD10 too so exact ICD10
+                # routing can reuse high-confidence catalog/cache mappings.
+                if not icd10:
+                    for text_value in (reported_trait, lookup_text):
+                        parsed_code, _parsed_label = parse_icd10_labeled_trait_text(text_value)
+                        parsed_code = normalize_icd10_code(parsed_code)
+                        if is_strict_icd10_code(parsed_code):
+                            icd10 = parsed_code
+                            break
                 phecode = normalize_phecode(row.get("PheCode") or "")
                 publication = normalize(row.get("Publication") or "")
                 is_ukb_field_supplement = is_ukb_field_supplement_publication(publication)
@@ -6205,6 +6399,16 @@ def ukb_field_is_medication_use(
     key = normalize_trait_text_for_similarity(combined) or norm_key(combined)
     if not key:
         return False
+    if (
+        "insulin" in key
+        and (
+            "diabetes" in key
+            or "mellitis diagnosis" in key
+            or "mellitus diagnosis" in key
+            or "within one year" in key
+        )
+    ):
+        return True
     medication_markers = (
         "treatment or medication code",
         "treatment or medication use",
@@ -6214,9 +6418,7 @@ def ukb_field_is_medication_use(
         "cholesterol lowering medication",
         "blood pressure medication",
         "pain relief",
-        "heartburn",
         "laxatives",
-        "insulin",
     )
     return any(marker in key for marker in medication_markers)
 
@@ -6277,6 +6479,9 @@ def extract_professional_diagnosis_trait_fragment(query: str, additional_info: s
         if not text:
             continue
         text = re.sub(r"\([^)]*\)\s*$", "", text).strip()
+        text = normalize(re.sub(r"\(\s*ukb\s+data\s+field\s*[^)]*\)", "", text, flags=re.IGNORECASE))
+        text = normalize(re.sub(r"\(\s*(?:gene-based burden|firth correction|spa correction)[^)]*\)", "", text, flags=re.IGNORECASE))
+        text = normalize(re.sub(r"\(\s*\d+\s*\)$", "", text))
         text = re.sub(r"\s*/\s*icd10\s+[a-z]\d[\da-z.]*\s*$", "", text, flags=re.IGNORECASE).strip()
         for pattern in wrapper_patterns:
             text = pattern.sub("", text).strip()
@@ -6285,7 +6490,7 @@ def extract_professional_diagnosis_trait_fragment(query: str, additional_info: s
         text = text.replace("anxiety nerves or generalized anxiety disorder", "generalized anxiety disorder")
         text = text.replace("psychological over eating or binge eating", "binge eating")
         text = text.replace("any other type of psychosis or psychotic illness", "psychosis")
-        text = re.sub(r"\bany other phobia\b.*$", "phobia", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bany other phobia\b.*$", "specific phobia", text, flags=re.IGNORECASE)
         text = normalize_trait_phrase_aliases(text)
         if text:
             return text
@@ -6402,11 +6607,20 @@ def normalize_trait_phrase_aliases(text: str) -> str:
         (r"\bcholelithiasis(?:\s+or)?\s+gall stones\b", "cholelithiasis"),
         (r"\bgall stones\b", "gallstones"),
         (r"\bsleep apnoea\b", "sleep apnea"),
+        (r"\bdorsalgia\b", "back pain"),
         (r"\bnon[-\s]*melanoma skin cancer\b", "non-melanoma skin carcinoma"),
         (r"\bcorneal power\b", "corneal topography"),
     )
     for pattern, replacement in replacements:
         value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"\b(type\s*2 diabetes(?: mellitus)?)\b(?:\s+(?:new|strict|possible|probable|loose))+",
+        r"\1",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\btype\s*2 diabetes\b", "type 2 diabetes mellitus", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+", " ", value).strip()
     return normalize(value)
 
 
@@ -6446,6 +6660,9 @@ def extract_degree_bothered_trait_fragment(query: str, additional_info: str) -> 
 
 
 def trait_query_is_medication_use(query: str, additional_info: str) -> bool:
+    parsed_icd10, _parsed_label = parse_icd10_labeled_trait_text(query)
+    if parsed_icd10 or query_explicitly_mentions_icd10(query):
+        return False
     combined = " ".join(part for part in (query, additional_info) if normalize(part))
     alias_hint = normalize_trait_phrase_aliases(combined)
     key = normalize_trait_text_for_similarity(" ".join(part for part in (combined, alias_hint) if normalize(part))) or norm_key(combined)
@@ -6462,9 +6679,7 @@ def trait_query_is_medication_use(query: str, additional_info: str) -> bool:
         "cholesterol lowering medication",
         "blood pressure medication",
         "pain relief",
-        "heartburn",
         "laxatives",
-        "insulin",
     )
     return any(marker in key for marker in medication_markers)
 
@@ -6474,15 +6689,25 @@ def classify_ukb_medication_use_term(query: str, additional_info: str) -> tuple[
     alias_hint = normalize_trait_phrase_aliases(combined)
     combined_key = normalize_trait_text_for_similarity(" ".join(part for part in (combined, alias_hint) if normalize(part))) or norm_key(combined)
     combined_search_text = " ".join(part for part in (combined, alias_hint) if normalize(part))
+    if (
+        "insulin" in combined_key
+        and ("diabetes" in combined_key or "mellitis diagnosis" in combined_key or "mellitus diagnosis" in combined_key)
+    ):
+        return "EFO_0009924", "Drugs used in diabetes use measurement"
+    if "insulin" in combined_key and "ukb data field 6177" in combined_key:
+        return "EFO_0009924", "Drugs used in diabetes use measurement"
+    if "treatment or medication use" in combined_key and (
+        "vitamin" in combined_key or "mineral" in combined_key
+    ):
+        return "EFO_0009116", "vitamin supplement exposure measurement"
     generic_phrase_rules = (
         ("vitamin and mineral supplements", "EFO_0009116", "vitamin supplement exposure measurement"),
         ("cholesterol lowering medication", "EFO_0803367", "antihyperlipidemic drug use measurement"),
         ("blood pressure medication", "EFO_0009927", "antihypertensive use measurement"),
-        ("metformin medication use", "EFO_0007010", "drug use measurement"),
-        ("oral diabetes medication use", "EFO_0007010", "drug use measurement"),
-        ("insulin", "EFO_0007010", "drug use measurement"),
+        ("metformin medication use", "EFO_0009924", "Drugs used in diabetes use measurement"),
+        ("oral diabetes medication use", "EFO_0009924", "Drugs used in diabetes use measurement"),
         ("pain relief", "EFO_0007012", "NSAID use measurement"),
-        ("heartburn", "EFO_0007010", "drug use measurement"),
+        ("medication for heartburn", "EFO_0007010", "drug use measurement"),
         ("laxatives", "EFO_0007010", "drug use measurement"),
     )
     for phrase, term_id, label in generic_phrase_rules:
@@ -7183,7 +7408,7 @@ def map_trait_queries(
         if input_type == "icd10" and not icd10 and query_supports_inferred_icd10(query, parsed_query_icd10):
             icd10 = parsed_query_icd10
         if input_type == "icd10" and not icd10:
-            query_icd10 = normalize_icd10_code(query)
+            query_icd10 = normalize_icd10_code(parsed_query_icd10 or query)
             if query_supports_inferred_icd10(query, query_icd10):
                 icd10 = query_icd10
         if (
@@ -7228,7 +7453,7 @@ def map_trait_queries(
         # Infer explicit ICD10 query codes before auto-routing so rows like
         # "ICD10 B96.2: ..." enter the ICD10 pathway deterministically.
         if not icd10 and query and input_type != "ukb_field":
-            inferred_icd10_pre_auto = normalize_icd10_code(query)
+            inferred_icd10_pre_auto = normalize_icd10_code(parsed_query_icd10 or query)
             if query_supports_inferred_icd10(query, inferred_icd10_pre_auto):
                 icd10 = inferred_icd10_pre_auto
 
@@ -7267,12 +7492,23 @@ def map_trait_queries(
             # route through the ICD10 exact pathway when the field metadata
             # explicitly indicates ICD10 coding.
             if parsed_code and parsed_field_id:
+                code_icd10 = normalize_icd10_code(parsed_code)
                 field_title_key = norm_key(ukb_field_titles.get(parsed_field_id, ""))
                 if "icd10" in field_title_key:
                     prefer_icd10_from_ukb = True
                     if not icd10:
-                        code_icd10 = normalize_icd10_code(parsed_code)
                         if is_strict_icd10_code(code_icd10):
+                            icd10 = code_icd10
+                elif is_strict_icd10_code(code_icd10):
+                    # Use ICD10-backed resources as an additional signal for UKB
+                    # coded rows even when the field title text is sparse.
+                    if (
+                        code_icd10 in icd10_supplement_index
+                        or code_icd10 in icd10_label_index
+                        or code_icd10 in ontology_icd10_xref_index
+                    ):
+                        prefer_icd10_from_ukb = True
+                        if not icd10:
                             icd10 = code_icd10
         if not prefer_icd10_from_ukb and icd10 and ukb_field_ids:
             if any("icd10" in norm_key(ukb_field_titles.get(field_id, "")) for field_id in ukb_field_ids):
@@ -7350,7 +7586,10 @@ def map_trait_queries(
                     additional_info=additional_info,
                 )
             )
-            or trait_query_is_medication_use(query, additional_info)
+            or (
+                input_type != "icd10"
+                and trait_query_is_medication_use(query, additional_info)
+            )
         )
         if input_type == "ukb_field" and normalize_trait_scale(trait_scale) == "binary":
             if ukb_is_medication_use or ukb_field_prefers_measurement_scale(query, ukb_field_titles_tuple):
@@ -8118,6 +8357,30 @@ def map_trait_queries(
                     is_validated=True,
                 )
                 candidates.append(diagnosis_candidate)
+        if (
+            re.search(r"\bdry\s+eyes?\b", normalized_query_context_spaced, flags=re.IGNORECASE)
+            and not re.search(
+                r"\b(?:measurement|score|duration|time|screen)\b",
+                normalized_query_context_spaced,
+                flags=re.IGNORECASE,
+            )
+        ):
+            term_id, term_label = preferred_exact_term_for_phrase(
+                "dry eye syndrome",
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if term_id and term_label:
+                candidates.append(
+                    Candidate(
+                        efo_id=term_id,
+                        label=term_label,
+                        score=0.995,
+                        matched_via="trait_phrase_rule",
+                        evidence="dry-eye row treated as dry eye syndrome",
+                        is_validated=True,
+                    )
+                )
         if professional_diagnosis_fragment:
             professional_fragment_key = professional_diagnosis_fragment.lower().replace("-", " ")
             if "social anxiety" in professional_fragment_key or "social phobia" in professional_fragment_key:
@@ -8676,6 +8939,22 @@ def map_trait_queries(
                 ("alcohol dependence", 0.97, "trait_phrase_rule", "alcohol dependence/addiction row treated as alcohol dependence", True)
             )
         if (
+            re.search(r"\balcohol dependenc(?:e|y)\b", normalized_query_only_context_spaced)
+            and not any(
+                token in normalized_query_only_context_spaced
+                for token in ("measurement", "score", "symptom count", "questionnaire")
+            )
+        ):
+            phrase_rule_specs.append(
+                (
+                    "alcohol dependence",
+                    0.995,
+                    "trait_phrase_rule",
+                    "alcohol dependence/dependency wording normalized to alcohol dependence disease term",
+                    True,
+                )
+            )
+        if (
             "failure to fulfil normal expectations due to drinking alcohol" in category_context_raw_key
             or "memory loss due to drinking alcohol" in category_context_raw_key
             or "consuming six or more units of alcohol" in category_context_raw_key
@@ -8863,12 +9142,22 @@ def map_trait_queries(
                 )
             )
         if (
-            (
-                "testicular problems not cancer" in normalized_query_only_context_spaced
-                or "testicular problem not cancer" in normalized_query_only_context_spaced
-                or "testicular problems" in normalized_query_only_context_spaced
+            "testicular problems not cancer" in normalized_query_only_context_spaced
+            or "testicular problem not cancer" in normalized_query_only_context_spaced
+            or (
+                "testicular problems" in normalized_query_only_context_spaced
+                and (
+                    "not cancer" in normalized_query_only_context_spaced
+                    or "non cancer" in normalized_query_only_context_spaced
+                    or "not malignant" in normalized_query_only_context_spaced
+                )
             )
-            and "cancer" in normalized_query_only_context_spaced
+            or (
+                "testicular problems" in normalized_query_only_context_spaced
+                and "testicular cancer" not in normalized_query_only_context_spaced
+                and "malignant neoplasm" not in normalized_query_only_context_spaced
+                and input_type in {"trait_text", "ukb_field", "icd10"}
+            )
         ):
             phrase_rule_specs.append(
                 (
@@ -9006,7 +9295,7 @@ def map_trait_queries(
                     is_validated=False,
                 )
             )
-        if "impedance" in normalized_query_only_context_spaced or "impedance" in normalized_family_context:
+        if "impedance" in normalized_query_only_context_spaced:
             phrase_rule_specs.append(
                 (
                     "body composition measurement",
@@ -9511,6 +9800,16 @@ def map_trait_queries(
                     0.95,
                     "trait_phrase_rule",
                     "recurrent antibiotic exposure row treated as drug use measurement",
+                    True,
+                )
+            )
+        if "22032" in ukb_field_ids_tuple:
+            phrase_rule_specs.append(
+                (
+                    "physical activity measurement",
+                    1.00,
+                    "trait_phrase_rule",
+                    "physical-activity-group response row treated as physical activity measurement",
                     True,
                 )
             )
@@ -10648,6 +10947,42 @@ def map_trait_queries(
 
         candidates = filter_query_contradictory_candidates(candidates)
         best_any = filter_query_contradictory_candidates(best_any)
+        deferred_cache_candidates = filter_query_contradictory_candidates(deferred_cache_candidates)
+
+        def filter_ambiguous_ukb_field_cache_candidates(target_candidates: list[Candidate]) -> list[Candidate]:
+            if input_type != "ukb_field":
+                return target_candidates
+            if not query_has_disease_intent:
+                return target_candidates
+            kept: list[Candidate] = []
+            for candidate in target_candidates:
+                if candidate.matched_via not in {"cache_exact_ukb_field", "cache_exact_ukb_field_supplement"}:
+                    kept.append(candidate)
+                    continue
+                evidence_key = normalize(candidate.evidence).lower()
+                if "multiple cache mappings for key" not in evidence_key:
+                    kept.append(candidate)
+                    continue
+                overlap = trait_query_label_overlap_ratio(query_for_matching, candidate.label)
+                anchor_overlap = trait_has_anchor_overlap(query_for_matching, candidate.label)
+                if trait_query_contradicts_candidate(query_for_matching, candidate):
+                    candidate.evidence = (
+                        f"{candidate.evidence}; blocked ambiguous UKB field-cache clue contradicting query wording"
+                    )
+                    blocked_review_candidates.append(candidate)
+                    continue
+                if not anchor_overlap and overlap < 0.70:
+                    candidate.evidence = (
+                        f"{candidate.evidence}; blocked ambiguous UKB field-cache clue without anchor-token support"
+                    )
+                    blocked_review_candidates.append(candidate)
+                    continue
+                kept.append(candidate)
+            return kept
+
+        candidates = filter_ambiguous_ukb_field_cache_candidates(candidates)
+        best_any = filter_ambiguous_ukb_field_cache_candidates(best_any)
+        deferred_cache_candidates = filter_ambiguous_ukb_field_cache_candidates(deferred_cache_candidates)
 
         def filter_query_inconsistent_exact_icd10_candidates(target_candidates: list[Candidate]) -> list[Candidate]:
             if input_type == "icd10":
@@ -10875,11 +11210,17 @@ def map_trait_queries(
                 candidate.evidence = f"{candidate.evidence}; blocked forbidden trait mapping (normal)"
                 blocked_review_candidates.append(candidate)
                 continue
+            generic_measurement_exception = (
+                candidate.matched_via == "trait_phrase_rule"
+                and norm_key(candidate.label) == "body composition measurement"
+                and "impedance" in normalized_query_only_context_spaced
+            )
             if (
                 candidate.matched_via != "ukb_medication_use_rule"
                 and not (
                     candidate.matched_via == "trait_phrase_rule" and trait_query_is_medication_use(query, additional_info)
                 )
+                and not generic_measurement_exception
                 and candidate_has_generic_measurement_mapping(candidate.efo_id, candidate.label)
             ):
                 blocked_generic_measurement_found = True
@@ -10930,11 +11271,17 @@ def map_trait_queries(
                 candidate.evidence = f"{candidate.evidence}; blocked forbidden trait mapping (normal)"
                 blocked_review_candidates.append(candidate)
                 continue
+            generic_measurement_exception = (
+                candidate.matched_via == "trait_phrase_rule"
+                and norm_key(candidate.label) == "body composition measurement"
+                and "impedance" in normalized_query_only_context_spaced
+            )
             if (
                 candidate.matched_via != "ukb_medication_use_rule"
                 and not (
                     candidate.matched_via == "trait_phrase_rule" and trait_query_is_medication_use(query, additional_info)
                 )
+                and not generic_measurement_exception
                 and candidate_has_generic_measurement_mapping(candidate.efo_id, candidate.label)
             ):
                 blocked_review_candidates.append(candidate)
@@ -11330,6 +11677,18 @@ def map_trait_queries(
                 evidence="C. trachomatis row forced to Chlamydia trachomatis seropositivity",
                 is_validated=True,
             )
+        elif (
+            "mean corpuscular volume" in normalized_query_context_spaced
+            or "mean cell volume" in normalized_query_context_spaced
+        ):
+            forced_phrase_candidate = Candidate(
+                efo_id="OBA_0000056",
+                label="cell volume",
+                score=1.03,
+                matched_via="trait_phrase_rule",
+                evidence="mean corpuscular volume row forced to cell volume",
+                is_validated=True,
+            )
         elif "merkel cell polyomavirus" in normalized_query_context_spaced and "seropositivity" in normalized_query_context_spaced:
             forced_phrase_candidate = Candidate(
                 efo_id="EFO_0007034",
@@ -11429,6 +11788,12 @@ def map_trait_queries(
                 if not candidate_is_non_disease_entity(candidate, ontology_terms=ontology_terms)
                 and not candidate_has_go_mapping(candidate.efo_id)
                 and candidate.matched_via.startswith("cache_exact_ukb_field")
+                and not trait_query_contradicts_candidate(query_for_matching, candidate)
+                and (
+                    "multiple cache mappings for key" not in normalize(candidate.evidence).lower()
+                    or trait_has_anchor_overlap(query_for_matching, candidate.label)
+                    or trait_query_label_overlap_ratio(query_for_matching, candidate.label) >= 0.55
+                )
             ]
             if field_cache_alternatives:
                 deduped_field_cache_alternatives: dict[tuple[str, str, str], Candidate] = {}
@@ -11528,6 +11893,12 @@ def map_trait_queries(
                 and not candidate_has_go_mapping(candidate.efo_id)
                 and not candidate_has_uberon_mapping(candidate.efo_id)
                 and not candidate_is_broad_umbrella_trait(candidate)
+                and not trait_query_contradicts_candidate(query_for_matching, candidate)
+                and (
+                    "multiple cache mappings for key" not in normalize(candidate.evidence).lower()
+                    or trait_has_anchor_overlap(query_for_matching, candidate.label)
+                    or trait_query_label_overlap_ratio(query_for_matching, candidate.label) >= 0.55
+                )
                 and (
                     trait_query_label_overlap_ratio(query_for_matching, candidate.label)
                     > trait_query_label_overlap_ratio(query_for_matching, candidates[0].label)
@@ -11577,6 +11948,23 @@ def map_trait_queries(
             top_label_key = norm_key(candidates[0].label)
             top_ukb_overlap = trait_query_label_overlap_ratio(ukb_title_context, candidates[0].label)
             top_ukb_anchor = trait_has_anchor_overlap(ukb_title_context, candidates[0].label)
+            query_specific_token_count = len(
+                informative_trait_tokens(normalize_trait_text_for_similarity(query_for_matching))
+            )
+
+            def ukb_exact_cache_candidate_allowed(candidate: Candidate) -> bool:
+                if trait_query_contradicts_candidate(query_for_matching, candidate):
+                    return False
+                evidence_key = normalize(candidate.evidence).lower()
+                if "multiple cache mappings for key" in evidence_key:
+                    query_overlap = trait_query_label_overlap_ratio(query_for_matching, candidate.label)
+                    query_anchor = trait_has_anchor_overlap(query_for_matching, candidate.label)
+                    if query_specific_token_count <= 1 and not query_anchor:
+                        return False
+                    if query_overlap < 0.55 and not query_anchor:
+                        return False
+                return True
+
             top_term_ids = [
                 canonicalize_trait_ontology_id(term_id)
                 for term_id in split_multi_ids(candidates[0].efo_id)
@@ -11589,6 +11977,7 @@ def map_trait_queries(
                 and not candidate_has_go_mapping(candidate.efo_id)
                 and not candidate_has_uberon_mapping(candidate.efo_id)
                 and not candidate_is_anatomy_or_substance_entity(candidate)
+                and ukb_exact_cache_candidate_allowed(candidate)
                 and (
                     (
                         (
@@ -12017,13 +12406,19 @@ def map_trait_queries(
                 if not candidate_is_broad_umbrella_trait(candidate)
                 and not candidate_has_go_mapping(candidate.efo_id)
                 and not candidate_has_uberon_mapping(candidate.efo_id)
+                and not trait_query_contradicts_candidate(query_for_matching, candidate)
                 and (
                     (
-                        candidate.matched_via == "cache_exact_ukb_field"
-                        and "multiple cache mappings for key" not in candidate.evidence
+                        "multiple cache mappings for key" not in normalize(candidate.evidence).lower()
                     )
-                    or trait_query_label_overlap_ratio(query_for_matching, candidate.label) >= 0.45
                     or trait_has_anchor_overlap(query_for_matching, candidate.label)
+                    or (
+                        trait_query_label_overlap_ratio(query_for_matching, candidate.label) >= 0.55
+                        and len(
+                            informative_trait_tokens(normalize_trait_text_for_similarity(query_for_matching))
+                        )
+                        >= 2
+                    )
                 )
             ]
             query_specific_clues = [
@@ -12161,6 +12556,31 @@ def map_trait_queries(
         late_forced_candidate: Candidate | None = None
         force_not_mapped_late = False
         raw_query_key = normalize(query).lower()
+        raw_query_with_field_context_key = raw_query_key
+        if input_type == "ukb_field" and normalize(ukb_field_label_text):
+            raw_query_with_field_context_key = normalize(
+                " ".join(
+                    part
+                    for part in (ukb_field_label_text, query_for_matching or query)
+                    if normalize(part)
+                )
+            ).lower()
+        raw_query_cancer_context_key = raw_query_key
+        raw_query_behaviour_context_key = raw_query_key
+        if (
+            input_type == "ukb_field"
+            and "type of cancer: icd10" in norm_key(ukb_field_label_text)
+        ):
+            raw_query_cancer_context_key = normalize(
+                f"type of cancer: {normalize(query_for_matching or query)}"
+            ).lower()
+        if (
+            input_type == "ukb_field"
+            and "behaviour of cancer tumour" in norm_key(ukb_field_label_text)
+        ):
+            raw_query_behaviour_context_key = normalize(
+                f"behaviour of cancer tumour - {normalize(query_for_matching or query)}"
+            ).lower()
         raw_additional_info_key = normalize(additional_info).lower()
         if "airways med" in raw_query_key or "airways med" in raw_additional_info_key:
             late_forced_candidate = Candidate(
@@ -12170,6 +12590,79 @@ def map_trait_queries(
                 matched_via="trait_phrase_rule",
                 evidence="late override: airways-med shorthand forced to drug use measurement",
                 is_validated=False,
+            )
+        elif re.search(r"\b(?:coenzyme\s*-?\s*q10|ubiquinone|bio[-\s]?quinone)\b", raw_query_key, flags=re.IGNORECASE):
+            late_forced_candidate = Candidate(
+                efo_id="EFO_0007010",
+                label="drug use measurement",
+                score=1.05,
+                matched_via="trait_phrase_rule",
+                evidence="late override: coenzyme-q10/ubiquinone medication row forced to drug use measurement",
+                is_validated=False,
+            )
+        elif raw_query_key.startswith("icd10 z45"):
+            late_forced_candidate = Candidate(
+                efo_id="EFO_0020982",
+                label="encounter with health service for adjustment and management of implanted device",
+                score=1.05,
+                matched_via="trait_phrase_rule",
+                evidence="late override: ICD10 Z45 device-management encounter forced to implanted-device management encounter",
+                is_validated=True,
+            )
+        elif re.match(r"^icd10\s+z92(?:[ ._-]?6)\b", raw_query_key):
+            late_forced_candidate = Candidate(
+                efo_id="MONDO_0023370",
+                label="neoplastic disease or syndrome",
+                score=1.05,
+                matched_via="trait_phrase_rule",
+                evidence="late override: ICD10 Z92.6 personal-history chemotherapy row forced to neoplastic disease or syndrome",
+                is_validated=True,
+            )
+        elif raw_query_key.startswith("hypertension nephropathy") and "no type 2 diabetes" in raw_query_key:
+            late_forced_candidate = Candidate(
+                efo_id="MONDO_0024633",
+                label="hypertensive nephropathy",
+                score=1.05,
+                matched_via="trait_phrase_rule",
+                evidence="late override: hypertension nephropathy with explicit no-type2-diabetes clause forced to hypertensive nephropathy",
+                is_validated=True,
+            )
+        elif "pulse wave reflection index" in raw_query_key:
+            late_forced_candidate = Candidate(
+                efo_id="EFO_0009804",
+                label="pulse wave reflection index measurement",
+                score=1.04,
+                matched_via="trait_phrase_rule",
+                evidence="late override: pulse wave reflection index row forced to pulse wave reflection index measurement",
+                is_validated=True,
+            )
+        elif raw_query_key.startswith("presbyopia - "):
+            late_forced_candidate = Candidate(
+                efo_id="MONDO_0001330",
+                label="presbyopia",
+                score=1.04,
+                matched_via="trait_phrase_rule",
+                evidence="late override: presbyopia laterality row forced to presbyopia",
+                is_validated=True,
+            )
+        elif (
+            "started wearing glasses contacts before 40" in raw_query_key
+            or "started wearing glasses or contacts before 40" in raw_query_key
+        ) and any(
+            token in raw_query_key
+            for token in (
+                "spherical equivalent",
+                "mean spherical equivalent",
+                "corneal power",
+            )
+        ):
+            late_forced_candidate = Candidate(
+                efo_id="EFO_0007814",
+                label="refractive error measurement",
+                score=1.04,
+                matched_via="trait_phrase_rule",
+                evidence="late override: glasses-onset ocular row forced to refractive error measurement",
+                is_validated=True,
             )
         elif query_prefers_intervertebral_disc_displacement(query, additional_info):
             late_forced_candidate = Candidate(
@@ -12881,7 +13374,7 @@ def map_trait_queries(
                 evidence="late override: ICD10 D12 row forced to benign colorectal neoplasm branch",
                 is_validated=True,
             )
-        elif "type of cancer: non-follicular lymphoma" in raw_query_key:
+        elif "type of cancer: non-follicular lymphoma" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="EFO_0005952",
                 label="non-Hodgkins lymphoma",
@@ -12890,7 +13383,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register non-follicular lymphoma row forced to non-Hodgkins lymphoma",
                 is_validated=True,
             )
-        elif "type of cancer: other specified and unspecified types of non-hodgkin lymphoma" in raw_query_key:
+        elif "type of cancer: other specified and unspecified types of non-hodgkin lymphoma" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="EFO_0005952",
                 label="non-Hodgkins lymphoma",
@@ -12899,7 +13392,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register non-Hodgkin umbrella row forced to non-Hodgkins lymphoma",
                 is_validated=True,
             )
-        elif "type of cancer: carcinoma in situ of other and unspecified genital organs" in raw_query_key:
+        elif "type of cancer: carcinoma in situ of other and unspecified genital organs" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0004647",
                 label="in situ carcinoma",
@@ -12908,7 +13401,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register unspecified genital in-situ row forced to broad in situ carcinoma",
                 is_validated=False,
             )
-        elif "type of cancer: carcinoma in situ of other and unspecified sites" in raw_query_key:
+        elif "type of cancer: carcinoma in situ of other and unspecified sites" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0004647",
                 label="in situ carcinoma",
@@ -12917,7 +13410,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register unspecified-site in-situ row forced to in situ carcinoma",
                 is_validated=True,
             )
-        elif "type of cancer: melanoma in situ" in raw_query_key:
+        elif "type of cancer: melanoma in situ" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="EFO_0000756",
                 label="melanoma",
@@ -12927,10 +13420,10 @@ def map_trait_queries(
                 is_validated=False,
             )
         elif (
-            raw_query_key.startswith("type of cancer: malignant melanoma")
-            or raw_query_key.startswith("type of cancer: malignant neoplasm of ")
+            raw_query_cancer_context_key.startswith("type of cancer: malignant melanoma")
+            or raw_query_cancer_context_key.startswith("type of cancer: malignant neoplasm of ")
         ):
-            cancer_fragment = normalize(raw_query_key.split("type of cancer:", 1)[1])
+            cancer_fragment = normalize(raw_query_cancer_context_key.split("type of cancer:", 1)[1])
             forced_phrase = ""
             if cancer_fragment.startswith("malignant melanoma"):
                 forced_phrase = "melanoma"
@@ -12989,7 +13482,7 @@ def map_trait_queries(
                         )
                         if fallback_candidate is not None:
                             late_forced_candidate = fallback_candidate
-        elif "type of cancer: carcinoma in situ of cervix" in raw_query_key:
+        elif "type of cancer: carcinoma in situ of cervix" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0042487",
                 label="uterine cervix carcinoma in situ",
@@ -12998,7 +13491,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register row forced to uterine cervix carcinoma in situ",
                 is_validated=True,
             )
-        elif "type of cancer: carcinoma in situ of bladder" in raw_query_key:
+        elif "type of cancer: carcinoma in situ of bladder" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0004703",
                 label="bladder carcinoma in situ",
@@ -13007,7 +13500,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register row forced to bladder carcinoma in situ",
                 is_validated=True,
             )
-        elif "type of cancer: intraductal carcinoma in situ of breast" in raw_query_key:
+        elif "type of cancer: intraductal carcinoma in situ of breast" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0002488",
                 label="intraductal breast neoplasm",
@@ -13016,7 +13509,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register row forced to intraductal breast neoplasm",
                 is_validated=True,
             )
-        elif "type of cancer: carcinoma in situ of other and unspecified parts of uterus" in raw_query_key:
+        elif "type of cancer: carcinoma in situ of other and unspecified parts of uterus" in raw_query_cancer_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0004710",
                 label="uterus carcinoma in situ",
@@ -13025,7 +13518,7 @@ def map_trait_queries(
                 evidence="late override: cancer-register row forced to uterus carcinoma in situ as the closest available in-situ uterus term",
                 is_validated=False,
             )
-        elif "behaviour of cancer tumour - benign" in raw_query_key:
+        elif "behaviour of cancer tumour - benign" in raw_query_behaviour_context_key:
             late_forced_candidate = Candidate(
                 efo_id="EFO_0002422",
                 label="benign neoplasm",
@@ -13034,7 +13527,7 @@ def map_trait_queries(
                 evidence="late override: cancer-behaviour benign row forced to benign neoplasm",
                 is_validated=True,
             )
-        elif "behaviour of cancer tumour - malignant primary site" in raw_query_key:
+        elif "behaviour of cancer tumour - malignant primary site" in raw_query_behaviour_context_key:
             late_forced_candidate = Candidate(
                 efo_id="MONDO_0004992",
                 label="cancer",
@@ -13541,6 +14034,8 @@ def map_trait_queries(
                         "family_history_composite_exact",
                         "ukb_medication_use_rule",
                         "trait_phrase_rule",
+                        "mapping_harmonized",
+                        "icd10_obstetric_harmonized",
                         "temporal_condition_composite_exact",
                     }
                     and
@@ -14796,9 +15291,9 @@ def apply_low_confidence_not_mapped_fallbacks(
         if icd10.startswith("H53"):
             apply_fallback(
                 row,
-                mapped_id_text="HP_0000505",
+                mapped_id_text="HP_0000504",
                 confidence=0.280,
-                reason="visual-disturbance ICD10 code fallback to visual impairment",
+                reason="visual-disturbance ICD10 code fallback to abnormality of vision",
             )
             continue
         if icd10.startswith("I84"):
@@ -15076,9 +15571,9 @@ def apply_low_confidence_not_mapped_fallbacks(
         if icd10.startswith("G47.9"):
             apply_fallback(
                 row,
-                mapped_id_text="MONDO_0003406",
+                mapped_id_text="MONDO_0100081",
                 confidence=0.300,
-                reason="unspecified sleep-disorder ICD10 code fallback to sleep-wake disorder",
+                reason="unspecified sleep-disorder ICD10 code fallback to sleep disorder",
             )
             continue
         if icd10.startswith(("O34", "O36", "O42")):
@@ -15089,7 +15584,15 @@ def apply_low_confidence_not_mapped_fallbacks(
                 reason="maternal-care ICD10 code fallback to pregnancy disorder",
             )
             continue
-        if icd10.startswith(("O47", "O63")):
+        if icd10.startswith("O47"):
+            apply_fallback(
+                row,
+                mapped_id_text="EFO_0009639",
+                confidence=0.360,
+                reason="false-labor ICD10 code fallback to Braxton-Hicks contractions",
+            )
+            continue
+        if icd10.startswith("O63"):
             apply_fallback(
                 row,
                 mapped_id_text="EFO_0022939",
@@ -15268,9 +15771,9 @@ def apply_low_confidence_not_mapped_fallbacks(
         if icd10.startswith("Z79"):
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0007010",
+                mapped_id_text="EFO_0000727",
                 confidence=0.320,
-                reason="long-term-drug-therapy ICD10 code fallback to drug use measurement",
+                reason="long-term-drug-therapy ICD10 code fallback to treatment",
             )
             continue
         if icd10.startswith("Z88"):
@@ -15292,9 +15795,9 @@ def apply_low_confidence_not_mapped_fallbacks(
         if icd10.startswith("Z91.1"):
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0009788",
-                confidence=0.260,
-                reason="noncompliance-context ICD10 fallback to psychosocial healthcare encounter",
+                mapped_id_text="EFO_0006344",
+                confidence=0.300,
+                reason="noncompliance-context ICD10 fallback to medication adherence behavior",
             )
             continue
         if icd10.startswith("Z95.0"):
@@ -15366,9 +15869,9 @@ def apply_low_confidence_not_mapped_fallbacks(
         if "alcohol dependency" in query_key:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_0003890",
+                mapped_id_text="MONDO_0007079",
                 confidence=0.290,
-                reason="alcohol-dependency wording fallback to drug dependence",
+                reason="alcohol-dependency wording fallback to alcohol dependence",
             )
             continue
         if query_key == "bleed" or query_key.startswith("bleed "):
@@ -15487,9 +15990,9 @@ def apply_low_confidence_not_mapped_fallbacks(
         if "muscle or soft tissue problem" in query_key:
             apply_fallback(
                 row,
-                mapped_id_text="EFO_1000999",
+                mapped_id_text="EFO_0009470",
                 confidence=0.240,
-                reason="soft-tissue problem wording fallback to joint disease",
+                reason="soft-tissue problem wording fallback to soft tissue disease",
             )
             continue
         if "nervous breakdown" in query_key:
@@ -15552,6 +16055,119 @@ def apply_low_confidence_not_mapped_fallbacks(
     return rows
 
 
+def load_manual_curator_rescue_override_index(path: Path) -> dict[tuple[str, str], dict[str, str]]:
+    index: dict[tuple[str, str], dict[str, str]] = {}
+    if not path.exists():
+        return index
+
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            query = normalize(row.get("input_query", ""))
+            if not query:
+                continue
+            query_key = norm_key(query)
+            if not query_key:
+                continue
+            icd10 = normalize_icd10_code(row.get("input_icd10", ""))
+            mapped_trait_id = normalize(row.get("mapped_trait_id", ""))
+            mapped_trait_label = normalize(row.get("mapped_trait_label", ""))
+            note = normalize(row.get("note", ""))
+            decision_reason = normalize(row.get("decision_reason", ""))
+            if not mapped_trait_id:
+                continue
+            payload = {
+                "mapped_trait_id": mapped_trait_id,
+                "mapped_trait_label": mapped_trait_label,
+                "note": note,
+                "decision_reason": decision_reason,
+            }
+            index[(query_key, icd10)] = payload
+            if icd10:
+                # Also keep a query-only fallback so the override applies whether
+                # ICD10 is supplied in a column or parsed from query text.
+                index.setdefault((query_key, ""), payload)
+    return index
+
+
+def apply_manual_curator_rescue_overrides(
+    rows: list[dict[str, str]],
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+    override_index: dict[tuple[str, str], dict[str, str]],
+    override_source_name: str = "manual_curator_rescue_overrides.tsv",
+) -> list[dict[str, str]]:
+    if not override_index:
+        return rows
+
+    applied = 0
+    for row in rows:
+        query = normalize(row.get("input_query", ""))
+        query_key = norm_key(query)
+        if not query_key:
+            continue
+        icd10 = normalize_icd10_code(row.get("input_icd10", ""))
+        if not icd10 and query:
+            parsed_icd10, _ = parse_icd10_labeled_trait_text(query)
+            icd10 = normalize_icd10_code(parsed_icd10)
+        override = override_index.get((query_key, icd10)) or override_index.get((query_key, ""))
+        if not override:
+            continue
+
+        mapped_id_text = normalize(override.get("mapped_trait_id", ""))
+        if not mapped_id_text:
+            continue
+        mapped_ids, mapped_labels = _resolve_low_confidence_ids_and_labels(
+            mapped_id_text,
+            ontology_terms=ontology_terms,
+        )
+        if not mapped_ids or not mapped_labels:
+            continue
+
+        mapped_labels_text = normalize(override.get("mapped_trait_label", ""))
+        if mapped_labels_text:
+            split_ids = split_multi_ids(mapped_ids)
+            split_labels = split_multi_labels(mapped_labels_text, expected_n=len(split_ids))
+            if split_ids and len(split_labels) == len(split_ids):
+                mapped_labels = "|".join(split_labels)
+
+        try:
+            current_conf = float(normalize(row.get("confidence", "0")) or "0")
+        except Exception:
+            current_conf = 0.0
+
+        row["mapped_trait_id"] = mapped_ids
+        row["mapped_trait_label"] = mapped_labels
+        row["confidence"] = f"{max(current_conf, 0.990):.3f}"
+        row["matched_via"] = "manual_curator_rescue_override"
+        row["matched_on"] = "Manual curator override (exact query)"
+        row["source_file"] = override_source_name
+        row["validation"] = "validated"
+        row["qc_review_flag"] = "no"
+        row["specificity_loss_flag"] = "no"
+        row["specificity_loss_notes"] = ""
+        term_not_in_efo, mondo_missing_ids = mondo_import_qc(
+            mapped_ids,
+            ontology_terms=ontology_terms,
+        )
+        row["term_not_in_efo"] = term_not_in_efo
+        row["mondo_missing_ids"] = mondo_missing_ids
+
+        note = normalize(override.get("note", ""))
+        decision_reason = normalize(override.get("decision_reason", ""))
+        evidence_bits = [bit for bit in (note, decision_reason) if bit]
+        evidence_note = "manual curator rescue override applied"
+        if evidence_bits:
+            evidence_note = f"{evidence_note}: {'; '.join(evidence_bits)}"
+        prior_evidence = normalize(row.get("evidence", ""))
+        row["evidence"] = f"{prior_evidence}; {evidence_note}" if prior_evidence else evidence_note
+        applied += 1
+
+    if applied:
+        print(f"[OK] applied {applied} manual curator rescue overrides from {override_source_name}")
+    return rows
+
+
 def apply_regression_rescue_overrides(
     rows: list[dict[str, str]],
     *,
@@ -15569,10 +16185,10 @@ def apply_regression_rescue_overrides(
         ("E04", "MONDO_0001658", "icd10_e04_to_nontoxic_goiter"),
         ("E21.3", "MONDO_0001741", "icd10_e21_3_to_hyperparathyroidism"),
         ("G62.9", "MONDO_0001824", "icd10_g62_9_to_polyneuropathy"),
-        ("I71", "MONDO_0005160|EFO_0003856", "icd10_i71_to_aortic_aneurysm_and_dissection"),
+        ("I71", "MONDO_0005160|HP_0002647", "icd10_i71_to_aortic_aneurysm_and_aortic_dissection"),
         ("I73", "MONDO_0005294", "icd10_i73_to_peripheral_vascular_disease"),
         ("I74", "EFO_0010671|HP_0004420", "icd10_i74_to_arterial_embolism_and_thrombosis"),
-        ("I80", "MONDO_0004625", "icd10_i80_to_phlebitis"),
+        ("I80", "MONDO_0004625|HP_0004418", "icd10_i80_to_phlebitis_and_thrombophlebitis"),
         ("I95", "MONDO_0005468", "icd10_i95_to_hypotension"),
         ("J01", "MONDO_0005961", "icd10_j01_to_sinusitis"),
         ("J44", "MONDO_0005002", "icd10_j44_to_copd"),
@@ -15585,6 +16201,99 @@ def apply_regression_rescue_overrides(
         ("N30.2", "MONDO_0006030", "icd10_n30_2_to_chronic_cystitis"),
         ("N87", "MONDO_0006736", "icd10_n87_to_cervix_dysplasia"),
     )
+    # Exact-code regression rescues keep fixes narrow and avoid branch-wide
+    # overrides that can flatten specificity for unrelated descendants.
+    exact_icd10_rescue_mappings: dict[str, tuple[str, str]] = {
+        "A41.5": ("HP_0100806", "icd10_a41_5_to_sepsis"),
+        "C44.2": ("MONDO_0002531", "icd10_c44_2_to_skin_neoplasm"),
+        "C44.6": ("MONDO_0002531", "icd10_c44_6_to_skin_neoplasm"),
+        "C44.7": ("MONDO_0002531", "icd10_c44_7_to_skin_neoplasm"),
+        "D17.0": ("MONDO_0044983", "icd10_d17_0_to_benign_lipomatous_neoplasm"),
+        "D17.1": ("MONDO_0044983", "icd10_d17_1_to_benign_lipomatous_neoplasm"),
+        "D17.2": ("MONDO_0044983", "icd10_d17_2_to_benign_lipomatous_neoplasm"),
+        "E07": ("MONDO_0003240", "icd10_e07_to_thyroid_gland_disorder"),
+        "E53.8": ("MONDO_0042976", "icd10_e53_8_to_vitamin_b_deficiency"),
+        "H33.0": ("MONDO_0008375", "icd10_h33_0_to_retinal_detachment"),
+        "H93.2": ("MONDO_0002409", "icd10_h93_2_to_auditory_system_disorder"),
+        "H93.29": ("MONDO_0002409", "icd10_h93_29_to_auditory_system_disorder"),
+        "I24": ("MONDO_0005267", "icd10_i24_to_heart_disorder"),
+        "I24.8": ("MONDO_0005267", "icd10_i24_8_to_heart_disorder"),
+        "I24.9": ("MONDO_0005267", "icd10_i24_9_to_heart_disorder"),
+        "I25.8": ("MONDO_0005267", "icd10_i25_8_to_heart_disorder"),
+        "I25.9": ("MONDO_0005267", "icd10_i25_9_to_heart_disorder"),
+        "I49.3": ("EFO_0009276", "icd10_i49_3_to_ventricular_ectopy"),
+        "I51": ("MONDO_0005267", "icd10_i51_to_heart_disorder"),
+        "I52": ("MONDO_0005267", "icd10_i52_to_heart_disorder"),
+        "I82.40": ("EFO_0003907", "icd10_i82_40_to_deep_vein_thrombosis"),
+        "I78": ("MONDO_0005294", "icd10_i78_to_peripheral_vascular_disease"),
+        "I87": ("MONDO_0005294", "icd10_i87_to_peripheral_vascular_disease"),
+        "J18.1": ("MONDO_0005249", "icd10_j18_1_to_pneumonia"),
+        "J06.9": ("MONDO_0005087", "icd10_j06_9_to_respiratory_system_disorder"),
+        "J32.9": ("MONDO_0005961", "icd10_j32_9_to_sinusitis"),
+        "J43": ("MONDO_0004849", "icd10_j43_to_pulmonary_emphysema"),
+        "J92.0": ("MONDO_0002037", "icd10_j92_0_to_pleural_disorder"),
+        "J92.9": ("MONDO_0002037", "icd10_j92_9_to_pleural_disorder"),
+        "J98": ("MONDO_0005087", "icd10_j98_to_respiratory_system_disorder"),
+        "K52": ("MONDO_0005292", "icd10_k52_to_colitis"),
+        "K64": ("MONDO_0004872", "icd10_k64_to_hemorrhoid"),
+        "K64.0": ("MONDO_0004872", "icd10_k64_0_to_hemorrhoid"),
+        "K64.9": ("MONDO_0004872", "icd10_k64_9_to_hemorrhoid"),
+        "K31.7": ("MONDO_0008277", "icd10_k31_7_to_stomach_polyp"),
+        "K62.6": ("MONDO_0002519", "icd10_k62_6_to_anus_disorder"),
+        "K83.8": ("MONDO_0004868", "icd10_k83_8_to_biliary_tract_disorder"),
+        "L65": ("MONDO_0004907", "icd10_l65_to_alopecia"),
+        "M66": ("HP_0100550", "icd10_m66_to_tendon_rupture"),
+        "M95": ("MONDO_0002081|MONDO_0003900", "icd10_m95_to_musculoskeletal_and_connective_tissue_disorder"),
+        "N32": ("MONDO_0006026", "icd10_n32_to_urinary_bladder_disorder"),
+        "N36": ("MONDO_0004184", "icd10_n36_to_urethral_disorder"),
+        "N48": ("MONDO_0003150", "icd10_n48_to_male_reproductive_system_disorder"),
+        "N47": ("MONDO_0006904", "icd10_n47_to_phimosis"),
+        "N50": ("MONDO_0003150", "icd10_n50_to_male_reproductive_system_disorder"),
+        "N50.1": ("MONDO_0003150", "icd10_n50_1_to_male_reproductive_system_disorder"),
+        "N50.8": ("MONDO_0003150", "icd10_n50_8_to_male_reproductive_system_disorder"),
+        "N50.89": ("MONDO_0003150", "icd10_n50_89_to_male_reproductive_system_disorder"),
+        "N28": ("MONDO_0005240", "icd10_n28_to_kidney_disorder"),
+        "N99.3": ("MONDO_0000082", "icd10_n99_3_to_pelvic_organ_prolapse"),
+        "O02.1": ("EFO_1001491", "icd10_o02_1_to_abortion"),
+        "O68.0": ("HP_0001787", "icd10_o68_0_to_abnormal_delivery"),
+        "O68.1": ("HP_0001787", "icd10_o68_1_to_abnormal_delivery"),
+        "O80": ("EFO_0009786", "icd10_o80_to_encounter_with_health_service"),
+        "R25.2": ("EFO_0009846", "icd10_r25_2_to_muscle_cramp"),
+        "R09.8": ("EFO_0007939", "icd10_r09_8_to_respiratory_symptom_measurement"),
+        "R09.89": ("EFO_0007939", "icd10_r09_89_to_respiratory_symptom_measurement"),
+        "R39.8": ("EFO_0008008", "icd10_r39_8_to_lower_urinary_tract_symptom"),
+        "R39.9": ("EFO_0008008", "icd10_r39_9_to_lower_urinary_tract_symptom"),
+        "R40": ("HP_0001259", "icd10_r40_to_coma"),
+        "R52.1": ("HP_0012532", "icd10_r52_1_to_chronic_pain"),
+        "R53.82": ("MONDO_0005404", "icd10_r53_82_to_me_cfs"),
+        "R63.4": ("EFO_0005245", "icd10_r63_4_to_body_weight_loss"),
+        "S76": ("MONDO_0021178", "icd10_s76_to_injury"),
+        "T93": ("EFO_0009509", "icd10_t93_to_limb_injury"),
+        "Y60": ("MONDO_0021178", "icd10_y60_to_injury"),
+        "Y60.0": ("MONDO_0021178", "icd10_y60_0_to_injury"),
+        "Z00.0": ("EFO_0009786", "icd10_z00_0_to_encounter_with_health_service"),
+        "Z01.3": ("EFO_0009786", "icd10_z01_3_to_encounter_with_health_service"),
+        "Z01.8": ("EFO_0009786", "icd10_z01_8_to_encounter_with_health_service"),
+        "Z01.84": ("EFO_0009786", "icd10_z01_84_to_encounter_with_health_service"),
+        "Z01.89": ("EFO_0009786", "icd10_z01_89_to_encounter_with_health_service"),
+        "Z02": ("EFO_0009786", "icd10_z02_to_encounter_with_health_service"),
+        "Z02.8": ("EFO_0009786", "icd10_z02_8_to_encounter_with_health_service"),
+        "Z02.9": ("EFO_0009786", "icd10_z02_9_to_encounter_with_health_service"),
+        "Z04.3": ("EFO_0009786", "icd10_z04_3_to_encounter_with_health_service"),
+        "Z04.8": ("EFO_0009786", "icd10_z04_8_to_encounter_with_health_service"),
+        "Z13.1": ("EFO_0009786", "icd10_z13_1_to_encounter_with_health_service"),
+        "Z13.10": ("EFO_0009786", "icd10_z13_10_to_encounter_with_health_service"),
+        "Z13.6": ("EFO_0009786", "icd10_z13_6_to_encounter_with_health_service"),
+        "Z13.8": ("EFO_0009786", "icd10_z13_8_to_encounter_with_health_service"),
+        "Z13.83": ("EFO_0009786", "icd10_z13_83_to_encounter_with_health_service"),
+        "Z13.89": ("EFO_0009786", "icd10_z13_89_to_encounter_with_health_service"),
+        "Z13.9": ("EFO_0009786", "icd10_z13_9_to_encounter_with_health_service"),
+        "Z23": ("EFO_0009786", "icd10_z23_to_encounter_with_health_service"),
+        "Z29": ("EFO_0009786", "icd10_z29_to_encounter_with_health_service"),
+        "Z41.1": ("EFO_0009786", "icd10_z41_1_to_encounter_with_health_service"),
+        "Z48.0": ("EFO_0009786", "icd10_z48_0_to_encounter_with_health_service"),
+        "Z48.8": ("EFO_0009786", "icd10_z48_8_to_encounter_with_health_service"),
+    }
 
     def set_rescue_mapping(
         row: dict[str, str],
@@ -15624,6 +16333,15 @@ def apply_regression_rescue_overrides(
         row["term_not_in_efo"] = term_not_in_efo
         row["mondo_missing_ids"] = mondo_missing_ids
         prior_evidence = normalize(row.get("evidence", ""))
+        for stale_fragment in (
+            "blocked query-contradictory candidate",
+            "rescued blocked candidate for review",
+            "rescued blocked candidate retained for review",
+            "candidate location/anatomy conflicts with query wording",
+            "candidate adds unsupported specificity for generic query",
+            "broad umbrella term retained only for review due to weak lexical support",
+        ):
+            prior_evidence = drop_evidence_fragment(prior_evidence, stale_fragment)
         note_text = f"regression rescue override: {note}"
         row["evidence"] = f"{prior_evidence}; {note_text}" if prior_evidence else note_text
         return True
@@ -15638,6 +16356,9 @@ def apply_regression_rescue_overrides(
     for row in rows:
         query = normalize(row.get("input_query", ""))
         query_key = norm_key(query)
+        query_key_no_burden = normalize(
+            query_key.replace("(gene-based burden)", "")
+        ).lower()
         icd10 = normalize_icd10_code(row.get("input_icd10", ""))
         if not icd10 and query:
             parsed_icd10, _ = parse_icd10_labeled_trait_text(query)
@@ -15650,6 +16371,347 @@ def apply_regression_rescue_overrides(
 
         # Specific ICD10 refinements for rows that improved in validation but
         # still drifted to less specific or semantically broad labels.
+        if icd10.startswith("I60.9") and (
+            "subarachnoid hemorrhage" in query_key or "subarachnoid haemorrhage" in query_key
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005099",
+                note="icd10_i60_9_to_subarachnoid_hemorrhage",
+            )
+            continue
+        if icd10.startswith("H11"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0006170",
+                note="icd10_h11_to_conjunctival_disorder",
+            )
+            continue
+        if icd10 == "H44":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005328",
+                note="icd10_h44_to_eye_disorder",
+            )
+            continue
+        if icd10.startswith("D64"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0004272",
+                note="icd10_d64_to_anemia_phenotype",
+            )
+            continue
+        if icd10 == "D72":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0004805",
+                note="icd10_d72_to_leukocyte_disorder",
+            )
+            continue
+        if icd10.startswith("R56.9") and ("convulsion" in query_key or "convuls" in query_key):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009853",
+                note="icd10_r56_9_to_convulsion",
+            )
+            continue
+        if icd10_code_matches(icd10, "S02.2", include_descendants=True):
+            if "fracture nose" in query_key:
+                set_rescue_mapping(
+                    row,
+                    mapped_id_text="EFO_0009623",
+                    note="icd10_s02_2_with_nose_phrase_to_nose_injury",
+                )
+            else:
+                set_rescue_mapping(
+                    row,
+                    mapped_id_text="MONDO_0005315",
+                    note="icd10_s02_2_to_bone_fracture",
+                )
+            continue
+        if icd10 == "D12" and ("adenoma" in query_key or "adenomat" in query_key):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0006498",
+                note="icd10_d12_with_adenoma_phrase_to_adenomatous_colon_polyp",
+            )
+            continue
+        if icd10 == "N50" and "testicular" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0002329",
+                note="icd10_n50_with_testicular_phrase_to_testicular_disorder",
+            )
+            continue
+        if icd10_code_matches(icd10, "I84", include_descendants=True):
+            if icd10 == "I84.6":
+                set_rescue_mapping(
+                    row,
+                    mapped_id_text="HP_0010609",
+                    note="icd10_i84_6_to_skin_tags",
+                )
+            else:
+                set_rescue_mapping(
+                    row,
+                    mapped_id_text="MONDO_0004872",
+                    note="icd10_i84_to_hemorrhoid",
+                )
+            continue
+        exact_rescue = exact_icd10_rescue_mappings.get(icd10)
+        if exact_rescue is not None:
+            mapped_id_text, note = exact_rescue
+            set_rescue_mapping(
+                row,
+                mapped_id_text=mapped_id_text,
+                note=note,
+            )
+            continue
+        if icd10 == "R06.8":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0002793",
+                note="icd10_r06_8_to_abnormal_pattern_of_respiration",
+            )
+            continue
+        if icd10 == "R06":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009841",
+                note="icd10_r06_to_irregular_respiration",
+            )
+            continue
+        if icd10 == "T51.0":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009658",
+                note="icd10_t51_0_to_adverse_effect",
+            )
+            continue
+        if icd10 == "T51":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009658",
+                note="icd10_t51_to_adverse_effect",
+            )
+            continue
+        if icd10 == "K60":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0012390",
+                note="icd10_k60_to_anal_fissure",
+            )
+            continue
+        if icd10 == "G83":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0001143",
+                note="icd10_g83_to_paralytic_strabismus",
+            )
+            continue
+        if icd10 == "G99.2":
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0002196",
+                note="icd10_g99_2_to_myelopathy",
+            )
+            continue
+        if "barrett" in query_key and ("esophag" in query_key or "oesophag" in query_key):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0013662",
+                note="barrett_esophagus_phrase_to_barrett_esophagus",
+            )
+            continue
+        if icd10.startswith("F32.9") or icd10.startswith("F33"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0002009",
+                note="icd10_f32_9_f33_to_major_depressive_disorder",
+            )
+            continue
+        if icd10.startswith("F10.0") or icd10.startswith("F10.3"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0002046",
+                note="icd10_f10_0_f10_3_to_alcohol_abuse_disorder",
+            )
+            continue
+        if icd10.startswith("F17.1"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0008575",
+                note="icd10_f17_1_to_nicotine_dependence",
+            )
+            continue
+        if icd10.startswith("E55.9"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0003762",
+                note="icd10_e55_9_to_vitamin_d_deficiency",
+            )
+            continue
+        if icd10.startswith("E78.5"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0021187",
+                note="icd10_e78_5_to_hyperlipidemia",
+            )
+            continue
+        if icd10.startswith("K55.2"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0000471",
+                note="icd10_k55_2_to_gastrointestinal_angiodysplasia",
+            )
+            continue
+        if icd10.startswith("K55"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0004264|EFO_0009431",
+                note="icd10_k55_to_vascular_disorder_plus_intestinal_disease",
+            )
+            continue
+        if icd10.startswith("K56.7"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0004567",
+                note="icd10_k56_7_to_ileus",
+            )
+            continue
+        if icd10.startswith("K56"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0004796",
+                note="icd10_k56_to_gastrointestinal_obstruction",
+            )
+            continue
+        if icd10.startswith("D61.9"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0015909",
+                note="icd10_d61_9_to_aplastic_anemia",
+            )
+            continue
+        if icd10.startswith("R41.3"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_1001454",
+                note="icd10_r41_3_to_amnesia",
+            )
+            continue
+        if (
+            icd10.startswith("T887")
+            or icd10.startswith("T88.7")
+            or (
+                (icd10.startswith("T88") or "t887" in query_key)
+                and "drug" in query_key
+                and ("allergy" in query_key or "anaphyl" in query_key)
+            )
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0000775",
+                note="icd10_t88_7_drug_allergy_to_drug_allergy",
+            )
+            continue
+        if icd10.startswith("T88"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009658",
+                note="icd10_t88_to_adverse_effect",
+            )
+            continue
+        if icd10.startswith("Z09"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009786",
+                note="icd10_z09_to_encounter_with_health_service",
+            )
+            continue
+        if icd10.startswith("Z22"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0007658",
+                note="icd10_z22_to_carrier_status",
+            )
+            continue
+        if icd10.startswith("Z34"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009787",
+                note="icd10_z34_to_encounter_with_health_service_related_to_reproduction",
+            )
+            continue
+        if (icd10.startswith("D51.0") or icd10.startswith("D51")) and "pernicious" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0008228",
+                note="icd10_d51_pernicious_phrase_to_pernicious_anemia",
+            )
+            continue
+        if icd10.startswith("D51.0") or icd10.startswith("D51"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0020696",
+                note="icd10_d51_to_vitamin_b12_deficiency",
+            )
+            continue
+        if icd10.startswith("D61"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0000159|EFO_0004272",
+                note="icd10_d61_to_bone_marrow_failure_plus_anemia_phenotype",
+            )
+            continue
+        if icd10.startswith("S43") and "dislocation" in query_key and "sprain" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009521|EFO_0009582",
+                note="icd10_s43_to_dislocation_plus_sprain",
+            )
+            continue
+        if icd10.startswith("M50.3") and "cervical" in query_key and "disc" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0044343",
+                note="icd10_m50_3_to_cervical_disk_degenerative_disorder",
+            )
+            continue
+        if icd10.startswith("M47") and "cervical" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0008481",
+                note="icd10_m47_cervical_to_cervical_spondylosis",
+            )
+            continue
+        if icd10.startswith("R53") and "malaise" in query_key and "fatigue" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009641|HP_0012378",
+                note="icd10_r53_to_malaise_plus_fatigue",
+            )
+            continue
+        if icd10.startswith("N89.8"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0001433",
+                note="icd10_n89_8_to_vaginal_disorder",
+            )
+            continue
+        if icd10.startswith("N43") and "hydrocele" in query_key and "spermatocele" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0000034|MONDO_0006977",
+                note="icd10_n43_to_hydrocele_plus_spermatocele",
+            )
+            continue
+        if icd10.startswith("M77.1"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_1001896",
+                note="icd10_m77_1_to_lateral_epicondylitis",
+            )
+            continue
         if icd10.startswith("I95.1") or "orthostatic hypotension" in query_key:
             set_rescue_mapping(
                 row,
@@ -15713,8 +16775,111 @@ def apply_regression_rescue_overrides(
                 note="icd10_m65_to_synovitis_plus_tenosynovitis",
             )
             continue
+        if icd10.startswith("R53.83") and ("fatigue" in query_key or "tired" in query_key):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="HP_0012378",
+                note="icd10_r53_83_to_fatigue",
+            )
+            continue
+        if icd10.startswith("H01"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0004785",
+                note="icd10_h01_to_blepharitis",
+            )
+            continue
+        if icd10.startswith("I27.0"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0001999",
+                note="icd10_i27_0_to_idiopathic_pulmonary_arterial_hypertension",
+            )
+            continue
+        if icd10.startswith("I27.2"):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0001200",
+                note="icd10_i27_2_to_secondary_hypertension",
+            )
+            continue
 
         # Rescue previously validated not-mapped or demoted UKB/RGC shorthand rows.
+        if query_key_no_burden == "atopy":
+            if set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005202",
+                note="atopy_phrase_rescue",
+            ):
+                # Keep MONDO replacement ID for obsolete EFO atopy term,
+                # but expose the clinically expected synonym in output.
+                row["mapped_trait_label"] = "atopy"
+                evidence = normalize(row.get("evidence", ""))
+                note = "normalized MONDO_0005202 label to 'atopy' synonym"
+                row["evidence"] = f"{evidence}; {note}" if evidence else note
+            continue
+        if "gestational hypertension pre eclampsia" in query_key_no_burden:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005081",
+                note="preeclampsia_phrase_rescue",
+            )
+            continue
+        if "trapped nerve compressed nerve" in query_key_no_burden:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009487",
+                note="nerve_compression_phrase_rescue",
+            )
+            continue
+        if "venous thromboembolism" in query_key_no_burden and "composite" in query_key_no_burden:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005399",
+                note="venous_thromboembolism_composite_rescue",
+            )
+            continue
+        if "ischemic stroke or cardioembolic stroke" in query_key_no_burden:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_1060198",
+                note="ischemic_cardioembolic_stroke_phrase_rescue",
+            )
+            continue
+        if "psychological over eating or binge eating" in query_key_no_burden:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005582",
+                note="binge_eating_phrase_rescue",
+            )
+            continue
+        if "panic attacks" in query_key_no_burden and "ukb data field 20544" in query_key_no_burden:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005383",
+                note="panic_attacks_phrase_rescue",
+            )
+            continue
+        if (
+            "impedance of" in query_key_no_burden
+            and "ukb data field 231" in query_key_no_burden
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0005106",
+                note="ukb_body_impedance_phrase_rescue",
+            )
+            continue
+        if (
+            "predicted mass" in query_key_no_burden
+            and "ukb data field 231" in query_key_no_burden
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0004302",
+                note="ukb_predicted_mass_phrase_rescue",
+            )
+            continue
         if (
             "mental health problems ever diagnosed by a professional" in query_key
             and "binge eating" in query_key
@@ -15735,6 +16900,94 @@ def apply_regression_rescue_overrides(
                 note="ukb_20544_panic_attack_rescue",
             )
             continue
+        ukb_field_id = normalize(row.get("input_ukb_field_id", ""))
+        ukb_field_label_key = normalize(row.get("input_ukb_field_label", "")).lower()
+        cancer_register_field_40006 = (
+            ukb_field_id == "40006" or "type of cancer: icd10" in ukb_field_label_key
+        )
+        if cancer_register_field_40006:
+            if "multiple myeloma" in query_key and "plasma cell" in query_key:
+                set_rescue_mapping(
+                    row,
+                    mapped_id_text="EFO_0001378",
+                    note="ukb_40006_multiple_myeloma_phrase_rescue",
+                )
+                continue
+
+            malignant_site_match = re.search(
+                r"\bmalignant neoplasm of ([a-z0-9 ,./-]+)",
+                query_key,
+            )
+            if malignant_site_match:
+                site_phrase = normalize(malignant_site_match.group(1))
+                site_phrase = normalize(
+                    re.sub(r"\(\s*ukb\s+data\s+field\s*\d+\s*\)", "", site_phrase, flags=re.IGNORECASE)
+                )
+                site_phrase = normalize(re.sub(r"\(\s*\d+\s*\)", "", site_phrase))
+                site_phrase = normalize(re.sub(r"^overlapping sites of\\s+", "", site_phrase))
+                site_phrase = normalize(
+                    re.sub(r"^(?:upper|lower)[ -]?(?:inner|outer) quadrant of\\s+", "", site_phrase)
+                )
+                site_phrase = normalize(re.sub(r"^other and unspecified parts of\\s+", "", site_phrase))
+                site_phrase = normalize(re.sub(r"\\bof unspecified site\\b", "", site_phrase))
+                site_phrase = normalize(re.sub(r"\\bunspecified\\b", "", site_phrase))
+                site_phrase = normalize(re.sub(r"[,/]+", " ", site_phrase))
+                resolved_id = ""
+                if site_phrase:
+                    site_key = site_phrase.lower()
+                    if "ovary" in site_key:
+                        resolved_id = "MONDO_0008170"
+                    elif "rectum" in site_key:
+                        resolved_id = "MONDO_0006519"
+                    elif "testis" in site_key or "testicular" in site_key:
+                        resolved_id = "MONDO_0005447"
+                    elif "pancreas" in site_key or "pancreatic" in site_key:
+                        resolved_id = "MONDO_0009831"
+                    elif "bladder" in site_key or "urinary bladder" in site_key:
+                        resolved_id = "MONDO_0001187"
+                    elif "thyroid" in site_key:
+                        resolved_id = "MONDO_0002108"
+                    elif "breast" in site_key:
+                        resolved_id = "EFO_0003869"
+                    elif "colon" in site_key:
+                        resolved_id = "MONDO_0021063"
+                if resolved_id:
+                    set_rescue_mapping(
+                        row,
+                        mapped_id_text=resolved_id,
+                        note="ukb_40006_malignant_site_phrase_rescue",
+                    )
+                    continue
+
+            uncertain_site_match = re.search(
+                r"\bneoplasm of uncertain behavior of ([a-z0-9 ,./-]+)",
+                query_key,
+            )
+            if uncertain_site_match:
+                site_phrase = normalize(uncertain_site_match.group(1))
+                site_phrase = normalize(
+                    re.sub(r"\(\s*ukb\s+data\s+field\s*\d+\s*\)", "", site_phrase, flags=re.IGNORECASE)
+                )
+                site_phrase = normalize(re.sub(r"\(\s*\d+\s*\)", "", site_phrase))
+                site_phrase = normalize(re.sub(r"[,/]+", " ", site_phrase))
+                resolved_id = ""
+                if site_phrase:
+                    site_key = site_phrase.lower()
+                    if "bladder" in site_key or "urinary organ" in site_key or "urinary organs" in site_key:
+                        resolved_id = "MONDO_0004987"
+                    elif "ovary" in site_key:
+                        resolved_id = "MONDO_0021068"
+                    elif "rectum" in site_key:
+                        resolved_id = "MONDO_0002165"
+                    elif "testis" in site_key or "testicular" in site_key:
+                        resolved_id = "EFO_0004281"
+                if resolved_id:
+                    set_rescue_mapping(
+                        row,
+                        mapped_id_text=resolved_id,
+                        note="ukb_40006_uncertain_site_phrase_rescue",
+                    )
+                    continue
         if "type of cancer: malignant neoplasm of rectum" in query_key:
             set_rescue_mapping(
                 row,
@@ -15750,11 +17003,15 @@ def apply_regression_rescue_overrides(
             )
             continue
         if "atopy cc" in query_key:
-            set_rescue_mapping(
+            if set_rescue_mapping(
                 row,
                 mapped_id_text="MONDO_0005202",
                 note="rgc_atopy_cc_rescue",
-            )
+            ):
+                row["mapped_trait_label"] = "atopy"
+                evidence = normalize(row.get("evidence", ""))
+                note = "normalized MONDO_0005202 label to 'atopy' synonym"
+                row["evidence"] = f"{evidence}; {note}" if evidence else note
             continue
         if "vte dvt cc" in query_key:
             set_rescue_mapping(
@@ -15768,6 +17025,20 @@ def apply_regression_rescue_overrides(
                 row,
                 mapped_id_text="MONDO_0005399",
                 note="rgc_vte_pe_cc_rescue",
+            )
+            continue
+        if "childhood asthma vs allergic disease" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0005405",
+                note="childhood_asthma_vs_allergic_disease_phrase_to_childhood_asthma",
+            )
+            continue
+        if "asthma vs allergic disease" in query_key:
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0004979",
+                note="asthma_vs_allergic_disease_phrase_to_asthma",
             )
             continue
 
@@ -15819,35 +17090,45 @@ def apply_regression_rescue_overrides(
             )
             continue
         if (
+            ("alcohol dependency" in query_key or "alcohol dependence" in query_key)
+            and not any(
+                marker in query_key
+                for marker in ("measurement", "score", "symptom count", "questionnaire")
+            )
+        ):
+            set_rescue_mapping(
+                row,
+                mapped_id_text="MONDO_0007079",
+                note="alcohol_dependency_phrase_rescue",
+            )
+            continue
+        if (
             icd10.startswith("M25.5")
             or (
                 icd10.startswith("M25")
-                and any(
-                    phrase in query_key
-                    for phrase in (
-                        "joint pain",
-                        "pain in shoulder",
-                        "pain in hip",
-                        "pain in knee",
-                        "pain in ankle",
-                        "pain in joints of",
-                    )
+                and (
+                    re.search(r"\bpain in (?:unspecified )?shoulder\b", query_key)
+                    or re.search(r"\bpain in (?:unspecified )?hip\b", query_key)
+                    or re.search(r"\bpain in (?:unspecified )?knee\b", query_key)
+                    or re.search(r"\bpain in (?:unspecified )?ankle\b", query_key)
+                    or "joint pain" in query_key
+                    or "pain in joints of" in query_key
                 )
             )
         ):
-            if "pain in shoulder" in query_key:
+            if re.search(r"\bpain in (?:unspecified )?shoulder\b", query_key):
                 set_rescue_mapping(
                     row,
                     mapped_id_text="HP_0030834",
                     note="m25_shoulder_pain_to_shoulder_pain_rescue",
                 )
-            elif "pain in hip" in query_key:
+            elif re.search(r"\bpain in (?:unspecified )?hip\b", query_key):
                 set_rescue_mapping(
                     row,
                     mapped_id_text="HP_0030838",
                     note="m25_hip_pain_to_hip_pain_rescue",
                 )
-            elif "pain in knee" in query_key:
+            elif re.search(r"\bpain in (?:unspecified )?knee\b", query_key):
                 set_rescue_mapping(
                     row,
                     mapped_id_text="HP_0030839",
@@ -15989,7 +17270,8 @@ def harmonize_trait_rows_by_query_constraints(
         if force_review:
             row["validation"] = "review_required"
             row["qc_review_flag"] = "yes"
-        elif normalize(row.get("validation", "")) == "validated":
+        else:
+            row["validation"] = "validated"
             row["qc_review_flag"] = "no"
         term_not_in_efo, mondo_missing_ids = mondo_import_qc(
             row["mapped_trait_id"],
@@ -16034,7 +17316,8 @@ def harmonize_trait_rows_by_query_constraints(
         if force_review:
             row["validation"] = "review_required"
             row["qc_review_flag"] = "yes"
-        elif normalize(row.get("validation", "")) == "validated":
+        else:
+            row["validation"] = "validated"
             row["qc_review_flag"] = "no"
         term_not_in_efo, mondo_missing_ids = mondo_import_qc(
             row["mapped_trait_id"],
@@ -16047,6 +17330,14 @@ def harmonize_trait_rows_by_query_constraints(
 
     def has_strict_manual_cache_clue(row: dict[str, str]) -> bool:
         if not normalize_icd10_code(row.get("input_icd10", "")):
+            return False
+        matched_via_key = normalize(row.get("matched_via", "")).lower()
+        if matched_via_key not in {
+            "cache_exact_icd10",
+            "cache_exact_icd10_supplement",
+            "cache_parent_icd10",
+            "cache_exact_text_rescued",
+        }:
             return False
         evidence_text = normalize(row.get("evidence", "")).lower()
         return any(marker in evidence_text for marker in strict_manual_cache_publication_markers)
@@ -16078,10 +17369,20 @@ def harmonize_trait_rows_by_query_constraints(
         query_label = strip_trait_query_noise(query_label) or query_label
         query_key = norm_key(query_label)
         icd10_code = normalize_icd10_code(row.get("input_icd10", ""))
+        if not icd10_code:
+            parsed_icd10, _parsed_label = parse_icd10_labeled_trait_text(query_raw)
+            icd10_code = normalize_icd10_code(parsed_icd10)
+        # Make all downstream `icd10_code.startswith(...)` checks
+        # boundary-aware (exact code family semantics, not raw string prefix).
+        icd10_code = ICD10CodeMatchView(icd10_code)
         query_similarity_text = normalize_trait_text_for_similarity(query_label) or query_key
         query_tokens = informative_trait_tokens(query_similarity_text)
         mapped_label_keys = [norm_key(label) for label in mapped_labels]
-        is_icd_context = bool(normalize(row.get("input_icd10", ""))) or query_key.startswith("icd10 ")
+        is_icd_context = bool(icd10_code) or query_key.startswith("icd10 ")
+        # Preserve strict curator-seeded ICD10 exact-cache winners and skip
+        # downstream post-hoc ICD10 override/harmonization rewrites.
+        if strict_manual_cache_locked and is_icd_context:
+            continue
         ecoli_override_id = ""
         if "MONDO_0020920" in ontology_terms:
             ecoli_override_id = "MONDO_0020920"
@@ -16266,6 +17567,437 @@ def harmonize_trait_rows_by_query_constraints(
             if encounter_health_service_override_id and encounter_health_service_override_id in ontology_terms
             else "encounter with health service"
         )
+        implanted_device_encounter_override_id = ""
+        if "EFO_0020982" in ontology_terms:
+            implanted_device_encounter_override_id = "EFO_0020982"
+        elif encounter_health_service_override_id:
+            implanted_device_encounter_override_id = encounter_health_service_override_id
+        implanted_device_encounter_override_label = (
+            normalize(ontology_terms[implanted_device_encounter_override_id].label)
+            if implanted_device_encounter_override_id and implanted_device_encounter_override_id in ontology_terms
+            else "encounter with health service for adjustment and management of implanted device"
+        )
+        infectious_disease_override_id = ""
+        if "MONDO_0005550" in ontology_terms:
+            infectious_disease_override_id = "MONDO_0005550"
+        elif "EFO_0005741" in ontology_terms:
+            infectious_disease_override_id = "EFO_0005741"
+        infectious_disease_override_label = (
+            normalize(ontology_terms[infectious_disease_override_id].label)
+            if infectious_disease_override_id and infectious_disease_override_id in ontology_terms
+            else "infectious disease"
+        )
+        abnormal_glucose_tolerance_override_id = ""
+        if "EFO_0002546" in ontology_terms:
+            abnormal_glucose_tolerance_override_id = "EFO_0002546"
+        elif "HP_0001952" in ontology_terms:
+            abnormal_glucose_tolerance_override_id = "HP_0001952"
+        abnormal_glucose_tolerance_override_label = (
+            normalize(ontology_terms[abnormal_glucose_tolerance_override_id].label)
+            if abnormal_glucose_tolerance_override_id and abnormal_glucose_tolerance_override_id in ontology_terms
+            else "abnormal glucose tolerance"
+        )
+        abnormal_vision_override_id = ""
+        if "HP_0000504" in ontology_terms:
+            abnormal_vision_override_id = "HP_0000504"
+        elif "HP_0000505" in ontology_terms:
+            abnormal_vision_override_id = "HP_0000505"
+        abnormal_vision_override_label = (
+            normalize(ontology_terms[abnormal_vision_override_id].label)
+            if abnormal_vision_override_id and abnormal_vision_override_id in ontology_terms
+            else "Abnormality of vision"
+        )
+        premature_birth_override_id = "EFO_0003917" if "EFO_0003917" in ontology_terms else ""
+        premature_birth_override_label = (
+            normalize(ontology_terms[premature_birth_override_id].label)
+            if premature_birth_override_id and premature_birth_override_id in ontology_terms
+            else "premature birth"
+        )
+        braxton_hicks_override_id = ""
+        if "EFO_0009639" in ontology_terms:
+            braxton_hicks_override_id = "EFO_0009639"
+        braxton_hicks_override_label = (
+            normalize(ontology_terms[braxton_hicks_override_id].label)
+            if braxton_hicks_override_id and braxton_hicks_override_id in ontology_terms
+            else "Braxton-Hicks contractions"
+        )
+        cardiac_arrhythmia_override_id = ""
+        if "EFO_0004269" in ontology_terms:
+            cardiac_arrhythmia_override_id = "EFO_0004269"
+        elif "HP_0011675" in ontology_terms:
+            cardiac_arrhythmia_override_id = "HP_0011675"
+        cardiac_arrhythmia_override_label = (
+            normalize(ontology_terms[cardiac_arrhythmia_override_id].label)
+            if cardiac_arrhythmia_override_id and cardiac_arrhythmia_override_id in ontology_terms
+            else "cardiac arrhythmia"
+        )
+        pancreatitis_override_id = ""
+        if "MONDO_0004982" in ontology_terms:
+            pancreatitis_override_id = "MONDO_0004982"
+        elif "EFO_0000278" in ontology_terms:
+            pancreatitis_override_id = "EFO_0000278"
+        pancreatitis_override_label = (
+            normalize(ontology_terms[pancreatitis_override_id].label)
+            if pancreatitis_override_id and pancreatitis_override_id in ontology_terms
+            else "pancreatitis"
+        )
+        acute_pancreatitis_override_id = ""
+        if "MONDO_0006515" in ontology_terms:
+            acute_pancreatitis_override_id = "MONDO_0006515"
+        elif "EFO_1000652" in ontology_terms:
+            acute_pancreatitis_override_id = "EFO_1000652"
+        acute_pancreatitis_override_label = (
+            normalize(ontology_terms[acute_pancreatitis_override_id].label)
+            if acute_pancreatitis_override_id and acute_pancreatitis_override_id in ontology_terms
+            else "acute pancreatitis"
+        )
+        skin_carcinoma_in_situ_override_id = ""
+        if "MONDO_0004641" in ontology_terms:
+            skin_carcinoma_in_situ_override_id = "MONDO_0004641"
+        elif "EFO_0004198" in ontology_terms:
+            skin_carcinoma_in_situ_override_id = "EFO_0004198"
+        skin_carcinoma_in_situ_override_label = (
+            normalize(ontology_terms[skin_carcinoma_in_situ_override_id].label)
+            if skin_carcinoma_in_situ_override_id and skin_carcinoma_in_situ_override_id in ontology_terms
+            else "skin carcinoma in situ"
+        )
+        bone_fracture_override_id = "EFO_0003931" if "EFO_0003931" in ontology_terms else ""
+        bone_fracture_override_label = (
+            normalize(ontology_terms[bone_fracture_override_id].label)
+            if bone_fracture_override_id and bone_fracture_override_id in ontology_terms
+            else "bone fracture"
+        )
+        finger_fracture_override_id = "EFO_0009616" if "EFO_0009616" in ontology_terms else ""
+        finger_fracture_override_label = (
+            normalize(ontology_terms[finger_fracture_override_id].label)
+            if finger_fracture_override_id and finger_fracture_override_id in ontology_terms
+            else "finger fracture"
+        )
+        upper_extremity_fracture_override_id = (
+            "EFO_0009514" if "EFO_0009514" in ontology_terms else ""
+        )
+        upper_extremity_fracture_override_label = (
+            normalize(ontology_terms[upper_extremity_fracture_override_id].label)
+            if upper_extremity_fracture_override_id
+            and upper_extremity_fracture_override_id in ontology_terms
+            else "upper extremity fracture"
+        )
+        tibia_fracture_override_id = "MONDO_0005320" if "MONDO_0005320" in ontology_terms else ""
+        tibia_fracture_override_label = (
+            normalize(ontology_terms[tibia_fracture_override_id].label)
+            if tibia_fracture_override_id and tibia_fracture_override_id in ontology_terms
+            else "tibia fracture"
+        )
+        ankle_fracture_override_id = "EFO_0009615" if "EFO_0009615" in ontology_terms else ""
+        ankle_fracture_override_label = (
+            normalize(ontology_terms[ankle_fracture_override_id].label)
+            if ankle_fracture_override_id and ankle_fracture_override_id in ontology_terms
+            else "ankle fracture"
+        )
+        spinal_fracture_override_id = "MONDO_0005309" if "MONDO_0005309" in ontology_terms else ""
+        spinal_fracture_override_label = (
+            normalize(ontology_terms[spinal_fracture_override_id].label)
+            if spinal_fracture_override_id and spinal_fracture_override_id in ontology_terms
+            else "spinal fracture"
+        )
+        exostosis_override_id = "MONDO_0002181" if "MONDO_0002181" in ontology_terms else ""
+        exostosis_override_label = (
+            normalize(ontology_terms[exostosis_override_id].label)
+            if exostosis_override_id and exostosis_override_id in ontology_terms
+            else "exostosis"
+        )
+        functional_decline_measurement_override_id = (
+            "EFO_0007784" if "EFO_0007784" in ontology_terms else ""
+        )
+        functional_decline_measurement_override_label = (
+            normalize(ontology_terms[functional_decline_measurement_override_id].label)
+            if functional_decline_measurement_override_id
+            and functional_decline_measurement_override_id in ontology_terms
+            else "functional decline measurement"
+        )
+        urinary_tract_obstruction_override_id = (
+            "MONDO_0003330" if "MONDO_0003330" in ontology_terms else ""
+        )
+        urinary_tract_obstruction_override_label = (
+            normalize(ontology_terms[urinary_tract_obstruction_override_id].label)
+            if urinary_tract_obstruction_override_id
+            and urinary_tract_obstruction_override_id in ontology_terms
+            else "urinary tract obstruction"
+        )
+        smoking_behavior_trait_override_id = (
+            "OBA_2050116" if "OBA_2050116" in ontology_terms else ""
+        )
+        smoking_behavior_trait_override_label = (
+            normalize(ontology_terms[smoking_behavior_trait_override_id].label)
+            if smoking_behavior_trait_override_id
+            and smoking_behavior_trait_override_id in ontology_terms
+            else "smoking behavior trait"
+        )
+        peritoneum_disease_override_id = "EFO_0009541" if "EFO_0009541" in ontology_terms else ""
+        peritoneum_disease_override_label = (
+            normalize(ontology_terms[peritoneum_disease_override_id].label)
+            if peritoneum_disease_override_id and peritoneum_disease_override_id in ontology_terms
+            else "disease of peritoneum"
+        )
+        vertebral_column_disorder_override_id = (
+            "MONDO_0000812" if "MONDO_0000812" in ontology_terms else ""
+        )
+        vertebral_column_disorder_override_label = (
+            normalize(ontology_terms[vertebral_column_disorder_override_id].label)
+            if vertebral_column_disorder_override_id
+            and vertebral_column_disorder_override_id in ontology_terms
+            else "vertebral column disorder"
+        )
+        soft_tissue_disease_override_id = "EFO_0009470" if "EFO_0009470" in ontology_terms else ""
+        soft_tissue_disease_override_label = (
+            normalize(ontology_terms[soft_tissue_disease_override_id].label)
+            if soft_tissue_disease_override_id and soft_tissue_disease_override_id in ontology_terms
+            else "soft tissue disease"
+        )
+        synovium_disorder_override_id = "MONDO_0056799" if "MONDO_0056799" in ontology_terms else ""
+        synovium_disorder_override_label = (
+            normalize(ontology_terms[synovium_disorder_override_id].label)
+            if synovium_disorder_override_id and synovium_disorder_override_id in ontology_terms
+            else "synovium disorder"
+        )
+        dyspepsia_override_id = ""
+        if "EFO_0008533" in ontology_terms:
+            dyspepsia_override_id = "EFO_0008533"
+        elif "MONDO_0002268" in ontology_terms:
+            dyspepsia_override_id = "MONDO_0002268"
+        dyspepsia_override_label = (
+            normalize(ontology_terms[dyspepsia_override_id].label)
+            if dyspepsia_override_id and dyspepsia_override_id in ontology_terms
+            else "dyspepsia"
+        )
+        fecal_incontinence_override_id = ""
+        if "EFO_0009523" in ontology_terms:
+            fecal_incontinence_override_id = "EFO_0009523"
+        fecal_incontinence_override_label = (
+            normalize(ontology_terms[fecal_incontinence_override_id].label)
+            if fecal_incontinence_override_id and fecal_incontinence_override_id in ontology_terms
+            else "fecal incontinence"
+        )
+        urinary_incontinence_override_id = "HP_0000020" if "HP_0000020" in ontology_terms else ""
+        urinary_incontinence_override_label = (
+            normalize(ontology_terms[urinary_incontinence_override_id].label)
+            if urinary_incontinence_override_id and urinary_incontinence_override_id in ontology_terms
+            else "Urinary incontinence"
+        )
+        medication_adherence_override_id = "EFO_0006344" if "EFO_0006344" in ontology_terms else ""
+        medication_adherence_override_label = (
+            normalize(ontology_terms[medication_adherence_override_id].label)
+            if medication_adherence_override_id and medication_adherence_override_id in ontology_terms
+            else "medication adherence behavior"
+        )
+        radiation_exposure_measurement_override_id = (
+            "EFO_0020980" if "EFO_0020980" in ontology_terms else ""
+        )
+        radiation_exposure_measurement_override_label = (
+            normalize(ontology_terms[radiation_exposure_measurement_override_id].label)
+            if radiation_exposure_measurement_override_id
+            and radiation_exposure_measurement_override_id in ontology_terms
+            else "radiation exposure measurement"
+        )
+        neoplasm_override_id = "EFO_0000616" if "EFO_0000616" in ontology_terms else ""
+        neoplasm_override_label = (
+            normalize(ontology_terms[neoplasm_override_id].label)
+            if neoplasm_override_id and neoplasm_override_id in ontology_terms
+            else "neoplasm"
+        )
+        neoplastic_disease_or_syndrome_override_id = (
+            "MONDO_0023370" if "MONDO_0023370" in ontology_terms else ""
+        )
+        neoplastic_disease_or_syndrome_override_label = (
+            normalize(ontology_terms[neoplastic_disease_or_syndrome_override_id].label)
+            if neoplastic_disease_or_syndrome_override_id
+            and neoplastic_disease_or_syndrome_override_id in ontology_terms
+            else "neoplastic disease or syndrome"
+        )
+        skin_neoplasm_override_id = "EFO_0004198" if "EFO_0004198" in ontology_terms else ""
+        skin_neoplasm_override_label = (
+            normalize(ontology_terms[skin_neoplasm_override_id].label)
+            if skin_neoplasm_override_id and skin_neoplasm_override_id in ontology_terms
+            else "skin neoplasm"
+        )
+        kidney_neoplasm_override_id = "EFO_0003865" if "EFO_0003865" in ontology_terms else ""
+        kidney_neoplasm_override_label = (
+            normalize(ontology_terms[kidney_neoplasm_override_id].label)
+            if kidney_neoplasm_override_id and kidney_neoplasm_override_id in ontology_terms
+            else "kidney neoplasm"
+        )
+        clinical_history_override_id = "EFO_0000352" if "EFO_0000352" in ontology_terms else ""
+        clinical_history_override_label = (
+            normalize(ontology_terms[clinical_history_override_id].label)
+            if clinical_history_override_id and clinical_history_override_id in ontology_terms
+            else "clinical history"
+        )
+        mental_behavioral_disorder_override_id = "EFO_0000677" if "EFO_0000677" in ontology_terms else ""
+        mental_behavioral_disorder_override_label = (
+            normalize(ontology_terms[mental_behavioral_disorder_override_id].label)
+            if mental_behavioral_disorder_override_id and mental_behavioral_disorder_override_id in ontology_terms
+            else "mental or behavioural disorder"
+        )
+        psychosocial_stress_override_id = ""
+        if "EFO_0006783" in ontology_terms:
+            psychosocial_stress_override_id = "EFO_0006783"
+        psychosocial_stress_override_label = (
+            normalize(ontology_terms[psychosocial_stress_override_id].label)
+            if psychosocial_stress_override_id and psychosocial_stress_override_id in ontology_terms
+            else "psychosocial stress measurement"
+        )
+        type2_diabetes_override_id = ""
+        if "MONDO_0005148" in ontology_terms:
+            type2_diabetes_override_id = "MONDO_0005148"
+        type2_diabetes_override_label = (
+            normalize(ontology_terms[type2_diabetes_override_id].label)
+            if type2_diabetes_override_id and type2_diabetes_override_id in ontology_terms
+            else "type 2 diabetes mellitus"
+        )
+        back_pain_override_id = "HP_0003418" if "HP_0003418" in ontology_terms else ""
+        back_pain_override_label = (
+            normalize(ontology_terms[back_pain_override_id].label)
+            if back_pain_override_id and back_pain_override_id in ontology_terms
+            else "Back pain"
+        )
+        sciatica_override_id = "HP_0011868" if "HP_0011868" in ontology_terms else ""
+        sciatica_override_label = (
+            normalize(ontology_terms[sciatica_override_id].label)
+            if sciatica_override_id and sciatica_override_id in ontology_terms
+            else "Sciatica"
+        )
+        alcohol_dependence_override_id = ""
+        if "MONDO_0007079" in ontology_terms:
+            alcohol_dependence_override_id = "MONDO_0007079"
+        alcohol_dependence_override_label = (
+            normalize(ontology_terms[alcohol_dependence_override_id].label)
+            if alcohol_dependence_override_id and alcohol_dependence_override_id in ontology_terms
+            else "alcohol dependence"
+        )
+        testicular_disease_override_id = ""
+        if "EFO_0009601" in ontology_terms:
+            testicular_disease_override_id = "EFO_0009601"
+        elif "MONDO_0002329" in ontology_terms:
+            testicular_disease_override_id = "MONDO_0002329"
+        testicular_disease_override_label = (
+            normalize(ontology_terms[testicular_disease_override_id].label)
+            if testicular_disease_override_id and testicular_disease_override_id in ontology_terms
+            else "testicular disease"
+        )
+        sleep_disorder_override_id = ""
+        if "MONDO_0100081" in ontology_terms:
+            sleep_disorder_override_id = "MONDO_0100081"
+        elif "EFO_0008568" in ontology_terms:
+            sleep_disorder_override_id = "EFO_0008568"
+        elif "MONDO_0003406" in ontology_terms:
+            sleep_disorder_override_id = "MONDO_0003406"
+        sleep_disorder_override_label = (
+            normalize(ontology_terms[sleep_disorder_override_id].label)
+            if sleep_disorder_override_id and sleep_disorder_override_id in ontology_terms
+            else "sleep disorder"
+        )
+        sleep_apnea_override_id = ""
+        if "EFO_0003877" in ontology_terms:
+            sleep_apnea_override_id = "EFO_0003877"
+        elif "HP_0010535" in ontology_terms:
+            sleep_apnea_override_id = "HP_0010535"
+        sleep_apnea_override_label = (
+            normalize(ontology_terms[sleep_apnea_override_id].label)
+            if sleep_apnea_override_id and sleep_apnea_override_id in ontology_terms
+            else "sleep apnea"
+        )
+        specific_phobia_override_id = ""
+        if "EFO_1001918" in ontology_terms:
+            specific_phobia_override_id = "EFO_1001918"
+        elif "MONDO_0018993" in ontology_terms:
+            specific_phobia_override_id = "MONDO_0018993"
+        specific_phobia_override_label = (
+            normalize(ontology_terms[specific_phobia_override_id].label)
+            if specific_phobia_override_id and specific_phobia_override_id in ontology_terms
+            else "specific phobia"
+        )
+        knee_pain_override_id = "HP_0030839" if "HP_0030839" in ontology_terms else ""
+        knee_pain_override_label = (
+            normalize(ontology_terms[knee_pain_override_id].label)
+            if knee_pain_override_id and knee_pain_override_id in ontology_terms
+            else "knee pain"
+        )
+        limb_pain_override_id = "HP_0009763" if "HP_0009763" in ontology_terms else ""
+        limb_pain_override_label = (
+            normalize(ontology_terms[limb_pain_override_id].label)
+            if limb_pain_override_id and limb_pain_override_id in ontology_terms
+            else "limb pain"
+        )
+        epilepsy_override_id = ""
+        if "EFO_0000474" in ontology_terms:
+            epilepsy_override_id = "EFO_0000474"
+        elif "MONDO_0005027" in ontology_terms:
+            epilepsy_override_id = "MONDO_0005027"
+        epilepsy_override_label = (
+            normalize(ontology_terms[epilepsy_override_id].label)
+            if epilepsy_override_id and epilepsy_override_id in ontology_terms
+            else "epilepsy"
+        )
+        lymphangitis_override_id = ""
+        if "EFO_0007351" in ontology_terms:
+            lymphangitis_override_id = "EFO_0007351"
+        elif "MONDO_0005832" in ontology_terms:
+            lymphangitis_override_id = "MONDO_0005832"
+        lymphangitis_override_label = (
+            normalize(ontology_terms[lymphangitis_override_id].label)
+            if lymphangitis_override_id and lymphangitis_override_id in ontology_terms
+            else "lymphangitis"
+        )
+        cellulitis_override_id = ""
+        if "EFO_0003035" in ontology_terms:
+            cellulitis_override_id = "EFO_0003035"
+        elif "MONDO_0005230" in ontology_terms:
+            cellulitis_override_id = "MONDO_0005230"
+        cellulitis_override_label = (
+            normalize(ontology_terms[cellulitis_override_id].label)
+            if cellulitis_override_id and cellulitis_override_id in ontology_terms
+            else "cellulitis"
+        )
+        skin_infection_override_id = ""
+        if "MONDO_0021201" in ontology_terms:
+            skin_infection_override_id = "MONDO_0021201"
+        elif "MONDO_0005101" in ontology_terms:
+            skin_infection_override_id = "MONDO_0005101"
+        skin_infection_override_label = (
+            normalize(ontology_terms[skin_infection_override_id].label)
+            if skin_infection_override_id and skin_infection_override_id in ontology_terms
+            else "skin infection"
+        )
+        hemiparesis_override_id = "HP_0001269" if "HP_0001269" in ontology_terms else ""
+        hemiparesis_override_label = (
+            normalize(ontology_terms[hemiparesis_override_id].label)
+            if hemiparesis_override_id and hemiparesis_override_id in ontology_terms
+            else "hemiparesis"
+        )
+        hemiplegia_override_id = ""
+        if "EFO_0009453" in ontology_terms:
+            hemiplegia_override_id = "EFO_0009453"
+        elif "MONDO_0001170" in ontology_terms:
+            hemiplegia_override_id = "MONDO_0001170"
+        hemiplegia_override_label = (
+            normalize(ontology_terms[hemiplegia_override_id].label)
+            if hemiplegia_override_id and hemiplegia_override_id in ontology_terms
+            else "hemiplegia"
+        )
+        dislocation_override_id = "EFO_0009521" if "EFO_0009521" in ontology_terms else ""
+        dislocation_override_label = (
+            normalize(ontology_terms[dislocation_override_id].label)
+            if dislocation_override_id and dislocation_override_id in ontology_terms
+            else "dislocation"
+        )
+        sprain_override_id = "EFO_0009582" if "EFO_0009582" in ontology_terms else ""
+        sprain_override_label = (
+            normalize(ontology_terms[sprain_override_id].label)
+            if sprain_override_id and sprain_override_id in ontology_terms
+            else "sprain"
+        )
+        multiple_myeloma_override_id = "EFO_0001378" if "EFO_0001378" in ontology_terms else ""
+        multiple_myeloma_override_label = "multiple myeloma"
         colorectal_cancer_override_id = "MONDO_0005575" if "MONDO_0005575" in ontology_terms else ""
         colorectal_cancer_override_label = (
             normalize(ontology_terms[colorectal_cancer_override_id].label)
@@ -16290,6 +18022,56 @@ def harmonize_trait_rows_by_query_constraints(
             if anemia_disease_override_id and anemia_disease_override_id in ontology_terms
             else "anemia"
         )
+        diabetes_drug_use_override_id = "EFO_0009924" if "EFO_0009924" in ontology_terms else ""
+        diabetes_drug_use_override_label = (
+            normalize(ontology_terms[diabetes_drug_use_override_id].label)
+            if diabetes_drug_use_override_id and diabetes_drug_use_override_id in ontology_terms
+            else "Drugs used in diabetes use measurement"
+        )
+        smoking_behavior_override_id = "OBA_2050116" if "OBA_2050116" in ontology_terms else ""
+        if not smoking_behavior_override_id and "EFO_0006527" in ontology_terms:
+            smoking_behavior_override_id = "EFO_0006527"
+        smoking_behavior_override_label = (
+            normalize(ontology_terms[smoking_behavior_override_id].label)
+            if smoking_behavior_override_id and smoking_behavior_override_id in ontology_terms
+            else "smoking behavior trait"
+        )
+        cannabis_use_override_id = "EFO_0007585" if "EFO_0007585" in ontology_terms else ""
+        cannabis_use_override_label = (
+            normalize(ontology_terms[cannabis_use_override_id].label)
+            if cannabis_use_override_id and cannabis_use_override_id in ontology_terms
+            else "Cannabis use"
+        )
+        ibs_symptom_measurement_override_id = "EFO_0021536" if "EFO_0021536" in ontology_terms else ""
+        ibs_symptom_measurement_override_label = (
+            normalize(ontology_terms[ibs_symptom_measurement_override_id].label)
+            if ibs_symptom_measurement_override_id and ibs_symptom_measurement_override_id in ontology_terms
+            else "irritable bowel syndrome symptom measurement"
+        )
+        intestinal_infectious_disease_override_id = "MONDO_0000916" if "MONDO_0000916" in ontology_terms else ""
+        intestinal_infectious_disease_override_label = (
+            normalize(ontology_terms[intestinal_infectious_disease_override_id].label)
+            if intestinal_infectious_disease_override_id and intestinal_infectious_disease_override_id in ontology_terms
+            else "intestinal infectious disease"
+        )
+        refractive_error_measurement_override_id = "EFO_0007814" if "EFO_0007814" in ontology_terms else ""
+        refractive_error_measurement_override_label = (
+            normalize(ontology_terms[refractive_error_measurement_override_id].label)
+            if refractive_error_measurement_override_id and refractive_error_measurement_override_id in ontology_terms
+            else "refractive error measurement"
+        )
+        eye_measurement_override_id = "EFO_0004731" if "EFO_0004731" in ontology_terms else ""
+        eye_measurement_override_label = (
+            normalize(ontology_terms[eye_measurement_override_id].label)
+            if eye_measurement_override_id and eye_measurement_override_id in ontology_terms
+            else "eye measurement"
+        )
+        mental_disorder_override_id = "EFO_0000677" if "EFO_0000677" in ontology_terms else ""
+        mental_disorder_override_label = (
+            normalize(ontology_terms[mental_disorder_override_id].label)
+            if mental_disorder_override_id and mental_disorder_override_id in ontology_terms
+            else "mental disorder"
+        )
         eyelid_cancer_override_id = ""
         if "MONDO_0021313" in ontology_terms:
             eyelid_cancer_override_id = "MONDO_0021313"
@@ -16299,6 +18081,24 @@ def harmonize_trait_rows_by_query_constraints(
             normalize(ontology_terms[eyelid_cancer_override_id].label)
             if eyelid_cancer_override_id and eyelid_cancer_override_id in ontology_terms
             else "eyelid cancer"
+        )
+        mastectomy_override_id = "EFO_0020987" if "EFO_0020987" in ontology_terms else ""
+        mastectomy_override_label = (
+            normalize(ontology_terms[mastectomy_override_id].label)
+            if mastectomy_override_id and mastectomy_override_id in ontology_terms
+            else "mastectomy"
+        )
+        lung_transplantation_override_id = "EFO_0010721" if "EFO_0010721" in ontology_terms else ""
+        lung_transplantation_override_label = (
+            normalize(ontology_terms[lung_transplantation_override_id].label)
+            if lung_transplantation_override_id and lung_transplantation_override_id in ontology_terms
+            else "lung transplantation"
+        )
+        digestive_system_surgery_override_id = "EFO_0020979" if "EFO_0020979" in ontology_terms else ""
+        digestive_system_surgery_override_label = (
+            normalize(ontology_terms[digestive_system_surgery_override_id].label)
+            if digestive_system_surgery_override_id and digestive_system_surgery_override_id in ontology_terms
+            else "digestive system surgery"
         )
         mapped_label_key_text = " ".join(mapped_label_keys)
 
@@ -16351,6 +18151,204 @@ def harmonize_trait_rows_by_query_constraints(
             mapped_ids = [canonicalize_trait_ontology_id(encounter_health_service_override_id)]
             mapped_labels = [encounter_health_service_override_label]
             mapped_label_keys = [norm_key(encounter_health_service_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            alcohol_dependence_override_id
+            and bool(re.search(r"\balcohol\s+depend", query_key))
+            and not any(
+                marker in query_key
+                for marker in ("measurement", "score", "symptom count", "questionnaire")
+            )
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=alcohol_dependence_override_id,
+                mapped_label=alcohol_dependence_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=alcohol_dependency_to_alcohol_dependence",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(alcohol_dependence_override_id)]
+            mapped_labels = [alcohol_dependence_override_label]
+            mapped_label_keys = [norm_key(alcohol_dependence_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            diabetes_drug_use_override_id
+            and len(mapped_ids) == 1
+            and mapped_label_keys
+            and mapped_label_keys[0] == "drug use measurement"
+            and (
+                "metformin medication use" in query_key
+                or "oral diabetes medication use" in query_key
+                or (
+                    "insulin" in query_key
+                    and (
+                        "diabetes" in query_key
+                        or "mellitis diagnosis" in query_key
+                        or "mellitus diagnosis" in query_key
+                        or "ukb data field 6177" in query_key
+                    )
+                )
+            )
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=diabetes_drug_use_override_id,
+                mapped_label=diabetes_drug_use_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=diabetes_medication_rows_to_diabetes_drug_use_measurement",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(diabetes_drug_use_override_id)]
+            mapped_labels = [diabetes_drug_use_override_label]
+            mapped_label_keys = [norm_key(diabetes_drug_use_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            len(mapped_ids) == 1
+            and mapped_label_keys
+            and mapped_label_keys[0] in {"clinical treatment", "treatment"}
+            and trait_query_is_medication_use(query_raw, "")
+        ):
+            medication_term_id, medication_term_label = classify_ukb_medication_use_term(
+                query_raw,
+                "",
+            )
+            if medication_term_id and medication_term_label:
+                set_single_mapping(
+                    row,
+                    mapped_id=medication_term_id,
+                    mapped_label=medication_term_label,
+                    matched_via="query_phrase_harmonized",
+                    note="query_phrase_harmonized=medication_use_rows_avoid_clinical_treatment_genericity",
+                    confidence_floor=0.800,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(medication_term_id)]
+                mapped_labels = [medication_term_label]
+                mapped_label_keys = [norm_key(medication_term_label)]
+                mapped_label_key_text = mapped_label_keys[0]
+        if smoking_behavior_override_id and "difficulty not smoking for 1 day" in query_key:
+            set_single_mapping(
+                row,
+                mapped_id=smoking_behavior_override_id,
+                mapped_label=smoking_behavior_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=difficulty_not_smoking_rows_to_smoking_behavior_trait",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(smoking_behavior_override_id)]
+            mapped_labels = [smoking_behavior_override_label]
+            mapped_label_keys = [norm_key(smoking_behavior_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if cannabis_use_override_id and "maximum frequency of taking cannabis" in query_key:
+            set_single_mapping(
+                row,
+                mapped_id=cannabis_use_override_id,
+                mapped_label=cannabis_use_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=cannabis_frequency_rows_to_cannabis_use",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(cannabis_use_override_id)]
+            mapped_labels = [cannabis_use_override_label]
+            mapped_label_keys = [norm_key(cannabis_use_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if ibs_symptom_measurement_override_id and "speed of onset of ibs symptoms" in query_key:
+            set_single_mapping(
+                row,
+                mapped_id=ibs_symptom_measurement_override_id,
+                mapped_label=ibs_symptom_measurement_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=ibs_speed_of_onset_rows_to_ibs_symptom_measurement",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(ibs_symptom_measurement_override_id)]
+            mapped_labels = [ibs_symptom_measurement_override_label]
+            mapped_label_keys = [norm_key(ibs_symptom_measurement_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if refractive_error_measurement_override_id and "spherical equivalent" in query_key:
+            set_single_mapping(
+                row,
+                mapped_id=refractive_error_measurement_override_id,
+                mapped_label=refractive_error_measurement_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=spherical_equivalent_rows_to_refractive_error_measurement",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(refractive_error_measurement_override_id)]
+            mapped_labels = [refractive_error_measurement_override_label]
+            mapped_label_keys = [norm_key(refractive_error_measurement_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            eye_measurement_override_id
+            and bool(re.search(r"started wearing glasses(?:\s+or)?\s+contacts?\s+(?:before|after)\s+40", query_key))
+            and not any(
+                token in query_key
+                for token in ("anisometropia", "astigmatism", "spherical equivalent", "corneal", "refractive")
+            )
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=eye_measurement_override_id,
+                mapped_label=eye_measurement_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=generic_started_wearing_glasses_rows_to_eye_measurement",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(eye_measurement_override_id)]
+            mapped_labels = [eye_measurement_override_label]
+            mapped_label_keys = [norm_key(eye_measurement_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            mental_disorder_override_id
+            and not icd10_code
+            and re.fullmatch(r"nervous breakdown(?:\s+gene based burden)?", query_key)
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=mental_disorder_override_id,
+                mapped_label=mental_disorder_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=bare_nervous_breakdown_to_mental_disorder",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(mental_disorder_override_id)]
+            mapped_labels = [mental_disorder_override_label]
+            mapped_label_keys = [norm_key(mental_disorder_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+
+        if (
+            testicular_disease_override_id
+            and "testicular problem" in query_key
+            and (
+                "not cancer" in query_key
+                or "non cancer" in query_key
+                or "not malignant" in query_key
+                or "not neoplasm" in query_key
+            )
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=testicular_disease_override_id,
+                mapped_label=testicular_disease_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=testicular_non_cancer_problem_to_testicular_disease",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(testicular_disease_override_id)]
+            mapped_labels = [testicular_disease_override_label]
+            mapped_label_keys = [norm_key(testicular_disease_override_label)]
             mapped_label_key_text = mapped_label_keys[0]
 
         if (
@@ -16692,6 +18690,92 @@ def harmonize_trait_rows_by_query_constraints(
             mapped_labels = [eyelid_cancer_override_label]
             mapped_label_keys = [norm_key(eyelid_cancer_override_label)]
             mapped_label_key_text = mapped_label_keys[0]
+        if (
+            type2_diabetes_override_id
+            and "type 2 diabetes" in query_key
+            and (
+                any(token in query_key for token in ("new", "strict", "possible", "probable", "loose"))
+                or "diabetes mellitus" in mapped_label_keys
+            )
+            and not any(
+                token in query_key
+                for token in (
+                    "neuropathy",
+                    "retinopathy",
+                    "ophthalmopathy",
+                    "nephropathy",
+                    "ketoacidosis",
+                    "gestational",
+                    "type 1",
+                )
+            )
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=type2_diabetes_override_id,
+                mapped_label=type2_diabetes_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=type2_diabetes_qualifier_to_type2_diabetes_mellitus",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(type2_diabetes_override_id)]
+            mapped_labels = [type2_diabetes_override_label]
+            mapped_label_keys = [norm_key(type2_diabetes_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            psychosocial_stress_override_id
+            and re.fullmatch(r"stress(?:\s+gene based burden)?", query_key)
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=psychosocial_stress_override_id,
+                mapped_label=psychosocial_stress_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=bare_stress_to_psychosocial_stress_measurement",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(psychosocial_stress_override_id)]
+            mapped_labels = [psychosocial_stress_override_label]
+            mapped_label_keys = [norm_key(psychosocial_stress_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            skin_neoplasm_override_id
+            and "malignant neoplasm of skin" in query_key
+            and "melanoma" not in query_key
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=skin_neoplasm_override_id,
+                mapped_label=skin_neoplasm_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=malignant_skin_neoplasm_phrase_to_skin_neoplasm",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(skin_neoplasm_override_id)]
+            mapped_labels = [skin_neoplasm_override_label]
+            mapped_label_keys = [norm_key(skin_neoplasm_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            kidney_neoplasm_override_id
+            and "malignant neoplasm of kidney" in query_key
+            and "except renal pelvis" in query_key
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=kidney_neoplasm_override_id,
+                mapped_label=kidney_neoplasm_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=malignant_kidney_neoplasm_phrase_to_kidney_neoplasm",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(kidney_neoplasm_override_id)]
+            mapped_labels = [kidney_neoplasm_override_label]
+            mapped_label_keys = [norm_key(kidney_neoplasm_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
 
         # High-value ICD10 overrides to avoid broad regressions in generic
         # status/context chapters and preserve clinically meaningful traits.
@@ -16712,6 +18796,7 @@ def harmonize_trait_rows_by_query_constraints(
             ("Z73", "EFO_0007869", "wellbeing measurement", "icd10_specific_override=z73_to_wellbeing_measurement"),
             ("Z71", "EFO_0007869", "wellbeing measurement", "icd10_specific_override=z71_to_wellbeing_measurement"),
             ("Y92", "EFO_0000546", "injury", "icd10_specific_override=y92_to_injury"),
+            ("R53.83", "HP_0012378", "Fatigue", "icd10_specific_override=r53_83_to_fatigue"),
             ("R92", "EFO_0000720", "test result", "icd10_specific_override=r92_to_test_result"),
             ("R89", "EFO_0000720", "test result", "icd10_specific_override=r89_to_test_result"),
             ("R87.615", "EFO_0000720", "test result", "icd10_specific_override=r87_615_to_test_result"),
@@ -16722,6 +18807,9 @@ def harmonize_trait_rows_by_query_constraints(
             ("K62.8", "EFO_0009660", "anus disease", "icd10_specific_override=k62_8_to_anus_disease"),
             ("K22.8", "EFO_0009544", "esophageal disease", "icd10_specific_override=k22_8_to_esophageal_disease"),
             ("K13", "EFO_1001047", "mouth disease", "icd10_specific_override=k13_to_mouth_disease"),
+            ("J38.7", "MONDO_0004382", "laryngeal disorder", "icd10_specific_override=j38_7_to_laryngeal_disorder"),
+            ("I27", "MONDO_0004995", "cardiovascular disorder", "icd10_specific_override=i27_to_cardiovascular_disorder"),
+            ("H01", "MONDO_0004785", "blepharitis", "icd10_specific_override=h01_to_blepharitis"),
             ("K08.8", "HP_0000164", "Abnormality of the dentition", "icd10_specific_override=k08_8_to_dentition_abnormality"),
             ("K08.3", "HP_0000164", "Abnormality of the dentition", "icd10_specific_override=k08_3_to_dentition_abnormality"),
             ("M20.5", "HP_0001760", "Abnormal foot morphology", "icd10_specific_override=m20_5_to_abnormal_foot_morphology"),
@@ -16733,10 +18821,25 @@ def harmonize_trait_rows_by_query_constraints(
             ("M25.77", "MONDO_0002181", "exostosis", "icd10_specific_override=m25_77_to_exostosis"),
             ("M25.76", "MONDO_0002181", "exostosis", "icd10_specific_override=m25_76_to_exostosis"),
             ("M25.6", "HP_0002829", "Arthralgia", "icd10_specific_override=m25_6_to_arthralgia"),
+            ("G31.9", "MONDO_0005559", "neurodegenerative disease", "icd10_specific_override=g31_9_to_neurodegenerative_disease"),
             ("H35.8", "EFO_0003839", "retinopathy", "icd10_specific_override=h35_8_to_retinopathy"),
             ("H52", "HP_0000539", "Abnormality of refraction", "icd10_specific_override=h52_to_abnormality_of_refraction"),
         )
         if icd10_code:
+            if icd10_code.startswith("D70") and "neutropenia" in query_key and "MONDO_0001475" in ontology_terms:
+                set_single_mapping(
+                    row,
+                    mapped_id="MONDO_0001475",
+                    mapped_label=normalize(ontology_terms["MONDO_0001475"].label) or "neutropenia",
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=d70_neutropenia_to_neutropenia",
+                    confidence_floor=0.840,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id("MONDO_0001475")]
+                mapped_labels = [normalize(ontology_terms["MONDO_0001475"].label) or "neutropenia"]
+                mapped_label_keys = [norm_key(mapped_labels[0])]
+                mapped_label_key_text = mapped_label_keys[0]
             if icd10_code.startswith(("V", "W", "X")) and not strict_manual_cache_locked:
                 if "foreign body" in query_key and "eye" in query_key and "EFO_1001322" in ontology_terms:
                     set_single_mapping(
@@ -16787,6 +18890,28 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id("EFO_0000546")]
                     mapped_labels = ["injury"]
                     mapped_label_keys = ["injury"]
+            if (
+                icd10_code.startswith("S63")
+                and "dislocation" in query_key
+                and "sprain" in query_key
+                and dislocation_override_id
+                and sprain_override_id
+            ):
+                set_multi_mapping(
+                    row,
+                    mapped_ids_text=f"{dislocation_override_id}|{sprain_override_id}",
+                    mapped_labels_text=f"{dislocation_override_label}|{sprain_override_label}",
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s63_to_dislocation_plus_sprain",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [
+                    canonicalize_trait_ontology_id(dislocation_override_id),
+                    canonicalize_trait_ontology_id(sprain_override_id),
+                ]
+                mapped_labels = [dislocation_override_label, sprain_override_label]
+                mapped_label_keys = [norm_key(dislocation_override_label), norm_key(sprain_override_label)]
             if icd10_code.startswith(("S", "T")) and len(mapped_ids) > 1 and not strict_manual_cache_locked:
                 injury_components: list[tuple[str, str]] = []
                 for term_id, label in zip(mapped_ids, mapped_labels):
@@ -16800,6 +18925,7 @@ def harmonize_trait_rows_by_query_constraints(
                             "contusion",
                             "laceration",
                             "fracture",
+                            "dislocation",
                             "sprain",
                             "burn",
                             "poison",
@@ -16832,11 +18958,14 @@ def harmonize_trait_rows_by_query_constraints(
                 and "fracture" in query_key
                 and all("fracture" not in norm_key(label) for label in mapped_labels)
             ):
-                fracture_id, fracture_label = preferred_exact_term_for_phrase(
-                    "bone fracture",
-                    ontology_exact_index=ontology_exact_index,
-                    ontology_terms=ontology_terms,
-                )
+                fracture_id = bone_fracture_override_id
+                fracture_label = bone_fracture_override_label
+                if not fracture_id or not fracture_label:
+                    fracture_id, fracture_label = preferred_exact_term_for_phrase(
+                        "bone fracture",
+                        ontology_exact_index=ontology_exact_index,
+                        ontology_terms=ontology_terms,
+                    )
                 if fracture_id and fracture_label:
                     set_single_mapping(
                         row,
@@ -16844,12 +18973,35 @@ def harmonize_trait_rows_by_query_constraints(
                         mapped_label=fracture_label,
                         matched_via="icd10_injury_chapter_harmonized",
                         note="icd10_injury_chapter_harmonized=fracture_phrase_to_bone_fracture",
-                        confidence_floor=0.780,
-                        force_review=True,
+                        confidence_floor=0.800,
+                        force_review=False,
                     )
                     mapped_ids = [canonicalize_trait_ontology_id(fracture_id)]
                     mapped_labels = [fracture_label]
                     mapped_label_keys = [norm_key(fracture_label)]
+            if (
+                icd10_code.startswith("M79.6")
+                and limb_pain_override_id
+                and (
+                    "limb" in query_key
+                    or "hand" in query_key
+                    or "foot" in query_key
+                    or "finger" in query_key
+                    or "toe" in query_key
+                )
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=limb_pain_override_id,
+                    mapped_label=limb_pain_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m79_6_to_limb_pain",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(limb_pain_override_id)]
+                mapped_labels = [limb_pain_override_label]
+                mapped_label_keys = [norm_key(limb_pain_override_label)]
             if (
                 icd10_code.startswith("M79")
                 and "pain" in query_key
@@ -16917,6 +19069,346 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_labels = [psoriasis_override_label]
                 mapped_label_keys = [norm_key(psoriasis_override_label)]
             if (
+                icd10_code.startswith("C90.0")
+                and multiple_myeloma_override_id
+                and "multiple myeloma" in query_key
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=multiple_myeloma_override_id,
+                    mapped_label=multiple_myeloma_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=c90_0_to_multiple_myeloma",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(multiple_myeloma_override_id)]
+                mapped_labels = [multiple_myeloma_override_label]
+                mapped_label_keys = [norm_key(multiple_myeloma_override_label)]
+            if icd10_code.startswith("R12") and dyspepsia_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=dyspepsia_override_id,
+                    mapped_label=dyspepsia_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=r12_to_dyspepsia",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(dyspepsia_override_id)]
+                mapped_labels = [dyspepsia_override_label]
+                mapped_label_keys = [norm_key(dyspepsia_override_label)]
+            if icd10_code.startswith("R15"):
+                if "fecal" in query_key and fecal_incontinence_override_id:
+                    set_single_mapping(
+                        row,
+                        mapped_id=fecal_incontinence_override_id,
+                        mapped_label=fecal_incontinence_override_label,
+                        matched_via="icd10_specific_override",
+                        note="icd10_specific_override=r15_fecal_to_fecal_incontinence",
+                        confidence_floor=0.820,
+                        force_review=False,
+                    )
+                    mapped_ids = [canonicalize_trait_ontology_id(fecal_incontinence_override_id)]
+                    mapped_labels = [fecal_incontinence_override_label]
+                    mapped_label_keys = [norm_key(fecal_incontinence_override_label)]
+                elif "urinary" in query_key and urinary_incontinence_override_id:
+                    set_single_mapping(
+                        row,
+                        mapped_id=urinary_incontinence_override_id,
+                        mapped_label=urinary_incontinence_override_label,
+                        matched_via="icd10_specific_override",
+                        note="icd10_specific_override=r15_urinary_to_urinary_incontinence",
+                        confidence_floor=0.820,
+                        force_review=False,
+                    )
+                    mapped_ids = [canonicalize_trait_ontology_id(urinary_incontinence_override_id)]
+                    mapped_labels = [urinary_incontinence_override_label]
+                    mapped_label_keys = [norm_key(urinary_incontinence_override_label)]
+            if (
+                icd10_code.startswith("R54")
+                and "age-related physical debility" in query_key
+                and functional_decline_measurement_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=functional_decline_measurement_override_id,
+                    mapped_label=functional_decline_measurement_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=r54_to_functional_decline_measurement",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(functional_decline_measurement_override_id)]
+                mapped_labels = [functional_decline_measurement_override_label]
+                mapped_label_keys = [norm_key(functional_decline_measurement_override_label)]
+            if (
+                icd10_code.startswith("M54")
+                and "dorsalgia" in query_key
+                and back_pain_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=back_pain_override_id,
+                    mapped_label=back_pain_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m54_dorsalgia_to_back_pain",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(back_pain_override_id)]
+                mapped_labels = [back_pain_override_label]
+                mapped_label_keys = [norm_key(back_pain_override_label)]
+            if (
+                icd10_code.startswith("F40.2")
+                and specific_phobia_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=specific_phobia_override_id,
+                    mapped_label=specific_phobia_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=f40_2_to_specific_phobia",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(specific_phobia_override_id)]
+                mapped_labels = [specific_phobia_override_label]
+                mapped_label_keys = [norm_key(specific_phobia_override_label)]
+            if (
+                icd10_code.startswith("M54")
+                and not icd10_code.startswith("M54.4")
+                and "sciatica" in query_key
+                and sciatica_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=sciatica_override_id,
+                    mapped_label=sciatica_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m54_sciatica_to_sciatica",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(sciatica_override_id)]
+                mapped_labels = [sciatica_override_label]
+                mapped_label_keys = [norm_key(sciatica_override_label)]
+            if (
+                icd10_code.startswith("M54.4")
+                and back_pain_override_id
+                and sciatica_override_id
+                and "sciatica" in query_key
+            ):
+                set_multi_mapping(
+                    row,
+                    mapped_ids_text=f"{back_pain_override_id}|{sciatica_override_id}",
+                    mapped_labels_text=f"{back_pain_override_label}|{sciatica_override_label}",
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m54_4_to_back_pain_plus_sciatica",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [
+                    canonicalize_trait_ontology_id(back_pain_override_id),
+                    canonicalize_trait_ontology_id(sciatica_override_id),
+                ]
+                mapped_labels = [back_pain_override_label, sciatica_override_label]
+                mapped_label_keys = [norm_key(back_pain_override_label), norm_key(sciatica_override_label)]
+            if (
+                icd10_code.startswith("G47.9")
+                and sleep_disorder_override_id
+                and ("sleep" in query_key or "disorder" in query_key or "unspecified" in query_key)
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=sleep_disorder_override_id,
+                    mapped_label=sleep_disorder_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=g47_9_unspecified_to_sleep_disorder",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(sleep_disorder_override_id)]
+                mapped_labels = [sleep_disorder_override_label]
+                mapped_label_keys = [norm_key(sleep_disorder_override_label)]
+            if (
+                icd10_code.startswith("G47")
+                and sleep_apnea_override_id
+                and ("apnea" in query_key or "apnoea" in query_key)
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=sleep_apnea_override_id,
+                    mapped_label=sleep_apnea_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=g47_sleep_apnea_to_sleep_apnea",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(sleep_apnea_override_id)]
+                mapped_labels = [sleep_apnea_override_label]
+                mapped_label_keys = [norm_key(sleep_apnea_override_label)]
+            if (
+                icd10_code.startswith(("M25.56", "M25.569"))
+                and knee_pain_override_id
+                and "pain" in query_key
+                and "knee" in query_key
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=knee_pain_override_id,
+                    mapped_label=knee_pain_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m25_56_to_knee_pain",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(knee_pain_override_id)]
+                mapped_labels = [knee_pain_override_label]
+                mapped_label_keys = [norm_key(knee_pain_override_label)]
+            if (
+                icd10_code.startswith("M25.7")
+                and "osteophyte" in query_key
+                and exostosis_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=exostosis_override_id,
+                    mapped_label=exostosis_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m25_7_osteophyte_to_exostosis",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(exostosis_override_id)]
+                mapped_labels = [exostosis_override_label]
+                mapped_label_keys = [norm_key(exostosis_override_label)]
+            if (
+                icd10_code == "M48"
+                and "spondylopath" in query_key
+                and vertebral_column_disorder_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=vertebral_column_disorder_override_id,
+                    mapped_label=vertebral_column_disorder_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m48_spondylopathies_to_vertebral_column_disorder",
+                    confidence_floor=0.780,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(vertebral_column_disorder_override_id)]
+                mapped_labels = [vertebral_column_disorder_override_label]
+                mapped_label_keys = [norm_key(vertebral_column_disorder_override_label)]
+            if (
+                icd10_code == "M67"
+                and ("synovium" in query_key or "tendon" in query_key)
+                and synovium_disorder_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=synovium_disorder_override_id,
+                    mapped_label=synovium_disorder_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m67_to_synovium_disorder",
+                    confidence_floor=0.780,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(synovium_disorder_override_id)]
+                mapped_labels = [synovium_disorder_override_label]
+                mapped_label_keys = [norm_key(synovium_disorder_override_label)]
+            if (
+                icd10_code == "M75"
+                and "shoulder lesion" in query_key
+                and soft_tissue_disease_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=soft_tissue_disease_override_id,
+                    mapped_label=soft_tissue_disease_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=m75_shoulder_lesions_to_soft_tissue_disease",
+                    confidence_floor=0.780,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(soft_tissue_disease_override_id)]
+                mapped_labels = [soft_tissue_disease_override_label]
+                mapped_label_keys = [norm_key(soft_tissue_disease_override_label)]
+            if (
+                icd10_code.startswith("L03")
+                and "cellulitis" in query_key
+                and "lymphangitis" in query_key
+                and cellulitis_override_id
+                and lymphangitis_override_id
+            ):
+                set_multi_mapping(
+                    row,
+                    mapped_ids_text=f"{cellulitis_override_id}|{lymphangitis_override_id}",
+                    mapped_labels_text=f"{cellulitis_override_label}|{lymphangitis_override_label}",
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=l03_to_cellulitis_plus_lymphangitis",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [
+                    canonicalize_trait_ontology_id(cellulitis_override_id),
+                    canonicalize_trait_ontology_id(lymphangitis_override_id),
+                ]
+                mapped_labels = [cellulitis_override_label, lymphangitis_override_label]
+                mapped_label_keys = [norm_key(cellulitis_override_label), norm_key(lymphangitis_override_label)]
+            if (
+                icd10_code.startswith("L08.8")
+                and skin_infection_override_id
+                and "infection" in query_key
+                and "skin" in query_key
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=skin_infection_override_id,
+                    mapped_label=skin_infection_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=l08_8_to_skin_infection",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(skin_infection_override_id)]
+                mapped_labels = [skin_infection_override_label]
+                mapped_label_keys = [norm_key(skin_infection_override_label)]
+            if icd10_code.startswith("G40.3") and epilepsy_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=epilepsy_override_id,
+                    mapped_label=epilepsy_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=g40_3_to_epilepsy",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(epilepsy_override_id)]
+                mapped_labels = [epilepsy_override_label]
+                mapped_label_keys = [norm_key(epilepsy_override_label)]
+            if (
+                icd10_code.startswith("G81")
+                and "hemiparesis" in query_key
+                and hemiplegia_override_id
+                and hemiparesis_override_id
+            ):
+                set_multi_mapping(
+                    row,
+                    mapped_ids_text=f"{hemiplegia_override_id}|{hemiparesis_override_id}",
+                    mapped_labels_text=f"{hemiplegia_override_label}|{hemiparesis_override_label}",
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=g81_to_hemiplegia_plus_hemiparesis",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [
+                    canonicalize_trait_ontology_id(hemiplegia_override_id),
+                    canonicalize_trait_ontology_id(hemiparesis_override_id),
+                ]
+                mapped_labels = [hemiplegia_override_label, hemiparesis_override_label]
+                mapped_label_keys = [norm_key(hemiplegia_override_label), norm_key(hemiparesis_override_label)]
+            if (
                 icd10_code.startswith("I67.8")
                 and "other specified cerebrovascular" in query_key
                 and cerebrovascular_override_id
@@ -16973,6 +19465,221 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id(myopia_id)]
                     mapped_labels = [myopia_label]
                     mapped_label_keys = [norm_key(myopia_label)]
+            if icd10_code.startswith("H53.8") and abnormal_vision_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=abnormal_vision_override_id,
+                    mapped_label=abnormal_vision_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=h53_8_to_abnormality_of_vision",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(abnormal_vision_override_id)]
+                mapped_labels = [abnormal_vision_override_label]
+                mapped_label_keys = [norm_key(abnormal_vision_override_label)]
+            if icd10_code.startswith("R73.01") and abnormal_glucose_tolerance_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=abnormal_glucose_tolerance_override_id,
+                    mapped_label=abnormal_glucose_tolerance_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=r73_01_to_abnormal_glucose_tolerance",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(abnormal_glucose_tolerance_override_id)]
+                mapped_labels = [abnormal_glucose_tolerance_override_label]
+                mapped_label_keys = [norm_key(abnormal_glucose_tolerance_override_label)]
+            if (
+                icd10_code.startswith("B98")
+                and infectious_disease_override_id
+                and ("cause of diseases classified" in query_key or "other specified infectious agents" in query_key)
+                and "helicobacter" not in query_key
+                and "h pylori" not in query_key
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=infectious_disease_override_id,
+                    mapped_label=infectious_disease_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=b98_generic_cause_to_infectious_disease",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(infectious_disease_override_id)]
+                mapped_labels = [infectious_disease_override_label]
+                mapped_label_keys = [norm_key(infectious_disease_override_label)]
+            if icd10_code.startswith("Z95.8") and implanted_device_encounter_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=implanted_device_encounter_override_id,
+                    mapped_label=implanted_device_encounter_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z95_8_to_implanted_device_management_encounter",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(implanted_device_encounter_override_id)]
+                mapped_labels = [implanted_device_encounter_override_label]
+                mapped_label_keys = [norm_key(implanted_device_encounter_override_label)]
+            if (
+                (icd10_code.startswith("I49.9") or (icd10_code == "I49" and "unspecified" in query_key))
+                and cardiac_arrhythmia_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=cardiac_arrhythmia_override_id,
+                    mapped_label=cardiac_arrhythmia_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=i49_unspecified_to_cardiac_arrhythmia",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(cardiac_arrhythmia_override_id)]
+                mapped_labels = [cardiac_arrhythmia_override_label]
+                mapped_label_keys = [norm_key(cardiac_arrhythmia_override_label)]
+            if (
+                icd10_code.startswith("K85")
+                and (pancreatitis_override_id or acute_pancreatitis_override_id)
+            ):
+                has_acute_pancreatitis_text = "acute" in query_key and "pancreat" in query_key
+                if has_acute_pancreatitis_text and acute_pancreatitis_override_id:
+                    k85_target_id = acute_pancreatitis_override_id
+                    k85_target_label = acute_pancreatitis_override_label
+                    k85_note = "icd10_specific_override=k85_text_acute_to_acute_pancreatitis"
+                elif pancreatitis_override_id:
+                    k85_target_id = pancreatitis_override_id
+                    k85_target_label = pancreatitis_override_label
+                    k85_note = "icd10_specific_override=k85_default_to_pancreatitis"
+                else:
+                    k85_target_id = acute_pancreatitis_override_id
+                    k85_target_label = acute_pancreatitis_override_label
+                    k85_note = "icd10_specific_override=k85_fallback_to_acute_pancreatitis"
+                set_single_mapping(
+                    row,
+                    mapped_id=k85_target_id,
+                    mapped_label=k85_target_label,
+                    matched_via="icd10_specific_override",
+                    note=k85_note,
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(k85_target_id)]
+                mapped_labels = [k85_target_label]
+                mapped_label_keys = [norm_key(k85_target_label)]
+            if icd10_code.startswith("S32.5") and bone_fracture_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=bone_fracture_override_id,
+                    mapped_label=bone_fracture_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s32_5_to_bone_fracture",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(bone_fracture_override_id)]
+                mapped_labels = [bone_fracture_override_label]
+                mapped_label_keys = [norm_key(bone_fracture_override_label)]
+            if icd10_code.startswith("S62.6") and finger_fracture_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=finger_fracture_override_id,
+                    mapped_label=finger_fracture_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s62_6_to_finger_fracture",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(finger_fracture_override_id)]
+                mapped_labels = [finger_fracture_override_label]
+                mapped_label_keys = [norm_key(finger_fracture_override_label)]
+            if (
+                icd10_code.startswith("S62")
+                and "metacarpal" in query_key
+                and not icd10_code.startswith("S62.6")
+                and upper_extremity_fracture_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=upper_extremity_fracture_override_id,
+                    mapped_label=upper_extremity_fracture_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s62_metacarpal_to_upper_extremity_fracture",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(upper_extremity_fracture_override_id)]
+                mapped_labels = [upper_extremity_fracture_override_label]
+                mapped_label_keys = [norm_key(upper_extremity_fracture_override_label)]
+            if (
+                icd10_code.startswith("S22.0")
+                and "vertebra" in query_key
+                and spinal_fracture_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=spinal_fracture_override_id,
+                    mapped_label=spinal_fracture_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s22_0_to_spinal_fracture",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(spinal_fracture_override_id)]
+                mapped_labels = [spinal_fracture_override_label]
+                mapped_label_keys = [norm_key(spinal_fracture_override_label)]
+            if (
+                icd10_code.startswith(("S82.1", "S82.10", "S82.2", "S82.3"))
+                and "tibia" in query_key
+                and tibia_fracture_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=tibia_fracture_override_id,
+                    mapped_label=tibia_fracture_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s82_tibia_site_to_tibia_fracture",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(tibia_fracture_override_id)]
+                mapped_labels = [tibia_fracture_override_label]
+                mapped_label_keys = [norm_key(tibia_fracture_override_label)]
+            if (
+                icd10_code.startswith(("S82.6", "S82.60"))
+                and ("malleolus" in query_key or "ankle" in query_key)
+                and ankle_fracture_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=ankle_fracture_override_id,
+                    mapped_label=ankle_fracture_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=s82_malleolus_to_ankle_fracture",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(ankle_fracture_override_id)]
+                mapped_labels = [ankle_fracture_override_label]
+                mapped_label_keys = [norm_key(ankle_fracture_override_label)]
+            if (
+                icd10_code.startswith("D04")
+                and skin_carcinoma_in_situ_override_id
+                and "carcinoma in situ of skin" in query_key
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=skin_carcinoma_in_situ_override_id,
+                    mapped_label=skin_carcinoma_in_situ_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=d04_to_skin_carcinoma_in_situ",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(skin_carcinoma_in_situ_override_id)]
+                mapped_labels = [skin_carcinoma_in_situ_override_label]
+                mapped_label_keys = [norm_key(skin_carcinoma_in_situ_override_label)]
             if icd10_code.startswith("C44.1") and eyelid_cancer_override_id:
                 set_single_mapping(
                     row,
@@ -16987,8 +19694,17 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_labels = [eyelid_cancer_override_label]
                 mapped_label_keys = [norm_key(eyelid_cancer_override_label)]
             if (
-                icd10_code.startswith("C44")
-                and not icd10_code.startswith("C44.1")
+                icd10_code in {
+                    "C44",
+                    "C44.2",
+                    "C44.3",
+                    "C44.4",
+                    "C44.5",
+                    "C44.6",
+                    "C44.7",
+                    "C44.8",
+                    "C44.9",
+                }
                 and non_melanoma_skin_override_id
             ):
                 set_single_mapping(
@@ -16996,7 +19712,7 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_id=non_melanoma_skin_override_id,
                     mapped_label=non_melanoma_skin_override_label,
                     matched_via="icd10_specific_override",
-                    note="icd10_specific_override=c44_to_non_melanoma_skin_carcinoma",
+                    note="icd10_specific_override=explicit_c44_codes_to_non_melanoma_skin_carcinoma",
                     confidence_floor=0.820,
                     force_review=False,
                 )
@@ -17029,6 +19745,181 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_ids = [canonicalize_trait_ontology_id(cutaneous_melanoma_override_id)]
                 mapped_labels = [cutaneous_melanoma_override_label]
                 mapped_label_keys = [norm_key(cutaneous_melanoma_override_label)]
+            if icd10_code.startswith("C80") and neoplasm_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=neoplasm_override_id,
+                    mapped_label=neoplasm_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=c80_to_neoplasm",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(neoplasm_override_id)]
+                mapped_labels = [neoplasm_override_label]
+                mapped_label_keys = [norm_key(neoplasm_override_label)]
+            if icd10_code.startswith("Z85.7") and neoplasm_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=neoplasm_override_id,
+                    mapped_label=neoplasm_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z85_7_to_neoplasm",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(neoplasm_override_id)]
+                mapped_labels = [neoplasm_override_label]
+                mapped_label_keys = [norm_key(neoplasm_override_label)]
+            if icd10_code.startswith("Z91.1") and medication_adherence_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=medication_adherence_override_id,
+                    mapped_label=medication_adherence_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z91_1_to_medication_adherence_behavior",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(medication_adherence_override_id)]
+                mapped_labels = [medication_adherence_override_label]
+                mapped_label_keys = [norm_key(medication_adherence_override_label)]
+            if (
+                icd10_code.startswith("Z72.0")
+                and smoking_behavior_trait_override_id
+                and ("tobacco use" in query_key or "smok" in query_key)
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=smoking_behavior_trait_override_id,
+                    mapped_label=smoking_behavior_trait_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z72_0_to_smoking_behavior_trait",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(smoking_behavior_trait_override_id)]
+                mapped_labels = [smoking_behavior_trait_override_label]
+                mapped_label_keys = [norm_key(smoking_behavior_trait_override_label)]
+            if icd10_code.startswith("Z92.3") and radiation_exposure_measurement_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=radiation_exposure_measurement_override_id,
+                    mapped_label=radiation_exposure_measurement_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z92_3_to_radiation_exposure_measurement",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(radiation_exposure_measurement_override_id)]
+                mapped_labels = [radiation_exposure_measurement_override_label]
+                mapped_label_keys = [norm_key(radiation_exposure_measurement_override_label)]
+            if icd10_code.startswith("Z92.6") and neoplastic_disease_or_syndrome_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=neoplastic_disease_or_syndrome_override_id,
+                    mapped_label=neoplastic_disease_or_syndrome_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z92_6_to_neoplastic_disease_or_syndrome",
+                    confidence_floor=0.820,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(neoplastic_disease_or_syndrome_override_id)]
+                mapped_labels = [neoplastic_disease_or_syndrome_override_label]
+                mapped_label_keys = [norm_key(neoplastic_disease_or_syndrome_override_label)]
+            if (
+                (
+                    icd10_code.startswith("Z92")
+                    and not icd10_code.startswith("Z92.6")
+                    and not icd10_code.startswith("Z92.3")
+                )
+                or icd10_code.startswith("Z91.6")
+            ) and clinical_history_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=clinical_history_override_id,
+                    mapped_label=clinical_history_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z92_or_z91_6_to_clinical_history",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(clinical_history_override_id)]
+                mapped_labels = [clinical_history_override_label]
+                mapped_label_keys = [norm_key(clinical_history_override_label)]
+            if (
+                icd10_code == "Z87"
+                and "other diseases and conditions" in query_key
+                and clinical_history_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=clinical_history_override_id,
+                    mapped_label=clinical_history_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z87_generic_to_clinical_history",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(clinical_history_override_id)]
+                mapped_labels = [clinical_history_override_label]
+                mapped_label_keys = [norm_key(clinical_history_override_label)]
+            if icd10_code.startswith("Z86.5") and mental_behavioral_disorder_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=mental_behavioral_disorder_override_id,
+                    mapped_label=mental_behavioral_disorder_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z86_5_to_mental_behavioral_disorder",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(mental_behavioral_disorder_override_id)]
+                mapped_labels = [mental_behavioral_disorder_override_label]
+                mapped_label_keys = [norm_key(mental_behavioral_disorder_override_label)]
+            if (
+                icd10_code.startswith("O04")
+                and spontaneous_abortion_override_id
+                and ("miscarriage" in query_key or "spontaneous abortion" in query_key or "abortion" in query_key)
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=spontaneous_abortion_override_id,
+                    mapped_label=spontaneous_abortion_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=o04_to_spontaneous_abortion",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(spontaneous_abortion_override_id)]
+                mapped_labels = [spontaneous_abortion_override_label]
+                mapped_label_keys = [norm_key(spontaneous_abortion_override_label)]
+            if icd10_code.startswith("O47") and braxton_hicks_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=braxton_hicks_override_id,
+                    mapped_label=braxton_hicks_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=o47_to_braxton_hicks_contractions",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(braxton_hicks_override_id)]
+                mapped_labels = [braxton_hicks_override_label]
+                mapped_label_keys = [norm_key(braxton_hicks_override_label)]
+            if icd10_code.startswith("O60") and premature_birth_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=premature_birth_override_id,
+                    mapped_label=premature_birth_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=o60_to_premature_birth",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(premature_birth_override_id)]
+                mapped_labels = [premature_birth_override_label]
+                mapped_label_keys = [norm_key(premature_birth_override_label)]
             if icd10_code.startswith("L90.5") and skin_disorder_override_id:
                 set_single_mapping(
                     row,
@@ -17118,6 +20009,23 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id(rhinitis_id)]
                     mapped_labels = [rhinitis_label]
                     mapped_label_keys = [norm_key(rhinitis_label)]
+            if (
+                icd10_code.startswith("N13")
+                and "obstructive" in query_key
+                and urinary_tract_obstruction_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=urinary_tract_obstruction_override_id,
+                    mapped_label=urinary_tract_obstruction_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=n13_to_urinary_tract_obstruction",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(urinary_tract_obstruction_override_id)]
+                mapped_labels = [urinary_tract_obstruction_override_label]
+                mapped_label_keys = [norm_key(urinary_tract_obstruction_override_label)]
             if icd10_code.startswith("N84"):
                 polyp_id, polyp_label = preferred_exact_term_for_phrase(
                     "female genital tract polyp",
@@ -17156,6 +20064,23 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id(peritonitis_id)]
                     mapped_labels = [peritonitis_label]
                     mapped_label_keys = [norm_key(peritonitis_label)]
+            if (
+                icd10_code.startswith("K66.0")
+                and "peritoneal adhesion" in query_key
+                and peritoneum_disease_override_id
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=peritoneum_disease_override_id,
+                    mapped_label=peritoneum_disease_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=k66_0_to_disease_of_peritoneum",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(peritoneum_disease_override_id)]
+                mapped_labels = [peritoneum_disease_override_label]
+                mapped_label_keys = [norm_key(peritoneum_disease_override_label)]
             if icd10_code.startswith(("B95", "B96", "B97")) and "cause of diseases classified elsewhere" in query_key:
                 if icd10_code.startswith(("B95", "B96")):
                     infection_phrase = "bacterial disease"
@@ -17212,6 +20137,31 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_labels = [ecoli_override_label]
                 mapped_label_keys = [norm_key(ecoli_override_label)]
             elif (
+                not icd10_code
+                and dry_eye_override_id
+                and "dry eye" in query_key
+                and not any(
+                    blocker in query_key
+                    for blocker in ("measurement", "score", "duration", "time", "screen")
+                )
+                and any(
+                    ("keratoconjunctivitis" in key) or ("sicca" in key) or ("dry eye" in key)
+                    for key in mapped_label_keys
+                )
+            ):
+                set_single_mapping(
+                    row,
+                    mapped_id=dry_eye_override_id,
+                    mapped_label=dry_eye_override_label,
+                    matched_via="trait_specific_override",
+                    note="trait_specific_override=dry_eye_text_to_dry_eye_syndrome",
+                    confidence_floor=0.850,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(dry_eye_override_id)]
+                mapped_labels = [dry_eye_override_label]
+                mapped_label_keys = [norm_key(dry_eye_override_label)]
+            elif (
                 icd10_code.startswith("H04")
                 and "dry eye" in query_key
                 and dry_eye_override_id
@@ -17241,6 +20191,19 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_ids = [canonicalize_trait_ontology_id(pertussis_override_id)]
                 mapped_labels = [pertussis_override_label]
                 mapped_label_keys = [norm_key(pertussis_override_label)]
+            elif icd10_code.startswith("A04.8") and intestinal_infectious_disease_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=intestinal_infectious_disease_override_id,
+                    mapped_label=intestinal_infectious_disease_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=a04_8_to_intestinal_infectious_disease",
+                    confidence_floor=0.800,
+                    force_review=True,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(intestinal_infectious_disease_override_id)]
+                mapped_labels = [intestinal_infectious_disease_override_label]
+                mapped_label_keys = [norm_key(intestinal_infectious_disease_override_label)]
             elif icd10_code.startswith("A04"):
                 set_multi_mapping(
                     row,
@@ -17273,10 +20236,56 @@ def harmonize_trait_rows_by_query_constraints(
                 ]
                 mapped_labels = ["intestinal disease", "viral disease"]
                 mapped_label_keys = [norm_key(label) for label in mapped_labels]
+            elif icd10_code.startswith("Z90.1") and mastectomy_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=mastectomy_override_id,
+                    mapped_label=mastectomy_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z90_1_to_mastectomy",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(mastectomy_override_id)]
+                mapped_labels = [mastectomy_override_label]
+                mapped_label_keys = [norm_key(mastectomy_override_label)]
+            elif icd10_code.startswith("Z90.2") and lung_transplantation_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=lung_transplantation_override_id,
+                    mapped_label=lung_transplantation_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z90_2_to_lung_transplantation",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(lung_transplantation_override_id)]
+                mapped_labels = [lung_transplantation_override_label]
+                mapped_label_keys = [norm_key(lung_transplantation_override_label)]
+            elif icd10_code.startswith("Z90.4") and digestive_system_surgery_override_id:
+                set_single_mapping(
+                    row,
+                    mapped_id=digestive_system_surgery_override_id,
+                    mapped_label=digestive_system_surgery_override_label,
+                    matched_via="icd10_specific_override",
+                    note="icd10_specific_override=z90_4_to_digestive_system_surgery",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(digestive_system_surgery_override_id)]
+                mapped_labels = [digestive_system_surgery_override_label]
+                mapped_label_keys = [norm_key(digestive_system_surgery_override_label)]
+            icd10_post_override_exact_only_prefixes = {"Z30"}
             for code_prefix, override_id, override_label, override_note in ICD10_POST_OVERRIDES:
+                if code_prefix == "Z90" and icd10_code != "Z90":
+                    continue
+                if code_prefix in icd10_post_override_exact_only_prefixes and icd10_code != code_prefix:
+                    continue
                 if code_prefix == "H52" and icd10_code.startswith("H52.1"):
                     continue
                 if code_prefix == "R19" and icd10_code.startswith("R19.7"):
+                    continue
+                if code_prefix == "I27" and icd10_code.startswith(("I27.0", "I27.2")):
                     continue
                 if icd10_code.startswith(code_prefix):
                     if not (
@@ -17315,7 +20324,7 @@ def harmonize_trait_rows_by_query_constraints(
                     "go term mappings always require review",
                 )
             )
-            if fuzzy_drift_via and ((weak_overlap and weak_anchor_overlap) or suspicious_evidence):
+            if fuzzy_drift_via:
                 xref_term_id, xref_term_label, xref_kind = best_icd10_xref_term(
                     icd10_code=icd10_code,
                     query_text=query_label or query_raw,
@@ -17326,13 +20335,19 @@ def harmonize_trait_rows_by_query_constraints(
                         mapped_id=xref_term_id,
                         mapped_label=xref_term_label,
                         matched_via="icd10_xref_harmonized",
-                        note=f"replaced_low_support_fuzzy_icd10_mapping_with_icd10_{xref_kind}_xref_term",
+                        note=f"replaced_fuzzy_icd10_mapping_with_icd10_{xref_kind}_xref_term",
                         confidence_floor=0.760,
                         force_review=True,
                     )
                     mapped_ids = [canonicalize_trait_ontology_id(xref_term_id)]
                     mapped_labels = [xref_term_label]
                     mapped_label_keys = [norm_key(xref_term_label)]
+                elif (weak_overlap and weak_anchor_overlap) or suspicious_evidence:
+                    clear_mapping_for_refallback(
+                        row,
+                        note="cleared_low_support_fuzzy_icd10_mapping_for_refallback",
+                    )
+                    continue
 
             if icd10_code.startswith("O"):
                 obstetric_tokens = (
@@ -17343,6 +20358,9 @@ def harmonize_trait_rows_by_query_constraints(
                     "labor",
                     "labour",
                     "delivery",
+                    "preterm",
+                    "premature",
+                    "birth",
                     "uter",
                     "braxton",
                     "contraction",
@@ -17370,6 +20388,52 @@ def harmonize_trait_rows_by_query_constraints(
                                 mapped_label=obstetric_label,
                                 matched_via="icd10_obstetric_harmonized",
                                 note="icd10_obstetric_harmonized=o47_false_labor_to_braxton_hicks",
+                                confidence_floor=0.800,
+                                force_review=False,
+                            )
+                            mapped_ids = [canonicalize_trait_ontology_id(obstetric_id)]
+                            mapped_labels = [obstetric_label]
+                            mapped_label_keys = [norm_key(obstetric_label)]
+                            break
+                if icd10_code.startswith("O20") and (
+                    "hemorrhage" in query_key or "haemorrhage" in query_key or "bleed" in query_key
+                ):
+                    for obstetric_phrase in ("Antepartum hemorrhage", "hemorrhage"):
+                        obstetric_id, obstetric_label = preferred_exact_term_for_phrase(
+                            obstetric_phrase,
+                            ontology_exact_index=ontology_exact_index,
+                            ontology_terms=ontology_terms,
+                        )
+                        if obstetric_id and obstetric_label:
+                            set_single_mapping(
+                                row,
+                                mapped_id=obstetric_id,
+                                mapped_label=obstetric_label,
+                                matched_via="icd10_obstetric_harmonized",
+                                note="icd10_obstetric_harmonized=o20_hemorrhage_to_antepartum_hemorrhage",
+                                confidence_floor=0.800,
+                                force_review=True,
+                            )
+                            mapped_ids = [canonicalize_trait_ontology_id(obstetric_id)]
+                            mapped_labels = [obstetric_label]
+                            mapped_label_keys = [norm_key(obstetric_label)]
+                            break
+                if icd10_code.startswith("O13") and (
+                    "hypertension" in query_key or "pregnancy-induced" in query_key
+                ):
+                    for obstetric_phrase in ("hypertension, pregnancy-induced", "Maternal hypertension"):
+                        obstetric_id, obstetric_label = preferred_exact_term_for_phrase(
+                            obstetric_phrase,
+                            ontology_exact_index=ontology_exact_index,
+                            ontology_terms=ontology_terms,
+                        )
+                        if obstetric_id and obstetric_label:
+                            set_single_mapping(
+                                row,
+                                mapped_id=obstetric_id,
+                                mapped_label=obstetric_label,
+                                matched_via="icd10_obstetric_harmonized",
+                                note="icd10_obstetric_harmonized=o13_to_pregnancy_induced_hypertension",
                                 confidence_floor=0.800,
                                 force_review=True,
                             )
@@ -17526,6 +20590,7 @@ def harmonize_trait_rows_by_query_constraints(
                 mapped_label_keys = [norm_key(keep_label)]
 
         if is_icd_context:
+            allow_oba_only_icd10 = bool(icd10_code and icd10_code.startswith("Z72.0"))
             non_oba_components: list[tuple[str, str]] = []
             for term_id, label in zip(mapped_ids, mapped_labels):
                 if trait_ontology_prefix(term_id) == "OBA":
@@ -17548,13 +20613,46 @@ def harmonize_trait_rows_by_query_constraints(
                 else:
                     mapped_ids = [term_id for term_id, _label in non_oba_components]
                     mapped_labels = [label for _term_id, label in non_oba_components]
-            if not non_oba_components and any(trait_ontology_prefix(term_id) == "OBA" for term_id in mapped_ids):
+            if (
+                not non_oba_components
+                and any(trait_ontology_prefix(term_id) == "OBA" for term_id in mapped_ids)
+                and not allow_oba_only_icd10
+            ):
                 clear_mapping_for_refallback(
                     row,
                     note="cleared_oba_mapping_in_icd10_context_for_disease_refallback",
                 )
                 continue
-            skip_xref_component_collapse = icd10_code.startswith(("A04", "A08"))
+            mapped_label_key_set = {norm_key(label) for label in mapped_labels if norm_key(label)}
+            explicit_multi_query = (
+                " without " not in query_key
+                and bool(re.search(r"(?:\b(?:and|or|vs|versus)\b|/|\|)", query_key))
+            )
+            preserve_dislocation_sprain_pair = (
+                "dislocation" in query_key
+                and "sprain" in query_key
+                and "dislocation" in mapped_label_key_set
+                and "sprain" in mapped_label_key_set
+            )
+            preserve_cellulitis_lymphangitis_pair = (
+                "cellulitis" in query_key
+                and "lymphangitis" in query_key
+                and any("cellulitis" in key for key in mapped_label_key_set)
+                and any("lymphangitis" in key for key in mapped_label_key_set)
+            )
+            preserve_hemiplegia_hemiparesis_pair = (
+                "hemiplegia" in query_key
+                and "hemiparesis" in query_key
+                and any("hemiplegia" in key for key in mapped_label_key_set)
+                and any("hemiparesis" in key for key in mapped_label_key_set)
+            )
+            skip_xref_component_collapse = (
+                icd10_code.startswith(("A04", "A08"))
+                or explicit_multi_query
+                or preserve_dislocation_sprain_pair
+                or preserve_cellulitis_lymphangitis_pair
+                or preserve_hemiplegia_hemiparesis_pair
+            )
             if len(mapped_ids) > 1 and icd10_code and not skip_xref_component_collapse:
                 xref_term_id, xref_term_label, xref_kind = best_icd10_xref_term(
                     icd10_code=icd10_code,
@@ -17593,6 +20691,7 @@ def harmonize_trait_rows_by_query_constraints(
         if (
             "(gene-based burden)" in norm_key(query_raw)
             and " in " in query_key
+            and " in situ " not in f" {query_key} "
             and not strict_manual_cache_locked
         ):
             primary_phrase = normalize(query_label.split(" in ", 1)[0].strip(" ,;:"))
@@ -17705,6 +20804,20 @@ def harmonize_trait_rows_by_query_constraints(
                         mapped_labels = [xref_term_label]
                         mapped_label_keys = [norm_key(xref_term_label)]
 
+        if icd10_code.startswith("C80") and neoplasm_override_id:
+            set_single_mapping(
+                row,
+                mapped_id=neoplasm_override_id,
+                mapped_label=neoplasm_override_label,
+                matched_via="icd10_specific_override",
+                note="icd10_specific_override=c80_to_neoplasm_post_without_clause",
+                confidence_floor=0.820,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(neoplasm_override_id)]
+            mapped_labels = [neoplasm_override_label]
+            mapped_label_keys = [norm_key(neoplasm_override_label)]
+
         if (
             (icd10_code.startswith("M67.4") or "ganglion" in query_key)
             and "ganglion" not in " ".join(mapped_labels).lower()
@@ -17773,6 +20886,12 @@ def harmonize_trait_rows_by_query_constraints(
         if "family history" in query_key or "illnesses of " in query_key:
             continue
         if icd10_code.startswith(("A04", "A08")):
+            continue
+        if (
+            icd10_code.startswith("M54.4")
+            and "sciatica" in query_key
+            and "back pain" in mapped_label_keys
+        ):
             continue
 
         # Collapse single-trait composite rows to one best-supported term.
@@ -17915,12 +21034,18 @@ def harmonize_trait_rows_by_field(
         cancer_register_container_field = (
             bool(field_labels)
             and any("type of cancer: icd10" in norm_key(label) for label in field_labels)
-            and any(normalize(query).startswith("Type of Cancer:") for query in query_values)
         )
         cancer_behaviour_container_field = (
             bool(field_labels)
             and any("behaviour of cancer tumour" in norm_key(label) for label in field_labels)
-            and any(normalize(query).startswith("Behaviour of cancer tumour") for query in query_values)
+        )
+        professional_diagnosis_container_field = (
+            bool(field_labels)
+            and any(
+                "doctor diagnosed" in norm_key(label)
+                or "doctor diagnosed" in normalize(label).lower()
+                for label in field_labels
+            )
         )
         option_response_container_field = (
             len(query_values) > 1
@@ -18139,6 +21264,39 @@ def harmonize_trait_rows_by_field(
         }
         non_go_ids = {mid for mid in mapped_ids if trait_ontology_prefix(mid) != "GO"}
         inconsistent = len(mapped_ids) > 1
+        medication_field_group = field_id in {"6177", "20003"}
+        medication_context_group = medication_field_group
+        if not medication_context_group:
+            medication_context_group = any(
+                normalize(row.get("matched_via", "")) == "ukb_medication_use_rule"
+                for row in group_rows
+            )
+        if not medication_context_group:
+            quick_medication_markers = (
+                "medication",
+                "drug",
+                "insulin",
+                "metformin",
+                "supplement",
+                "laxative",
+                "analgesic",
+                "pain relief",
+                "blood pressure",
+                "cholesterol lowering",
+            )
+            for row in group_rows:
+                query_text = normalize(row.get("input_query", ""))
+                query_key = norm_key(query_text)
+                if not query_key or not any(marker in query_key for marker in quick_medication_markers):
+                    continue
+                additional_text = normalize(
+                    row.get("input_additional_info", "")
+                    or row.get("additional_info", "")
+                    or row.get("further_info", "")
+                )
+                if trait_query_is_medication_use(query_text, additional_text):
+                    medication_context_group = True
+                    break
         if smoking_status_field:
             preferred_id = "EFO_0006527"
             preferred_label = "smoking status measurement"
@@ -18206,6 +21364,38 @@ def harmonize_trait_rows_by_field(
                 note = "field_response_status_harmonized=comparative_height_age10"
                 if changed:
                     note = f"{note}; preferred shared comparative height at age 10 term"
+                row["evidence"] = f"{evidence}; {note}" if evidence else note
+            mapped_ids = {preferred_id}
+            non_go_ids = {preferred_id}
+            inconsistent = False
+        if field_id == "22032":
+            preferred_id = "EFO_0008002"
+            preferred_label = normalize(
+                ontology_terms.get(
+                    preferred_id,
+                    TraitOntologyTerm(preferred_id, "physical activity measurement", ()),
+                ).label
+            ) or "physical activity measurement"
+            for row in group_rows:
+                changed = (
+                    normalize(row.get("mapped_trait_id", "")) != preferred_id
+                    or normalize(row.get("mapped_trait_label", "")) != preferred_label
+                )
+                row["mapped_trait_id"] = preferred_id
+                row["mapped_trait_label"] = preferred_label
+                row["matched_via"] = "trait_phrase_rule"
+                row["matched_on"] = "EFO/OBO label or synonym"
+                row["source_file"] = "efo.obo"
+                row["confidence"] = "1.000"
+                row["term_not_in_efo"] = ""
+                row["mondo_missing_ids"] = ""
+                negated = normalize(row.get("negation", "")) == "yes"
+                row["validation"] = "review_required" if negated else "validated"
+                row["qc_review_flag"] = "yes" if negated else "no"
+                evidence = normalize(row.get("evidence", ""))
+                note = "field_response_status_harmonized=physical_activity_group"
+                if changed:
+                    note = f"{note}; preferred shared physical activity measurement term for UKB field 22032"
                 row["evidence"] = f"{evidence}; {note}" if evidence else note
             mapped_ids = {preferred_id}
             non_go_ids = {preferred_id}
@@ -18311,11 +21501,13 @@ def harmonize_trait_rows_by_field(
                 inconsistent = len(mapped_ids) > 1
         if (
             inconsistent
+            and not medication_context_group
             and not self_report_condition_field
             and not family_history_container_field
             and not coded_status_container_field
             and not cancer_register_container_field
             and not cancer_behaviour_container_field
+            and not professional_diagnosis_container_field
             and not option_response_container_field
         ):
             shared_parent_id, shared_parent_label = select_specific_shared_parent_term(
@@ -18377,11 +21569,13 @@ def harmonize_trait_rows_by_field(
                 inconsistent = False
         if (
             inconsistent
+            and not medication_context_group
             and not self_report_condition_field
             and not family_history_container_field
             and not coded_status_container_field
             and not cancer_register_container_field
             and not cancer_behaviour_container_field
+            and not professional_diagnosis_container_field
             and not option_response_container_field
         ):
             family_note = f"field_family_inconsistency={field_id}:{'|'.join(sorted(mapped_ids))}"
@@ -18446,6 +21640,308 @@ def build_trait_qc_summary(rows: list[dict[str, str]]) -> dict[str, Any]:
         entry["validation_counts"] = dict(entry["validation_counts"])
         entry["matched_via_counts"] = dict(entry["matched_via_counts"])
     return summary
+
+
+def derive_trait_new_efo_candidate_term(row: dict[str, str]) -> str:
+    query = strip_wrapping_quotes(normalize(row.get("input_query", "")))
+    if not query:
+        return ""
+
+    query_key = norm_key(query)
+    candidate = query
+    input_icd10 = normalize_icd10_code(row.get("input_icd10", ""))
+
+    if input_icd10:
+        _parsed_code, parsed_label = parse_icd10_labeled_trait_text(query)
+        if parsed_label:
+            candidate = normalize(parsed_label)
+    elif query_key.startswith("icd10 ") and ":" in query:
+        candidate = normalize(query.split(":", 1)[1])
+
+    option_fragment = extract_option_fragment(candidate)
+    if option_fragment and not is_noninformative_option_fragment(option_fragment):
+        candidate = option_fragment
+
+    candidate = normalize(
+        re.sub(r"\(\s*ukb\s+data\s+field\s*[^)]*\)", "", candidate, flags=re.IGNORECASE)
+    )
+    candidate = normalize(
+        re.sub(
+            r"\(\s*(?:gene[- ]based burden|firth correction|spa correction)[^)]*\)",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+    )
+    candidate = normalize(re.sub(r"\(\s*\d+\s*\)$", "", candidate))
+    candidate = normalize(
+        re.sub(r"\s*/\s*icd10\s+[a-z0-9.]+\s*$", "", candidate, flags=re.IGNORECASE)
+    )
+    candidate = normalize(
+        re.sub(
+            r"^(?:non cancer illness code self reported|illnesses of (?:mother|father|siblings))\s*-\s*",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+    )
+    candidate = strip_wrapping_quotes(normalize(candidate))
+
+    if " in " in norm_key(candidate) and "gene based burden" in query_key:
+        candidate = normalize(candidate.split(" in ", 1)[0])
+
+    candidate_key = norm_key(candidate)
+    if not candidate_key:
+        return ""
+    if candidate_key in {
+        "yes",
+        "no",
+        "none",
+        "unknown",
+        "prefer not to answer",
+        "none of the above",
+    }:
+        return ""
+    if candidate_key in GENERIC_TRAIT_LABEL_KEYS:
+        return ""
+    if len(re.findall(r"[a-z0-9]+", candidate_key)) < 2 and len(candidate_key) < 6:
+        return ""
+    return candidate
+
+
+def normalize_trait_new_term_core(text: str) -> str:
+    value = normalize(text)
+    if not value:
+        return ""
+    value = normalize(
+        re.sub(
+            r"^(?:other and unspecified|other specified|other|unspecified)\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+    value = normalize(
+        re.sub(
+            r",?\s*(?:unspecified(?: site| place)?|other and unspecified|other specified|"
+            r"other|not elsewhere classified|nec)$",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+    return value
+
+
+def trait_row_needs_new_efo_suggestion(row: dict[str, str]) -> tuple[bool, str]:
+    if norm_key(row.get("negation", "")) == "yes":
+        return (False, "")
+
+    validation = norm_key(row.get("validation", ""))
+    matched_via = norm_key(row.get("matched_via", ""))
+    mapped_label = normalize(row.get("mapped_trait_label", ""))
+    mapped_id = normalize(row.get("mapped_trait_id", ""))
+    evidence_key = norm_key(row.get("evidence", ""))
+    specificity_loss = norm_key(row.get("specificity_loss_flag", "")) == "yes"
+
+    if validation == "not_mapped":
+        return (True, "not_mapped")
+    if specificity_loss:
+        return (True, "specificity_loss")
+    if validation != "review_required":
+        return (False, "")
+    if not mapped_id and not mapped_label:
+        return (True, "review_unmapped")
+    if is_generic_trait_label(mapped_label):
+        return (True, "generic_review_mapping")
+    if matched_via in {
+        "low_confidence_reasoned_fallback",
+        "field_shared_parent_harmonized",
+        "cache_parent_icd10",
+        "cache_parent_icd10_supplement",
+        "efo_obo_parent_icd10_xref",
+    }:
+        return (True, "fallback_or_parent_review")
+    if (
+        "fallback" in evidence_key
+        or "shared ontology parent" in evidence_key
+        or "broad umbrella term" in evidence_key
+    ):
+        return (True, "fallback_or_parent_review")
+    return (False, "")
+
+
+def trait_new_efo_reason_text(reason_key: str) -> tuple[str, str]:
+    mapping = {
+        "not_mapped": (
+            "No suitable existing EFO term was found for this repeated input concept.",
+            "High: direct unmapped rows become searchable once a reusable term exists.",
+        ),
+        "review_unmapped": (
+            "Row is review-required with no stable mapped ontology term.",
+            "High: removes repeated manual review for the same concept pattern.",
+        ),
+        "specificity_loss": (
+            "Current mapping loses specificity relative to the reported trait text.",
+            "High: preserves clinically relevant specificity for GWAS search and grouping.",
+        ),
+        "generic_review_mapping": (
+            "Current mapping lands on a broad umbrella term that is too generic.",
+            "Medium-High: improves precision for disease/trait retrieval.",
+        ),
+        "fallback_or_parent_review": (
+            "Current mapping relies on fallback or parent-level harmonization and remains review-required.",
+            "Medium: stabilizes mapping consistency across similar future inputs.",
+        ),
+    }
+    return mapping.get(
+        reason_key,
+        (
+            "Repeated review-required pattern suggests ontology coverage gap.",
+            "Medium: reduces curation overhead and improves consistency.",
+        ),
+    )
+
+
+def trait_new_efo_parent_hint(row: dict[str, str]) -> str:
+    mapped_id = normalize(row.get("mapped_trait_id", ""))
+    mapped_label = normalize(row.get("mapped_trait_label", ""))
+    if mapped_id and mapped_label:
+        return f"{mapped_id} ({mapped_label})"
+    if mapped_label:
+        return mapped_label
+    if mapped_id:
+        return mapped_id
+    return ""
+
+
+def trait_new_term_candidate_is_non_trait_context(text: str) -> bool:
+    key = norm_key(text)
+    if not key:
+        return True
+    if key in TRAIT_LATERALITY_ONLY_KEYS:
+        return True
+    if key in {
+        "place",
+        "street and highway",
+        "street",
+        "highway",
+        "home",
+        "school",
+        "workplace",
+        "both eyes",
+        "left eye",
+        "right eye",
+        "eye",
+        "eyes",
+    }:
+        return True
+    if "place of occurrence" in key:
+        return True
+    return False
+
+
+def build_trait_new_efo_term_suggestions(
+    rows: list[dict[str, str]],
+    *,
+    min_count: int = 2,
+) -> list[dict[str, str]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        include, reason_key = trait_row_needs_new_efo_suggestion(row)
+        if not include:
+            continue
+        candidate_term = derive_trait_new_efo_candidate_term(row)
+        if not candidate_term:
+            continue
+
+        core_candidate = normalize_trait_new_term_core(candidate_term)
+        key = norm_key(core_candidate or candidate_term)
+        if not key:
+            continue
+        if trait_new_term_candidate_is_non_trait_context(core_candidate or candidate_term):
+            continue
+        if key in {
+            "unspecified place",
+            "unspecified site",
+            "other specified",
+            "other and unspecified",
+            "other",
+            "unspecified",
+        }:
+            continue
+        mapped_label_key = norm_key(row.get("mapped_trait_label", ""))
+        if mapped_label_key and key == mapped_label_key:
+            continue
+        bucket = grouped.setdefault(
+            key,
+            {
+                "candidate_terms": Counter(),
+                "parent_hints": Counter(),
+                "reason_keys": Counter(),
+                "count": 0,
+                "example_query": "",
+                "example_row_id": "",
+                "example_icd10": "",
+            },
+        )
+        bucket["candidate_terms"][core_candidate or candidate_term] += 1
+        parent_hint = trait_new_efo_parent_hint(row)
+        if parent_hint:
+            bucket["parent_hints"][parent_hint] += 1
+        bucket["reason_keys"][reason_key] += 1
+        bucket["count"] += 1
+        if not bucket["example_query"]:
+            bucket["example_query"] = normalize(row.get("input_query", ""))
+            bucket["example_row_id"] = normalize(row.get("input_row_id", ""))
+            bucket["example_icd10"] = normalize_icd10_code(row.get("input_icd10", ""))
+
+    suggestion_rows: list[dict[str, str]] = []
+    threshold = max(1, int(min_count))
+    for bucket in grouped.values():
+        if int(bucket.get("count", 0)) < threshold:
+            continue
+        candidate_term = bucket["candidate_terms"].most_common(1)[0][0]
+        parent_hint = bucket["parent_hints"].most_common(1)[0][0] if bucket["parent_hints"] else ""
+        reason_key = bucket["reason_keys"].most_common(1)[0][0] if bucket["reason_keys"] else "not_mapped"
+        why_new_term, search_utility = trait_new_efo_reason_text(reason_key)
+        alternative = (
+            f"Map to {parent_hint} and keep validation=review_required until the new term is added."
+            if parent_hint
+            else "Keep as review_required and map to the nearest stable broad term."
+        )
+        suggestion_rows.append(
+            {
+                "candidate_term": candidate_term,
+                "proposed_parent_or_related": parent_hint,
+                "why_new_term": why_new_term,
+                "evidence_count_in_run": str(bucket["count"]),
+                "example_input_query": bucket["example_query"],
+                "example_input_row_id": bucket["example_row_id"],
+                "example_input_icd10": bucket["example_icd10"],
+                "search_utility": search_utility,
+                "alternative_if_no_new_term": alternative,
+            }
+        )
+
+    suggestion_rows.sort(
+        key=lambda row: (-int(row.get("evidence_count_in_run") or "0"), row.get("candidate_term", ""))
+    )
+    return suggestion_rows
+
+
+def write_trait_new_efo_suggestions_tsv(rows: list[dict[str, str]], path: Path) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=TRAIT_NEW_EFO_SUGGESTION_FIELDS,
+            delimiter="\t",
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
 
 
 class TraitMapStreamingWriter:
@@ -24383,6 +27879,67 @@ def load_cache_status_specs_from_manifest(manifest_path: Path) -> tuple[list[Cac
     return specs, manifest_meta
 
 
+def cli_option_present(raw_args: list[str], option: str) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in raw_args)
+
+
+def cache_status_cli_override_spec_names(raw_args: list[str]) -> set[str]:
+    override_specs: set[str] = set()
+    option_to_spec = {
+        "--term-cache": "term_cache",
+        "--analyte-cache": "analyte_cache",
+        "--uniprot-aliases": "uniprot_aliases_source",
+        "--uniprot-light-output": "uniprot_aliases_index",
+        "--metabolite-aliases": "metabolite_aliases",
+        "--trait-cache": "trait_cache",
+        "--ukb-field-supplement-cache": "ukb_field_supplement_cache",
+        "--icd10-supplement-cache": "icd10_supplement_cache",
+        "--icd10-label-cache": "icd10_label_cache",
+        "--icd10-label-alias-cache": "icd10_label_alias_cache",
+        "--icd10-mondo-sssom-cache": "mondo_sssom_cache",
+        "--efo-obo": "efo_obo",
+        "--index": "index",
+    }
+    for option, spec_name in option_to_spec.items():
+        if cli_option_present(raw_args, option):
+            override_specs.add(spec_name)
+    if cli_option_present(raw_args, "--ukb-field-catalog"):
+        override_specs.update(
+            {
+                "ukb_field_catalog",
+                "ukb_field_metadata",
+                "ukb_category_catalog",
+                "ukb_category_tree",
+            }
+        )
+    return override_specs
+
+
+def merge_cache_status_specs_with_cli_overrides(
+    *,
+    manifest_specs: list[CacheStatusSpec],
+    cli_specs: list[CacheStatusSpec],
+    override_names: set[str],
+) -> list[CacheStatusSpec]:
+    if not manifest_specs:
+        return cli_specs
+    if not override_names:
+        return manifest_specs
+    cli_by_name = {spec.name: spec for spec in cli_specs}
+    merged: list[CacheStatusSpec] = []
+    seen_names: set[str] = set()
+    for spec in manifest_specs:
+        if spec.name in override_names and spec.name in cli_by_name:
+            merged.append(cli_by_name[spec.name])
+        else:
+            merged.append(spec)
+        seen_names.add(spec.name)
+    for name in sorted(override_names):
+        if name not in seen_names and name in cli_by_name:
+            merged.append(cli_by_name[name])
+    return merged
+
+
 def evaluate_cache_status_specs(
     specs: list[CacheStatusSpec],
     *,
@@ -24539,6 +28096,7 @@ def is_generic_trait_label(label: str) -> bool:
         "behavior trait",
         "complex trait",
         "light",
+        "volume",
     }
     return key in generic
 
@@ -25160,8 +28718,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_cache_status.add_argument(
         "--prefer-manifest",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use paths listed in --manifest when available (default: on)",
+        default=False,
+        help="Use paths listed in --manifest when available (default: off)",
     )
     p_cache_status.add_argument("--term-cache", default=str(DEFAULT_TERM_CACHE), help="Measurement term cache TSV path")
     p_cache_status.add_argument("--analyte-cache", default=str(DEFAULT_ANALYTE_CACHE), help="Analyte cache TSV path")
@@ -25717,6 +29275,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     p_trait.add_argument(
+        "--new-efo-suggestions-output",
+        help=(
+            "Optional TSV path for per-run suggested new EFO terms inferred from "
+            "review/not-mapped rows. If omitted, no suggestion file is written."
+        ),
+    )
+    p_trait.add_argument(
+        "--new-efo-suggestions-min-count",
+        type=int,
+        default=2,
+        help=(
+            "Minimum repeated evidence count required to keep a suggested-new-EFO "
+            "candidate (default: 2)."
+        ),
+    )
+    p_trait.add_argument(
         "--ukb-field-catalog",
         default=str(DEFAULT_UKB_FIELD_CATALOG),
         help=(
@@ -25738,6 +29312,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Optional ICD10 code-label cache TSV (for example built with icd10-label-cache-build) "
             "used to populate input_icd10_label for bare ICD10 code queries."
+        ),
+    )
+    p_trait.add_argument(
+        "--manual-curator-seed-cache",
+        default=str(DEFAULT_MANUAL_CURATOR_SEED_CACHE),
+        help=(
+            "Manual curator seed cache TSV used as an extra exact trait cache source "
+            "(default: skills/pqtl-measurement-mapper/references/manual_curator_seed_cache.tsv)"
+        ),
+    )
+    p_trait.add_argument(
+        "--manual-curator-rescue-overrides",
+        default=str(DEFAULT_MANUAL_CURATOR_RESCUE_OVERRIDES),
+        help=(
+            "Manual curator rescue override TSV applied post-mapping "
+            "(default: skills/pqtl-measurement-mapper/references/manual_curator_rescue_overrides.tsv)"
+        ),
+    )
+    p_trait.add_argument(
+        "--manual-curator-cache-policy",
+        default="require",
+        choices=["require", "auto", "disable"],
+        help=(
+            "Control manual curator resource loading. "
+            "require=fail if files are missing (reproducible default), "
+            "auto=load only when present, disable=skip both resources."
         ),
     )
     p_trait.add_argument(
@@ -26171,6 +29771,7 @@ def main() -> int:
 
         if args.command == "cache-status":
             manifest_path = Path(args.manifest)
+            raw_cli_args = sys.argv[1:]
             manifest_meta: dict[str, Any] = {
                 "path": str(manifest_path),
                 "exists": manifest_path.exists(),
@@ -26179,37 +29780,50 @@ def main() -> int:
                 "error": "",
                 "index_summary": {},
             }
+            ukb_catalog_arg = normalize(args.ukb_field_catalog)
+            ukb_catalog_path = Path(args.ukb_field_catalog) if ukb_catalog_arg else DEFAULT_UKB_FIELD_CATALOG
+            (
+                ukb_catalog_path,
+                ukb_field_metadata_path,
+                ukb_category_catalog_path,
+                ukb_category_tree_path,
+            ) = setup_ukb_paths(ukb_catalog_path)
+            cli_specs = collect_default_cache_status_specs(
+                term_cache_path=Path(args.term_cache),
+                analyte_cache_path=Path(args.analyte_cache),
+                uniprot_alias_source_path=Path(args.uniprot_aliases),
+                uniprot_alias_index_path=Path(args.uniprot_light_output),
+                metabolite_alias_path=Path(args.metabolite_aliases),
+                trait_cache_path=Path(args.trait_cache),
+                ukb_field_catalog_path=ukb_catalog_path,
+                ukb_field_metadata_path=ukb_field_metadata_path,
+                ukb_category_catalog_path=ukb_category_catalog_path,
+                ukb_category_tree_path=ukb_category_tree_path,
+                ukb_field_supplement_cache_path=Path(args.ukb_field_supplement_cache),
+                icd10_supplement_cache_path=Path(args.icd10_supplement_cache),
+                icd10_label_cache_path=Path(args.icd10_label_cache),
+                icd10_label_alias_cache_path=Path(args.icd10_label_alias_cache),
+                mondo_sssom_cache_path=Path(args.icd10_mondo_sssom_cache),
+                efo_obo_path=Path(args.efo_obo),
+                index_path=Path(args.index),
+            )
             specs: list[CacheStatusSpec] = []
             if bool(args.prefer_manifest):
                 specs, manifest_meta = load_cache_status_specs_from_manifest(manifest_path)
-            if not specs:
-                ukb_catalog_arg = normalize(args.ukb_field_catalog)
-                ukb_catalog_path = Path(args.ukb_field_catalog) if ukb_catalog_arg else DEFAULT_UKB_FIELD_CATALOG
-                (
-                    ukb_catalog_path,
-                    ukb_field_metadata_path,
-                    ukb_category_catalog_path,
-                    ukb_category_tree_path,
-                ) = setup_ukb_paths(ukb_catalog_path)
-                specs = collect_default_cache_status_specs(
-                    term_cache_path=Path(args.term_cache),
-                    analyte_cache_path=Path(args.analyte_cache),
-                    uniprot_alias_source_path=Path(args.uniprot_aliases),
-                    uniprot_alias_index_path=Path(args.uniprot_light_output),
-                    metabolite_alias_path=Path(args.metabolite_aliases),
-                    trait_cache_path=Path(args.trait_cache),
-                    ukb_field_catalog_path=ukb_catalog_path,
-                    ukb_field_metadata_path=ukb_field_metadata_path,
-                    ukb_category_catalog_path=ukb_category_catalog_path,
-                    ukb_category_tree_path=ukb_category_tree_path,
-                    ukb_field_supplement_cache_path=Path(args.ukb_field_supplement_cache),
-                    icd10_supplement_cache_path=Path(args.icd10_supplement_cache),
-                    icd10_label_cache_path=Path(args.icd10_label_cache),
-                    icd10_label_alias_cache_path=Path(args.icd10_label_alias_cache),
-                    mondo_sssom_cache_path=Path(args.icd10_mondo_sssom_cache),
-                    efo_obo_path=Path(args.efo_obo),
-                    index_path=Path(args.index),
+            if specs:
+                override_names = cache_status_cli_override_spec_names(raw_cli_args)
+                specs = merge_cache_status_specs_with_cli_overrides(
+                    manifest_specs=specs,
+                    cli_specs=cli_specs,
+                    override_names=override_names,
                 )
+                if override_names:
+                    print(
+                        "[OK] cache-status CLI overrides applied for specs: "
+                        f"{','.join(sorted(override_names))}"
+                    )
+            else:
+                specs = cli_specs
             report = evaluate_cache_status_specs(specs, manifest_meta=manifest_meta)
             print_cache_status_report(report)
 
@@ -26786,6 +30400,19 @@ def main() -> int:
                 if icd10_label_cache_arg
                 else DEFAULT_ICD10_LABEL_CACHE
             )
+            manual_curator_seed_cache_arg = normalize(args.manual_curator_seed_cache)
+            manual_curator_seed_cache_path = (
+                Path(args.manual_curator_seed_cache)
+                if manual_curator_seed_cache_arg
+                else DEFAULT_MANUAL_CURATOR_SEED_CACHE
+            )
+            manual_curator_rescue_overrides_arg = normalize(args.manual_curator_rescue_overrides)
+            manual_curator_rescue_overrides_path = (
+                Path(args.manual_curator_rescue_overrides)
+                if manual_curator_rescue_overrides_arg
+                else DEFAULT_MANUAL_CURATOR_RESCUE_OVERRIDES
+            )
+            manual_curator_cache_policy = normalize(args.manual_curator_cache_policy).lower() or "require"
 
             extra_trait_cache_paths: list[Path] = []
             if ukb_field_supplement_cache_path is not None and ukb_field_supplement_cache_path.exists():
@@ -26808,6 +30435,54 @@ def main() -> int:
                     "[WARN] ICD10 supplemental trait cache not found; "
                     "setup can build it with setup-bundled-caches."
                 )
+            manual_curator_rescue_index: dict[tuple[str, str], dict[str, str]] = {}
+            if manual_curator_cache_policy == "disable":
+                print("[OK] manual curator caches disabled by --manual-curator-cache-policy=disable")
+            else:
+                missing_manual_paths = [
+                    str(path)
+                    for path in (
+                        manual_curator_seed_cache_path,
+                        manual_curator_rescue_overrides_path,
+                    )
+                    if not path.exists()
+                ]
+                if missing_manual_paths and manual_curator_cache_policy == "require":
+                    raise FileNotFoundError(
+                        "Manual curator cache policy=require but required files were not found: "
+                        f"{', '.join(missing_manual_paths)}. "
+                        "Use --manual-curator-cache-policy=auto to load only existing files, "
+                        "or --manual-curator-cache-policy=disable to skip both."
+                    )
+                if manual_curator_seed_cache_path.exists():
+                    extra_trait_cache_paths.append(manual_curator_seed_cache_path)
+                    print(
+                        f"[OK] loaded manual curator seed cache from {manual_curator_seed_cache_path}"
+                    )
+                elif manual_curator_cache_policy == "auto":
+                    print(
+                        "[WARN] manual curator seed cache not found; continuing without it "
+                        f"(path={manual_curator_seed_cache_path})"
+                    )
+                if manual_curator_rescue_overrides_path.exists():
+                    manual_curator_rescue_index = load_manual_curator_rescue_override_index(
+                        manual_curator_rescue_overrides_path
+                    )
+                    if manual_curator_rescue_index:
+                        print(
+                            "[OK] loaded manual curator rescue override index with "
+                            f"{len(manual_curator_rescue_index)} keys from {manual_curator_rescue_overrides_path}"
+                        )
+                    else:
+                        print(
+                            "[WARN] manual curator rescue override file loaded but no usable keys were found "
+                            f"(path={manual_curator_rescue_overrides_path})"
+                        )
+                elif manual_curator_cache_policy == "auto":
+                    print(
+                        "[WARN] manual curator rescue override file not found; continuing without it "
+                        f"(path={manual_curator_rescue_overrides_path})"
+                    )
             trait_cache_index = load_trait_cache_index(trait_cache_path, extra_paths=extra_trait_cache_paths)
             official_icd10_label_index: dict[str, tuple[str, ...]] = {}
             if icd10_label_cache_path.exists():
@@ -26937,6 +30612,12 @@ def main() -> int:
                 if qc_summary_output_arg
                 else output_path.with_name(f"{output_path.stem}{DEFAULT_TRAIT_QC_SUMMARY_SUFFIX}")
             )
+            new_efo_suggestions_output_arg = normalize(args.new_efo_suggestions_output)
+            new_efo_suggestions_output_path = (
+                Path(args.new_efo_suggestions_output)
+                if new_efo_suggestions_output_arg
+                else None
+            )
             flush_every = max(1, int(args.flush_every))
             memoize_queries = bool(args.memoize_queries)
             query_cache_max_entries = max(0, int(args.query_cache_max_entries))
@@ -26995,6 +30676,12 @@ def main() -> int:
                     rows,
                     ontology_terms=ontology_index["terms"],
                 )
+                rows = apply_manual_curator_rescue_overrides(
+                    rows,
+                    ontology_terms=ontology_index["terms"],
+                    override_index=manual_curator_rescue_index,
+                    override_source_name=manual_curator_rescue_overrides_path.name,
+                )
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)
@@ -27044,6 +30731,12 @@ def main() -> int:
                     rows,
                     ontology_terms=ontology_index["terms"],
                 )
+                rows = apply_manual_curator_rescue_overrides(
+                    rows,
+                    ontology_terms=ontology_index["terms"],
+                    override_index=manual_curator_rescue_index,
+                    override_source_name=manual_curator_rescue_overrides_path.name,
+                )
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)
@@ -27061,6 +30754,26 @@ def main() -> int:
                 json.dumps(qc_summary, indent=2, ensure_ascii=True) + "\n",
                 encoding="utf-8",
             )
+            if new_efo_suggestions_output_path is not None:
+                suggestion_rows = build_trait_new_efo_term_suggestions(
+                    rows,
+                    min_count=max(1, int(args.new_efo_suggestions_min_count)),
+                )
+                suggestion_count = write_trait_new_efo_suggestions_tsv(
+                    suggestion_rows,
+                    new_efo_suggestions_output_path,
+                )
+                suggestion_csv_path = new_efo_suggestions_output_path.with_suffix(".csv")
+                write_dict_rows_csv(
+                    suggestion_rows,
+                    suggestion_csv_path,
+                    TRAIT_NEW_EFO_SUGGESTION_FIELDS,
+                )
+                print(
+                    f"[OK] wrote {suggestion_count} suggested-new-EFO rows to "
+                    f"{new_efo_suggestions_output_path}"
+                )
+                print(f"[OK] wrote CSV copy to {suggestion_csv_path}")
             mapped_csv_path = output_path.with_suffix(".csv")
             write_trait_csv(rows, mapped_csv_path)
             print(f"[OK] wrote CSV copy to {mapped_csv_path}")
