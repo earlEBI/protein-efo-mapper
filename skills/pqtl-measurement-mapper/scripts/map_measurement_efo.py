@@ -10931,15 +10931,42 @@ def map_trait_queries(
         candidates = filter_non_disease_entity_candidates(candidates)
         best_any = filter_non_disease_entity_candidates(best_any)
 
+        def candidate_has_exact_query_agreement(candidate: Candidate) -> bool:
+            label_key = norm_key(candidate.label)
+            if label_key and label_key in query_exact_key_set:
+                return True
+            ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(candidate.efo_id)]
+            ids = [item for item in ids if item]
+            labels = split_multi_labels(candidate.label, expected_n=len(ids))
+            for idx, term_id in enumerate(ids):
+                term = ontology_terms.get(term_id)
+                fallback_label_key = norm_key(labels[idx] if idx < len(labels) else "")
+                if fallback_label_key and fallback_label_key in query_exact_key_set:
+                    return True
+                if term is None:
+                    continue
+                if term.label_key and term.label_key in query_exact_key_set:
+                    return True
+                if any(syn_key in query_exact_key_set for syn_key in term.exact_synonym_keys):
+                    return True
+            return False
+
         def filter_disease_like_candidates_for_nondisease_queries(target_candidates: list[Candidate]) -> list[Candidate]:
             if query_has_disease_intent:
                 return target_candidates
             kept: list[Candidate] = []
             for candidate in target_candidates:
+                disease_like = candidate_is_disease_like(candidate, ontology_terms=ontology_terms)
+                allow_exact_trait_text_disease_match = (
+                    input_type == "trait_text"
+                    and candidate.matched_via in {"efo_obo_exact", "cache_exact_text", "cache_exact_text_rescued"}
+                    and candidate_has_exact_query_agreement(candidate)
+                )
                 if (
                     candidate.matched_via != "ukb_medication_use_rule"
                     and candidate.matched_via != "trait_phrase_rule"
-                    and candidate_is_disease_like(candidate, ontology_terms=ontology_terms)
+                    and disease_like
+                    and not allow_exact_trait_text_disease_match
                 ):
                     blocked_review_candidates.append(candidate)
                     continue
