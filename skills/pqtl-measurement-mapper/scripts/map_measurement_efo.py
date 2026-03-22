@@ -1130,6 +1130,29 @@ DISEASE_SUFFIX_HINTS = (
     "paresis",
     "plasia",
 )
+BACKGROUND_TRAIT_PRIMARY_CLAUSE_TAIL_DISEASE_HINT_RE = re.compile(
+    r"\b(?:disease|diseases|disorder|disorders|syndrome|syndromes|condition|conditions)\b",
+    re.IGNORECASE,
+)
+BACKGROUND_TRAIT_PRIMARY_CLAUSE_TAIL_BLOCKLIST_RE = re.compile(
+    r"\b(?:remission|last year|last month|last week|last day|the last|at assessment|interview|screen(?:s|ing)?|shown|displayed)\b",
+    re.IGNORECASE,
+)
+BACKGROUND_TRAIT_PRIMARY_CLAUSE_GENERIC_PRIMARY_KEYS = {
+    "pain",
+    "falls",
+    "fall",
+    "symptom",
+    "problem",
+    "condition",
+    "disorder",
+    "disease",
+}
+PHYSICAL_ACTIVITY_MEASUREMENT_CUE_RE = re.compile(
+    r"\b(?:met(?:abolic equivalent task)?|minutes?(?:/|\s+per\s+)?(?:week|day)|duration|frequency|time spent|"
+    r"summed days?|average|acceleration|sedentary|vigorous|moderate|walk(?:ing|ed)?|exercise|recommendation)\b",
+    re.IGNORECASE,
+)
 MEASUREMENT_HINT_TOKENS = {
     "measurement",
     "amount",
@@ -1204,6 +1227,7 @@ FORBIDDEN_TRAIT_LABEL_KEYS = {
     "family relationship",
     "volume",
 }
+DISALLOWED_TRAIT_OUTPUT_PREFIXES = {"UBERON", "NCIT"}
 STANDALONE_TEMPORAL_TRAIT_KEYS = {
     "age at diagnosis",
     "age at onset",
@@ -3104,6 +3128,44 @@ def has_disease_hint(text: str) -> bool:
     return any(tok.endswith(DISEASE_SUFFIX_HINTS) for tok in toks)
 
 
+def background_trait_primary_clause_candidate(
+    *,
+    query_raw: str,
+    query_label: str,
+    query_key: str,
+    is_icd_context: bool,
+    strict_manual_cache_locked: bool,
+    current_matched_via: str,
+) -> str:
+    if strict_manual_cache_locked or not is_icd_context:
+        return ""
+    if " in " not in query_key or " in situ " in f" {query_key} ":
+        return ""
+    if current_matched_via == "icd10_specific_override":
+        return ""
+    primary_part, tail_part = query_label.split(" in ", 1)
+    primary_phrase = normalize(primary_part.strip(" ,;:"))
+    tail_phrase = normalize(tail_part.strip(" ,;:"))
+    if not primary_phrase or not tail_phrase:
+        return ""
+    primary_key = norm_key(primary_phrase)
+    tail_key = norm_key(tail_phrase)
+    if not primary_key or not tail_key:
+        return ""
+    if primary_key in BACKGROUND_TRAIT_PRIMARY_CLAUSE_GENERIC_PRIMARY_KEYS:
+        return ""
+    if BACKGROUND_TRAIT_PRIMARY_CLAUSE_TAIL_BLOCKLIST_RE.search(tail_key):
+        return ""
+    tail_has_disease_context = (
+        has_disease_hint(tail_key)
+        or "classified elsewhere" in tail_key
+        or bool(BACKGROUND_TRAIT_PRIMARY_CLAUSE_TAIL_DISEASE_HINT_RE.search(tail_key))
+    )
+    if not tail_has_disease_context:
+        return ""
+    return primary_phrase
+
+
 def has_ukb_disease_context(text: str) -> bool:
     key = norm_key(text)
     if not key:
@@ -4030,6 +4092,7 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
     token_freq: Counter[str] = Counter()
     rownum = 0
     skipped_known_bad_cache_rows = 0
+    missing_cache_markers = {"-", "NA", "N/A", "NONE", "NULL", "NAN"}
 
     for cache_path in cache_paths:
         with cache_path.open("r", encoding="utf-8", newline="") as handle:
@@ -4038,7 +4101,10 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
                 rownum += 1
                 reported_trait = normalize(row.get("Curated reported trait") or row.get("DISEASE/TRAIT") or "")
                 lookup_text = normalize(row.get("Lookup text") or row.get("DISEASE/TRAIT") or reported_trait)
-                icd10 = normalize_icd10_code(row.get("ICD10") or "")
+                raw_icd10 = normalize(row.get("ICD10") or "")
+                if raw_icd10.upper() in missing_cache_markers:
+                    raw_icd10 = ""
+                icd10 = normalize_icd10_code(raw_icd10)
                 # Some cache sources store ICD10 only inside the reported trait
                 # text (for example "ICD10 G40.3: ...") and leave the ICD10
                 # column empty. Index those rows as ICD10 too so exact ICD10
@@ -4398,6 +4464,10 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
     flush_term()
     for term_id, label in xref_label_hints.items():
         if term_id in terms or not label:
+            continue
+        # Do not re-materialize obsolete cross-reference IDs as active terms.
+        # These should resolve via replaced_by/consider pathways elsewhere.
+        if term_id in obsolete_terms:
             continue
         terms[term_id] = TraitOntologyTerm(
             term_id=term_id,
@@ -6227,6 +6297,13 @@ def candidate_has_go_mapping(candidate_id: str) -> bool:
     return any(trait_ontology_prefix(part) == "GO" for part in parts)
 
 
+def candidate_has_hp_mapping(candidate_id: str) -> bool:
+    parts = split_multi_ids(candidate_id)
+    if not parts:
+        return False
+    return any(trait_ontology_prefix(part) == "HP" for part in parts)
+
+
 def candidate_has_uberon_mapping(candidate_id: str) -> bool:
     parts = split_multi_ids(candidate_id)
     if not parts:
@@ -6500,6 +6577,29 @@ def extract_professional_diagnosis_trait_fragment(query: str, additional_info: s
     return ""
 
 
+@lru_cache(maxsize=300_000)
+def query_has_professional_diagnosis_context(query: str, additional_info: str) -> bool:
+    combined = " ".join(
+        part
+        for part in (
+            normalize(query),
+            derive_primary_trait_query_from_additional_info(additional_info),
+            normalize(additional_info),
+        )
+        if part
+    )
+    key = norm_key(combined)
+    if not key:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:diagnosed\s+by\s+a\s+professional|doctor[-\s]*diagnosed|doctor\s+diagnosed)\b",
+            key,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def query_prefers_intervertebral_disc_displacement(query: str, additional_info: str) -> bool:
     combined = " ".join(
         part
@@ -6597,6 +6697,10 @@ def normalize_trait_phrase_aliases(text: str) -> str:
         flags=re.IGNORECASE,
     )
     replacements = (
+        (
+            r"^\s*disorders of ([a-z][a-z-]*(?: [a-z][a-z-]*){0,3}) metabolism\s*$",
+            r"disorder of \1 metabolism",
+        ),
         (r"\bcopd\b", "chronic obstructive pulmonary disease"),
         (r"\btb\b", "tuberculosis"),
         (r"\bibs\b", "irritable bowel syndrome"),
@@ -7379,12 +7483,32 @@ def map_trait_queries(
     for item in query_inputs:
         input_row_id = normalize(item.get("row_id", ""))
         query = normalize(item.get("query", ""))
+        query = normalize(
+            re.sub(
+                r"\(\s*(?:gene-based burden|firth correction|spa correction)[^)]*\)",
+                " ",
+                query,
+                flags=re.IGNORECASE,
+            )
+        )
+        query = normalize(re.sub(r"\bgene\s*[- ]?based\s+burden\b", " ", query, flags=re.IGNORECASE))
         input_type = normalize_trait_input_type(item.get("input_type", "auto"))
         trait_scale = normalize_trait_scale(item.get("trait_scale", "auto"))
         source_code = normalize(item.get("source_code", ""))
         source_data_type = normalize(item.get("source_data_type", ""))
         source_data_type_key = norm_key(source_data_type)
         additional_info = normalize(item.get("additional_info", ""))
+        additional_info = normalize(
+            re.sub(
+                r"\(\s*(?:gene-based burden|firth correction|spa correction)[^)]*\)",
+                " ",
+                additional_info,
+                flags=re.IGNORECASE,
+            )
+        )
+        additional_info = normalize(
+            re.sub(r"\bgene\s*[- ]?based\s+burden\b", " ", additional_info, flags=re.IGNORECASE)
+        )
         icd10 = normalize_icd10_code(item.get("icd10", ""))
         icd10_label = ""
         icd10_match_label = ""
@@ -8310,7 +8434,12 @@ def map_trait_queries(
         if temporal_pair_candidate is not None:
             candidates.append(temporal_pair_candidate)
 
-        professional_diagnosis_fragment = extract_professional_diagnosis_trait_fragment(query, additional_info)
+        professional_diagnosis_context = query_has_professional_diagnosis_context(query, additional_info)
+        professional_diagnosis_fragment = (
+            extract_professional_diagnosis_trait_fragment(query, additional_info)
+            if professional_diagnosis_context
+            else ""
+        )
         professional_fragment_key = norm_key(professional_diagnosis_fragment)
         if professional_fragment_key == "meningitis":
             # Prefer broad meningitis for generic rows; infectious subtype needs explicit infection cues.
@@ -8384,7 +8513,41 @@ def map_trait_queries(
                         is_validated=True,
                     )
                 )
-        if professional_diagnosis_fragment:
+        if "reticulocyte" in normalized_query_context_spaced:
+            has_reticulocyte_hemoglobin_context = bool(
+                re.search(r"\b(?:hemoglobin|haemoglobin|chr)\b", normalized_query_context_spaced, flags=re.IGNORECASE)
+            )
+            if (
+                not has_reticulocyte_hemoglobin_context
+                and re.search(r"\b(?:percentage|percent|fraction)\b", normalized_query_context_spaced, flags=re.IGNORECASE)
+            ):
+                amount_candidate = phrase_rule_exact_candidate(
+                    phrase="reticulocyte amount",
+                    score=0.998,
+                    matched_via="trait_phrase_rule",
+                    evidence="reticulocyte percentage/fraction row treated as reticulocyte amount (avoid CHr synonym collision)",
+                    validated=True,
+                    ontology_exact_index=ontology_exact_index,
+                    ontology_terms=ontology_terms,
+                )
+                if amount_candidate is not None:
+                    candidates.append(amount_candidate)
+            elif (
+                not has_reticulocyte_hemoglobin_context
+                and re.search(r"\bcount\b", normalized_query_context_spaced, flags=re.IGNORECASE)
+            ):
+                count_candidate = phrase_rule_exact_candidate(
+                    phrase="reticulocyte count",
+                    score=0.996,
+                    matched_via="trait_phrase_rule",
+                    evidence="reticulocyte count row treated as reticulocyte count",
+                    validated=True,
+                    ontology_exact_index=ontology_exact_index,
+                    ontology_terms=ontology_terms,
+                )
+                if count_candidate is not None:
+                    candidates.append(count_candidate)
+        if professional_diagnosis_fragment and professional_diagnosis_context:
             professional_fragment_key = professional_diagnosis_fragment.lower().replace("-", " ")
             if "social anxiety" in professional_fragment_key or "social phobia" in professional_fragment_key:
                 diagnosis_candidate = phrase_rule_exact_candidate(
@@ -11386,6 +11549,17 @@ def map_trait_queries(
             candidates = [candidate for candidate in candidates if not candidate_has_go_mapping(candidate.efo_id)] + [
                 candidate for candidate in candidates if candidate_has_go_mapping(candidate.efo_id)
             ]
+        if any(not candidate_has_hp_mapping(candidate.efo_id) for candidate in candidates):
+            for candidate in candidates:
+                if candidate_has_hp_mapping(candidate.efo_id):
+                    candidate.score = min(candidate.score, 0.72)
+                    candidate.is_validated = False
+                    candidate.evidence = (
+                        f"{candidate.evidence}; HP term demoted in favor of non-HP trait candidates"
+                    )
+            candidates = [candidate for candidate in candidates if not candidate_has_hp_mapping(candidate.efo_id)] + [
+                candidate for candidate in candidates if candidate_has_hp_mapping(candidate.efo_id)
+            ]
         for candidate in candidates:
             if candidate_has_go_mapping(candidate.efo_id):
                 candidate.is_validated = False
@@ -12710,13 +12884,16 @@ def map_trait_queries(
         elif "spon icd sr bin" in raw_query_key:
             # Ambiguous shorthand token; avoid misleading disease assignment.
             force_not_mapped_late = True
-        elif "rgc" in raw_query_key and raw_query_key.startswith("fractures"):
+        elif (
+            ("rgc" in raw_query_key and raw_query_key.startswith("fractures"))
+            or bool(re.fullmatch(r"fractures?(?:\s*\(.*\))?", raw_query_key, flags=re.IGNORECASE))
+        ):
             late_forced_candidate = Candidate(
                 efo_id="EFO_0003931",
                 label="bone fracture",
                 score=1.0,
                 matched_via="trait_phrase_rule",
-                evidence="late override: RGC fractures shorthand treated as broad bone fracture",
+                evidence="late override: broad fractures shorthand treated as broad bone fracture",
                 is_validated=False,
             )
         elif raw_query_key.startswith("degree bothered by"):
@@ -13593,13 +13770,26 @@ def map_trait_queries(
                 evidence="late override: age-stopped-smoking row forced to smoking cessation plus age at onset",
                 is_validated=False,
             )
-        elif "weight change during worst episode of depression" in raw_query_key:
+        elif (
+            "weight change during worst episode of depression" in raw_query_key
+            or any(
+                phrase in raw_query_key
+                for phrase in (
+                    "feelings of tiredness during worst episode of depression",
+                    "feelings of tiredness during worst period of depression",
+                    "feelings of heaviness in limbs during worst episode of depression",
+                    "change in appetite during worst episode of depression",
+                    "brightening of mood in response to positive events during worst episode of depression",
+                    "time of day that mood was worse during worst episode of depression",
+                )
+            )
+        ):
             late_forced_candidate = Candidate(
                 efo_id="EFO_0007006",
                 label="depressive symptom measurement",
                 score=1.05,
                 matched_via="trait_phrase_rule",
-                evidence="late override: depression weight-change row forced to depressive symptom measurement",
+                evidence="late override: worst-episode depression symptom row forced to depressive symptom measurement",
                 is_validated=True,
             )
         elif (
@@ -14605,6 +14795,417 @@ def clear_forbidden_trait_mapping(row: dict[str, str], *, note: str) -> None:
     row["mondo_missing_ids"] = ""
     evidence = normalize(row.get("evidence", ""))
     row["evidence"] = f"{evidence}; {note}" if evidence else note
+
+
+def apply_obsolete_trait_id_output_guard(
+    rows: list[dict[str, str]],
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+    obsolete_terms: dict[str, TraitObsoleteTerm],
+    ontology_exact_index: dict[str, set[str]],
+) -> list[dict[str, str]]:
+    """Final guard: remap obsolete ontology IDs and never emit them in output."""
+
+    def clear_mapping(row: dict[str, str], *, note: str) -> None:
+        row["mapped_trait_id"] = ""
+        row["mapped_trait_label"] = ""
+        row["confidence"] = "0.000"
+        row["matched_via"] = "none"
+        row["matched_on"] = ""
+        row["source_file"] = ""
+        row["validation"] = "not_mapped"
+        row["qc_review_flag"] = "yes"
+        row["specificity_loss_flag"] = "no"
+        row["specificity_loss_notes"] = ""
+        row["term_not_in_efo"] = ""
+        row["mondo_missing_ids"] = ""
+        evidence = normalize(row.get("evidence", ""))
+        row["evidence"] = f"{evidence}; {note}" if evidence else note
+
+    for row in rows:
+        mapped_ids_raw = normalize(row.get("mapped_trait_id", ""))
+        if not mapped_ids_raw:
+            continue
+
+        mapped_ids = [
+            canonicalize_trait_ontology_id(part)
+            for part in split_multi_ids(mapped_ids_raw)
+            if canonicalize_trait_ontology_id(part)
+        ]
+        if not mapped_ids:
+            continue
+
+        mapped_labels = split_multi_labels(
+            normalize(row.get("mapped_trait_label", "")),
+            expected_n=len(mapped_ids),
+        )
+        if len(mapped_labels) != len(mapped_ids):
+            mapped_labels = [
+                normalize(ontology_terms.get(term_id, TraitOntologyTerm(term_id, "", ())).label)
+                for term_id in mapped_ids
+            ]
+
+        remapped_pairs: list[tuple[str, str]] = []
+        remap_notes: list[str] = []
+        unresolved_obsolete: list[str] = []
+
+        for idx, term_id in enumerate(mapped_ids):
+            fallback_label = normalize(mapped_labels[idx] if idx < len(mapped_labels) else "")
+            if term_id in ontology_terms:
+                canonical_label = normalize(ontology_terms[term_id].label) or fallback_label or term_id
+                remapped_pairs.append((term_id, canonical_label))
+                continue
+
+            obsolete_meta = obsolete_terms.get(term_id)
+            if obsolete_meta is None:
+                remapped_pairs.append((term_id, fallback_label or term_id))
+                continue
+
+            replacement_ids = [rid for rid in obsolete_meta.replaced_by if rid in ontology_terms]
+            if not replacement_ids:
+                consider_ids = [cid for cid in obsolete_meta.consider if cid in ontology_terms]
+                if len(consider_ids) == 1:
+                    replacement_ids = [consider_ids[0]]
+            if not replacement_ids and fallback_label:
+                label_rescue_ids = [
+                    rid
+                    for rid in exact_ontology_term_ids_for_keys(
+                        trait_query_exact_norm_variants(fallback_label),
+                        ontology_exact_index=ontology_exact_index,
+                        ontology_terms=ontology_terms,
+                    )
+                    if rid in ontology_terms and rid not in obsolete_terms and rid != term_id
+                ]
+                if label_rescue_ids:
+                    label_rescue_ids = sorted(
+                        label_rescue_ids,
+                        key=lambda rid: (
+                            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(rid), 999),
+                            rid,
+                        ),
+                    )
+                    replacement_ids = [label_rescue_ids[0]]
+
+            if replacement_ids:
+                remap_notes.append(f"{term_id}->{','.join(replacement_ids)}")
+                for replacement_id in replacement_ids:
+                    canonical_label = normalize(ontology_terms[replacement_id].label) or replacement_id
+                    remapped_pairs.append((replacement_id, canonical_label))
+            else:
+                unresolved_obsolete.append(term_id)
+
+        dedup_ids: list[str] = []
+        dedup_labels: list[str] = []
+        seen_ids: set[str] = set()
+        for term_id, label in remapped_pairs:
+            if term_id in seen_ids:
+                continue
+            seen_ids.add(term_id)
+            dedup_ids.append(term_id)
+            dedup_labels.append(label)
+
+        if not dedup_ids:
+            if unresolved_obsolete:
+                clear_mapping(
+                    row,
+                    note=(
+                        "obsolete_id_guard_unresolved="
+                        + "|".join(sorted(set(unresolved_obsolete)))
+                    ),
+                )
+            continue
+
+        output_ids = "|".join(format_ontology_id_for_output(term_id) for term_id in dedup_ids)
+        output_labels = "|".join(dedup_labels)
+        changed = (
+            output_ids != normalize(row.get("mapped_trait_id", ""))
+            or output_labels != normalize(row.get("mapped_trait_label", ""))
+        )
+        row["mapped_trait_id"] = output_ids
+        row["mapped_trait_label"] = output_labels
+
+        if unresolved_obsolete:
+            row["validation"] = "review_required"
+            row["qc_review_flag"] = "yes"
+
+        term_not_in_efo, mondo_missing_ids = mondo_import_qc(
+            output_ids,
+            ontology_terms=ontology_terms,
+        )
+        row["term_not_in_efo"] = term_not_in_efo
+        row["mondo_missing_ids"] = mondo_missing_ids
+
+        if changed or remap_notes or unresolved_obsolete:
+            evidence = normalize(row.get("evidence", ""))
+            notes: list[str] = []
+            if remap_notes:
+                notes.append("obsolete_id_guard_remapped=" + "|".join(remap_notes))
+            if unresolved_obsolete:
+                notes.append("obsolete_id_guard_unresolved=" + "|".join(sorted(set(unresolved_obsolete))))
+            note = "; ".join(notes) if notes else "obsolete_id_guard_applied"
+            row["evidence"] = f"{evidence}; {note}" if evidence else note
+
+    return rows
+
+
+def apply_no_uberon_output_guard(
+    rows: list[dict[str, str]],
+    *,
+    ontology_terms: dict[str, TraitOntologyTerm],
+    ontology_exact_index: dict[str, set[str]],
+) -> list[dict[str, str]]:
+    """Final guard: never emit disallowed ontology-prefix mappings as trait outputs."""
+
+    def is_disallowed(term_id: str) -> bool:
+        return trait_ontology_prefix(term_id) in DISALLOWED_TRAIT_OUTPUT_PREFIXES
+
+    def best_non_disallowed_exact(phrase: str) -> tuple[str, str]:
+        phrase_norm = normalize(phrase)
+        if not phrase_norm:
+            return "", ""
+        exact_ids = exact_ontology_term_ids_for_keys(
+            trait_query_exact_norm_variants(phrase_norm),
+            ontology_exact_index=ontology_exact_index,
+            ontology_terms=ontology_terms,
+        )
+        allowed_ids = [
+            term_id
+            for term_id in exact_ids
+            if term_id in ontology_terms and not is_disallowed(term_id)
+        ]
+        if not allowed_ids:
+            return "", ""
+        phrase_key = norm_key(phrase_norm)
+        exact_label_ids = [
+            term_id
+            for term_id in allowed_ids
+            if norm_key(ontology_terms.get(term_id, TraitOntologyTerm(term_id, "", ())).label)
+            == phrase_key
+        ]
+        candidate_ids = exact_label_ids or allowed_ids
+        ordered = sorted(
+            candidate_ids,
+            key=lambda term_id: (
+                TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+                term_id,
+            ),
+        )
+        if not ordered:
+            return "", ""
+        chosen_id = ordered[0]
+        chosen_term = ontology_terms.get(chosen_id)
+        if chosen_term is None:
+            return "", ""
+        return chosen_id, chosen_term.label
+
+    def set_single_mapping(
+        row: dict[str, str],
+        *,
+        mapped_id: str,
+        mapped_label: str,
+        note: str,
+        confidence_floor: float = 0.760,
+        force_review: bool = True,
+    ) -> None:
+        oid = canonicalize_trait_ontology_id(mapped_id)
+        if not oid:
+            return
+        label = normalize(mapped_label)
+        if not label and oid in ontology_terms:
+            label = normalize(ontology_terms[oid].label)
+        row["mapped_trait_id"] = format_ontology_id_for_output(oid)
+        row["mapped_trait_label"] = label
+        try:
+            current_conf = float(normalize(row.get("confidence", "0")) or "0")
+        except Exception:
+            current_conf = 0.0
+        row["confidence"] = f"{max(current_conf, confidence_floor):.3f}"
+        row["matched_via"] = "disallowed_prefix_guard_harmonized"
+        row["matched_on"] = "EFO/OBO label or synonym"
+        row["source_file"] = "efo.obo"
+        if force_review:
+            row["validation"] = "review_required"
+            row["qc_review_flag"] = "yes"
+        else:
+            row["validation"] = "validated"
+            row["qc_review_flag"] = "no"
+        row["specificity_loss_flag"] = "no"
+        row["specificity_loss_notes"] = ""
+        term_not_in_efo, mondo_missing_ids = mondo_import_qc(
+            row["mapped_trait_id"],
+            ontology_terms=ontology_terms,
+        )
+        row["term_not_in_efo"] = term_not_in_efo
+        row["mondo_missing_ids"] = mondo_missing_ids
+        evidence = normalize(row.get("evidence", ""))
+        row["evidence"] = f"{evidence}; {note}" if evidence else note
+
+    def clear_mapping(row: dict[str, str], *, note: str) -> None:
+        row["mapped_trait_id"] = ""
+        row["mapped_trait_label"] = ""
+        row["confidence"] = "0.000"
+        row["matched_via"] = "none"
+        row["matched_on"] = ""
+        row["source_file"] = ""
+        row["validation"] = "not_mapped"
+        row["qc_review_flag"] = "yes"
+        row["specificity_loss_flag"] = "no"
+        row["specificity_loss_notes"] = ""
+        row["term_not_in_efo"] = ""
+        row["mondo_missing_ids"] = ""
+        evidence = normalize(row.get("evidence", ""))
+        row["evidence"] = f"{evidence}; {note}" if evidence else note
+
+    for row in rows:
+        mapped_ids_raw = normalize(row.get("mapped_trait_id", ""))
+        if not mapped_ids_raw:
+            continue
+        mapped_ids = [
+            canonicalize_trait_ontology_id(part)
+            for part in split_multi_ids(mapped_ids_raw)
+            if canonicalize_trait_ontology_id(part)
+        ]
+        if not mapped_ids:
+            continue
+        if not any(is_disallowed(term_id) for term_id in mapped_ids):
+            continue
+
+        mapped_labels = split_multi_labels(
+            normalize(row.get("mapped_trait_label", "")),
+            expected_n=len(mapped_ids),
+        )
+        if len(mapped_labels) != len(mapped_ids):
+            mapped_labels = [
+                normalize(ontology_terms.get(term_id, TraitOntologyTerm(term_id, "", ())).label)
+                for term_id in mapped_ids
+            ]
+
+        query_raw = normalize(row.get("input_query", ""))
+        query_label = strip_trait_query_noise(query_raw) or query_raw
+        query_key = norm_key(query_label)
+        query_similarity_text = normalize_trait_text_for_similarity(query_label) or query_key
+        query_tokens = informative_trait_tokens(query_similarity_text)
+
+        disallowed_prefixes_present = sorted(
+            {
+                trait_ontology_prefix(term_id)
+                for term_id in mapped_ids
+                if is_disallowed(term_id)
+            }
+        )
+
+        allowed_components: list[tuple[str, str]] = []
+        seen_allowed_ids: set[str] = set()
+        for term_id, label in zip(mapped_ids, mapped_labels):
+            fallback_label = normalize(label) or normalize(
+                ontology_terms.get(term_id, TraitOntologyTerm(term_id, "", ())).label
+            )
+            if not is_disallowed(term_id):
+                if term_id not in seen_allowed_ids:
+                    allowed_components.append((term_id, fallback_label))
+                    seen_allowed_ids.add(term_id)
+                continue
+            rescue_id, rescue_label = best_non_disallowed_exact(fallback_label)
+            if not rescue_id:
+                parsed_code, parsed_label = parse_icd10_labeled_trait_text(query_raw)
+                del parsed_code
+                for rescue_phrase in (parsed_label, query_label):
+                    rescue_id, rescue_label = best_non_disallowed_exact(rescue_phrase)
+                    if rescue_id:
+                        break
+            if rescue_id and rescue_id not in seen_allowed_ids:
+                allowed_components.append((rescue_id, normalize(rescue_label)))
+                seen_allowed_ids.add(rescue_id)
+
+        if allowed_components:
+            scored_components: list[tuple[float, str, str]] = []
+            for term_id, label in allowed_components:
+                score = trait_similarity_score(query_similarity_text, query_tokens, label)
+                probe = Candidate(
+                    efo_id=term_id,
+                    label=label,
+                    score=score,
+                    matched_via="disallowed_prefix_guard_harmonized",
+                    evidence="",
+                    is_validated=False,
+                )
+                if candidate_is_broad_umbrella_trait(probe):
+                    score -= 0.15
+                scored_components.append((score, term_id, label))
+            scored_components.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+            _score, keep_id, keep_label = scored_components[0]
+            set_single_mapping(
+                row,
+                mapped_id=keep_id,
+                mapped_label=keep_label,
+                note=(
+                    "disallowed_prefix_guard_removed_components="
+                    f"{'|'.join(disallowed_prefixes_present)}; kept_best_non_disallowed_component"
+                ),
+                confidence_floor=0.760,
+                force_review=True,
+            )
+            continue
+
+        has_uberon = any(trait_ontology_prefix(term_id) == "UBERON" for term_id in mapped_ids)
+
+        if has_uberon and (
+            "blood clot in the lung" in query_key
+            or "blood clot in lung" in query_key
+            or "pulmonary embol" in query_key
+        ):
+            if "MONDO_0005279" in ontology_terms:
+                set_single_mapping(
+                    row,
+                    mapped_id="MONDO_0005279",
+                    mapped_label=normalize(ontology_terms["MONDO_0005279"].label) or "pulmonary embolism",
+                    note="disallowed_prefix_guard_blood_clot_in_lung_to_pulmonary_embolism",
+                    confidence_floor=0.850,
+                    force_review=False,
+                )
+                continue
+            if "HP_0002204" in ontology_terms:
+                set_single_mapping(
+                    row,
+                    mapped_id="HP_0002204",
+                    mapped_label=normalize(ontology_terms["HP_0002204"].label) or "Pulmonary embolism",
+                    note="disallowed_prefix_guard_blood_clot_in_lung_to_pulmonary_embolism",
+                    confidence_floor=0.850,
+                    force_review=False,
+                )
+                continue
+
+        if has_uberon and ("blood clot" in query_key or "thromb" in query_key):
+            if "MONDO_0000831" in ontology_terms:
+                set_single_mapping(
+                    row,
+                    mapped_id="MONDO_0000831",
+                    mapped_label=normalize(ontology_terms["MONDO_0000831"].label) or "thrombotic disease",
+                    note="disallowed_prefix_guard_replaced_anatomy_only_blood_clot_mapping_with_thrombotic_disease",
+                    confidence_floor=0.780,
+                    force_review=True,
+                )
+                continue
+            if "HP_0001977" in ontology_terms:
+                set_single_mapping(
+                    row,
+                    mapped_id="HP_0001977",
+                    mapped_label=normalize(ontology_terms["HP_0001977"].label) or "Abnormal thrombosis",
+                    note="disallowed_prefix_guard_replaced_anatomy_only_blood_clot_mapping_with_thrombosis",
+                    confidence_floor=0.780,
+                    force_review=True,
+                )
+                continue
+
+        clear_mapping(
+            row,
+            note=(
+                "disallowed_prefix_guard_removed_disallowed_only_mapping="
+                f"{'|'.join(disallowed_prefixes_present)}"
+            ),
+        )
+
+    return rows
 
 
 def trait_ancestor_ids(
@@ -16248,7 +16849,9 @@ def apply_regression_rescue_overrides(
         "J92.0": ("MONDO_0002037", "icd10_j92_0_to_pleural_disorder"),
         "J92.9": ("MONDO_0002037", "icd10_j92_9_to_pleural_disorder"),
         "J98": ("MONDO_0005087", "icd10_j98_to_respiratory_system_disorder"),
-        "K52": ("MONDO_0005292", "icd10_k52_to_colitis"),
+        # Keep category-level K52 aligned with the K52* family rescue to avoid
+        # parent/child inconsistency for "gastroenteritis and colitis" rows.
+        "K52": ("EFO_1001463|EFO_0003872", "icd10_k52_to_gastroenteritis_plus_colitis"),
         "K64": ("MONDO_0004872", "icd10_k64_to_hemorrhoid"),
         "K64.0": ("MONDO_0004872", "icd10_k64_0_to_hemorrhoid"),
         "K64.9": ("MONDO_0004872", "icd10_k64_9_to_hemorrhoid"),
@@ -18085,11 +18688,33 @@ def harmonize_trait_rows_by_query_constraints(
             if anemia_disease_override_id and anemia_disease_override_id in ontology_terms
             else "anemia"
         )
+        fall_trait_override_id = "EFO_0009631" if "EFO_0009631" in ontology_terms else ""
+        fall_trait_override_label = (
+            normalize(ontology_terms[fall_trait_override_id].label)
+            if fall_trait_override_id and fall_trait_override_id in ontology_terms
+            else "fall"
+        )
         diabetes_drug_use_override_id = "EFO_0009924" if "EFO_0009924" in ontology_terms else ""
         diabetes_drug_use_override_label = (
             normalize(ontology_terms[diabetes_drug_use_override_id].label)
             if diabetes_drug_use_override_id and diabetes_drug_use_override_id in ontology_terms
             else "Drugs used in diabetes use measurement"
+        )
+        diabetic_eye_disease_override_id = ""
+        if "EFO_0009486" in ontology_terms:
+            diabetic_eye_disease_override_id = "EFO_0009486"
+        diabetic_eye_disease_override_label = (
+            normalize(ontology_terms[diabetic_eye_disease_override_id].label)
+            if diabetic_eye_disease_override_id and diabetic_eye_disease_override_id in ontology_terms
+            else "diabetic eye disease"
+        )
+        diabetic_retinopathy_override_id = ""
+        if "EFO_0003770" in ontology_terms:
+            diabetic_retinopathy_override_id = "EFO_0003770"
+        diabetic_retinopathy_override_label = (
+            normalize(ontology_terms[diabetic_retinopathy_override_id].label)
+            if diabetic_retinopathy_override_id and diabetic_retinopathy_override_id in ontology_terms
+            else "diabetic retinopathy"
         )
         smoking_behavior_override_id = "OBA_2050116" if "OBA_2050116" in ontology_terms else ""
         if not smoking_behavior_override_id and "EFO_0006527" in ontology_terms:
@@ -18785,6 +19410,98 @@ def harmonize_trait_rows_by_query_constraints(
             mapped_ids = [canonicalize_trait_ontology_id(type2_diabetes_override_id)]
             mapped_labels = [type2_diabetes_override_label]
             mapped_label_keys = [norm_key(type2_diabetes_override_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            diabetic_eye_disease_override_id
+            and "type 2 diabetes" in query_key
+            and re.search(r"\b(?:ophthalmopath\w*|ophthalmic|retinopath\w*)\b", query_key)
+        ):
+            use_retinopathy_target = bool(
+                diabetic_retinopathy_override_id
+                and re.search(r"\bretinopath\w*\b", query_key)
+            )
+            target_id = (
+                diabetic_retinopathy_override_id
+                if use_retinopathy_target
+                else diabetic_eye_disease_override_id
+            )
+            target_label = (
+                diabetic_retinopathy_override_label
+                if use_retinopathy_target
+                else diabetic_eye_disease_override_label
+            )
+            target_note = (
+                "query_phrase_harmonized=type2_diabetes_retinopathy_to_diabetic_retinopathy"
+                if use_retinopathy_target
+                else "query_phrase_harmonized=type2_diabetes_ophthalmopathy_to_diabetic_eye_disease"
+            )
+            set_single_mapping(
+                row,
+                mapped_id=target_id,
+                mapped_label=target_label,
+                matched_via="query_phrase_harmonized",
+                note=target_note,
+                confidence_floor=0.840,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(target_id)]
+            mapped_labels = [target_label]
+            mapped_label_keys = [norm_key(target_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            icd10_code
+            and diabetic_eye_disease_override_id
+            and icd10_code.startswith(("E08.3", "E09.3", "E10.3", "E11.3", "E13.3"))
+        ):
+            use_retinopathy_target = bool(
+                diabetic_retinopathy_override_id
+                and re.search(r"\bretinopath\w*\b", query_key)
+            )
+            target_id = (
+                diabetic_retinopathy_override_id
+                if use_retinopathy_target
+                else diabetic_eye_disease_override_id
+            )
+            target_label = (
+                diabetic_retinopathy_override_label
+                if use_retinopathy_target
+                else diabetic_eye_disease_override_label
+            )
+            target_note = (
+                "icd10_specific_override=diabetes_retinopathy_complication_to_diabetic_retinopathy"
+                if use_retinopathy_target
+                else "icd10_specific_override=diabetes_ophthalmic_complications_to_diabetic_eye_disease"
+            )
+            set_single_mapping(
+                row,
+                mapped_id=target_id,
+                mapped_label=target_label,
+                matched_via="icd10_specific_override",
+                note=target_note,
+                confidence_floor=0.840,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(target_id)]
+            mapped_labels = [target_label]
+            mapped_label_keys = [norm_key(target_label)]
+            mapped_label_key_text = mapped_label_keys[0]
+        if (
+            fall_trait_override_id
+            and re.search(r"\bfalls?\b", query_key)
+            and any(canonicalize_trait_ontology_id(term_id) == "HP_0002527" for term_id in mapped_ids)
+        ):
+            set_single_mapping(
+                row,
+                mapped_id=fall_trait_override_id,
+                mapped_label=fall_trait_override_label,
+                matched_via="query_phrase_harmonized",
+                note="query_phrase_harmonized=fall_wording_prefers_efo_fall_over_hp_falls",
+                confidence_floor=0.860,
+                force_review=False,
+            )
+            mapped_ids = [canonicalize_trait_ontology_id(fall_trait_override_id)]
+            mapped_labels = [fall_trait_override_label]
+            mapped_label_keys = [norm_key(fall_trait_override_label)]
             mapped_label_key_text = mapped_label_keys[0]
         if (
             psychosocial_stress_override_id
@@ -20186,6 +20903,25 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_ids = [canonicalize_trait_ontology_id(hemo_id)]
                     mapped_labels = [hemo_label]
                     mapped_label_keys = [norm_key(hemo_label)]
+            if icd10_code.startswith("Y93"):
+                activity_measurement_id, activity_measurement_label = preferred_exact_term_for_phrase(
+                    "physical activity measurement",
+                    ontology_exact_index=ontology_exact_index,
+                    ontology_terms=ontology_terms,
+                )
+                if activity_measurement_id and activity_measurement_label:
+                    set_single_mapping(
+                        row,
+                        mapped_id=activity_measurement_id,
+                        mapped_label=activity_measurement_label,
+                        matched_via="icd10_specific_override",
+                        note="icd10_specific_override=y93_activity_code_to_physical_activity_measurement",
+                        confidence_floor=0.790,
+                        force_review=True,
+                    )
+                    mapped_ids = [canonicalize_trait_ontology_id(activity_measurement_id)]
+                    mapped_labels = [activity_measurement_label]
+                    mapped_label_keys = [norm_key(activity_measurement_label)]
             if icd10_code.startswith("B96.2") and ecoli_override_id:
                 set_single_mapping(
                     row,
@@ -20461,26 +21197,26 @@ def harmonize_trait_rows_by_query_constraints(
                 if icd10_code.startswith("O20") and (
                     "hemorrhage" in query_key or "haemorrhage" in query_key or "bleed" in query_key
                 ):
-                    for obstetric_phrase in ("Antepartum hemorrhage", "hemorrhage"):
-                        obstetric_id, obstetric_label = preferred_exact_term_for_phrase(
-                            obstetric_phrase,
-                            ontology_exact_index=ontology_exact_index,
-                            ontology_terms=ontology_terms,
+                    # O20 = hemorrhage in early pregnancy; avoid forcing
+                    # "antepartum hemorrhage" (second half of pregnancy).
+                    obstetric_id, obstetric_label = preferred_exact_term_for_phrase(
+                        "hemorrhage",
+                        ontology_exact_index=ontology_exact_index,
+                        ontology_terms=ontology_terms,
+                    )
+                    if obstetric_id and obstetric_label:
+                        set_single_mapping(
+                            row,
+                            mapped_id=obstetric_id,
+                            mapped_label=obstetric_label,
+                            matched_via="icd10_obstetric_harmonized",
+                            note="icd10_obstetric_harmonized=o20_hemorrhage_to_hemorrhage",
+                            confidence_floor=0.800,
+                            force_review=True,
                         )
-                        if obstetric_id and obstetric_label:
-                            set_single_mapping(
-                                row,
-                                mapped_id=obstetric_id,
-                                mapped_label=obstetric_label,
-                                matched_via="icd10_obstetric_harmonized",
-                                note="icd10_obstetric_harmonized=o20_hemorrhage_to_antepartum_hemorrhage",
-                                confidence_floor=0.800,
-                                force_review=True,
-                            )
-                            mapped_ids = [canonicalize_trait_ontology_id(obstetric_id)]
-                            mapped_labels = [obstetric_label]
-                            mapped_label_keys = [norm_key(obstetric_label)]
-                            break
+                        mapped_ids = [canonicalize_trait_ontology_id(obstetric_id)]
+                        mapped_labels = [obstetric_label]
+                        mapped_label_keys = [norm_key(obstetric_label)]
                 if icd10_code.startswith("O13") and (
                     "hypertension" in query_key or "pregnancy-induced" in query_key
                 ):
@@ -20509,6 +21245,15 @@ def harmonize_trait_rows_by_query_constraints(
                     any(token in norm_key(label) for token in obstetric_tokens)
                     for label in mapped_labels
                 )
+                if (
+                    not mapped_obstetric_like
+                    and icd10_code.startswith("O20")
+                    and any(
+                        any(token in norm_key(label) for token in ("hemorrhage", "haemorrhage", "bleed"))
+                        for label in mapped_labels
+                    )
+                ):
+                    mapped_obstetric_like = True
                 if not mapped_obstetric_like:
                     phrase_candidates: list[str] = []
                     if query_label:
@@ -20750,43 +21495,118 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_label_keys = [norm_key(keep_label)]
 
         # Background-trait rows (for example "Dementia in Alzheimer's disease")
-        # should map the primary phenotype before "in".
-        if (
-            "(gene-based burden)" in norm_key(query_raw)
-            and " in " in query_key
-            and " in situ " not in f" {query_key} "
-            and not strict_manual_cache_locked
-        ):
-            primary_phrase = normalize(query_label.split(" in ", 1)[0].strip(" ,;:"))
-            if primary_phrase:
-                primary_id, primary_label = preferred_exact_term_for_phrase(
-                    primary_phrase,
+        # should map the primary phenotype before "in", but only when the
+        # tail clause clearly describes a disease context.
+        primary_phrase = background_trait_primary_clause_candidate(
+            query_raw=query_raw,
+            query_label=query_label,
+            query_key=query_key,
+            is_icd_context=is_icd_context,
+            strict_manual_cache_locked=strict_manual_cache_locked,
+            current_matched_via=norm_key(row.get("matched_via", "")),
+        )
+        if primary_phrase:
+            primary_id, primary_label = preferred_exact_term_for_phrase(
+                primary_phrase,
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if primary_id and primary_label:
+                term_meta = ontology_terms.get(primary_id)
+                if term_meta is not None:
+                    branch = trait_term_branch(
+                        term_id=primary_id,
+                        label=term_meta.label,
+                        ontology_terms=ontology_terms,
+                        measurement_term_ids=measurement_term_ids,
+                    )
+                    # Background-clause fallback should never collapse to
+                    # anatomy/substance/process entities.
+                    if (
+                        branch == "non_measurement"
+                        and trait_ontology_prefix(primary_id)
+                        not in {"UBERON", "CL", "PR", "CHEBI", "GO"}
+                    ):
+                        if not (len(mapped_ids) == 1 and mapped_ids[0] == primary_id):
+                            set_single_mapping(
+                                row,
+                                mapped_id=primary_id,
+                                mapped_label=primary_label,
+                                matched_via="background_trait_primary_clause",
+                                note="background_trait_context=yes; mapped_primary_clause_before_in",
+                                confidence_floor=0.760,
+                                force_review=True,
+                            )
+                            mapped_ids = [primary_id]
+                            mapped_labels = [primary_label]
+                            query_key = norm_key(primary_phrase)
+
+        # "not specified as X/Y" tails are qualifier clauses and should not
+        # inject X/Y disease components into the mapping.
+        if " not specified as " in query_key:
+            primary_not_specified_phrase = normalize(query_label.split(" not specified as ", 1)[0].strip(" ,;:"))
+            tail_not_specified_phrase = normalize(query_label.split(" not specified as ", 1)[1].strip(" ,;:"))
+            if primary_not_specified_phrase:
+                not_spec_id, not_spec_label = preferred_exact_term_for_phrase(
+                    primary_not_specified_phrase,
                     ontology_exact_index=ontology_exact_index,
                     ontology_terms=ontology_terms,
                 )
-                if primary_id and primary_label:
-                    term_meta = ontology_terms.get(primary_id)
-                    if term_meta is not None:
-                        branch = trait_term_branch(
-                            term_id=primary_id,
-                            label=term_meta.label,
-                            ontology_terms=ontology_terms,
-                            measurement_term_ids=measurement_term_ids,
+                if not not_spec_id and is_icd_context and icd10_code:
+                    xref_term_id, xref_term_label, xref_kind = best_icd10_xref_term(
+                        icd10_code=icd10_code,
+                        query_text=primary_not_specified_phrase,
+                    )
+                    if xref_term_id and xref_term_label:
+                        not_spec_id = xref_term_id
+                        not_spec_label = xref_term_label
+                if not_spec_id and not_spec_label:
+                    if not (len(mapped_ids) == 1 and mapped_ids[0] == not_spec_id):
+                        note = "mapped_before_not_specified_as_clause_to_avoid_tail_component_injection"
+                        if is_icd_context and icd10_code:
+                            note = f"{note}; icd10_context_harmonized={icd10_code}"
+                        set_single_mapping(
+                            row,
+                            mapped_id=not_spec_id,
+                            mapped_label=not_spec_label,
+                            matched_via="not_specified_clause_primary_harmonized",
+                            note=note,
+                            confidence_floor=0.760,
+                            force_review=True,
                         )
-                        if branch == "non_measurement":
-                            if not (len(mapped_ids) == 1 and mapped_ids[0] == primary_id):
-                                set_single_mapping(
-                                    row,
-                                    mapped_id=primary_id,
-                                    mapped_label=primary_label,
-                                    matched_via="background_trait_primary_clause",
-                                    note="background_trait_context=yes; mapped_primary_clause_before_in",
-                                    confidence_floor=0.760,
-                                    force_review=True,
-                                )
-                                mapped_ids = [primary_id]
-                                mapped_labels = [primary_label]
-                                query_key = norm_key(primary_phrase)
+                        mapped_ids = [not_spec_id]
+                        mapped_labels = [not_spec_label]
+            if len(mapped_ids) > 1 and tail_not_specified_phrase:
+                tail_not_specified_tokens = {
+                    normalize_negation_target(tok)
+                    for tok in informative_trait_tokens(
+                        normalize_trait_text_for_similarity(tail_not_specified_phrase) or norm_key(tail_not_specified_phrase)
+                    )
+                }
+                filtered_components: list[tuple[str, str]] = []
+                for term_id, label in zip(mapped_ids, mapped_labels):
+                    label_tokens = {
+                        normalize_negation_target(tok)
+                        for tok in informative_trait_tokens(
+                            normalize_trait_text_for_similarity(label) or norm_key(label)
+                        )
+                    }
+                    if tail_not_specified_tokens and not tail_not_specified_tokens.isdisjoint(label_tokens):
+                        continue
+                    filtered_components.append((term_id, label))
+                if len(filtered_components) == 1:
+                    keep_id, keep_label = filtered_components[0]
+                    set_single_mapping(
+                        row,
+                        mapped_id=keep_id,
+                        mapped_label=keep_label,
+                        matched_via="not_specified_clause_tail_suppressed",
+                        note="removed_not_specified_as_tail_component_from_multi_mapping",
+                        confidence_floor=0.760,
+                        force_review=True,
+                    )
+                    mapped_ids = [keep_id]
+                    mapped_labels = [keep_label]
 
         # "without X" clauses should not introduce X in the mapped term.
         if " without " in query_key:
@@ -21327,6 +22147,66 @@ def harmonize_trait_rows_by_field(
         }
         non_go_ids = {mid for mid in mapped_ids if trait_ontology_prefix(mid) != "GO"}
         inconsistent = len(mapped_ids) > 1
+        physical_activity_measurement_id = "EFO_0008002"
+        physical_activity_measurement_label = normalize(
+            ontology_terms.get(
+                physical_activity_measurement_id,
+                TraitOntologyTerm(physical_activity_measurement_id, "physical activity measurement", ()),
+            ).label
+        ) or "physical activity measurement"
+        normalized_physical_activity_rows = False
+        for row in group_rows:
+            mapped_ids_row = [
+                canonicalize_trait_ontology_id(term_id)
+                for term_id in split_multi_ids(normalize(row.get("mapped_trait_id", "")))
+                if canonicalize_trait_ontology_id(term_id)
+            ]
+            if len(mapped_ids_row) != 1:
+                continue
+            mapped_id_row = mapped_ids_row[0]
+            mapped_label_key = norm_key(row.get("mapped_trait_label", ""))
+            if mapped_id_row != "EFO_0003940" and mapped_label_key != "physical activity":
+                continue
+            query_context = " ".join(
+                part
+                for part in (
+                    normalize(row.get("input_query", "")),
+                    normalize(row.get("input_ukb_field_label", "")),
+                )
+                if part
+            )
+            if not PHYSICAL_ACTIVITY_MEASUREMENT_CUE_RE.search(query_context):
+                continue
+            changed = (
+                mapped_id_row != physical_activity_measurement_id
+                or mapped_label_key != norm_key(physical_activity_measurement_label)
+            )
+            row["mapped_trait_id"] = physical_activity_measurement_id
+            row["mapped_trait_label"] = physical_activity_measurement_label
+            row["matched_via"] = "ukb_physical_activity_measurement_harmonized"
+            row["matched_on"] = "UKB field/query measurement cue"
+            row["source_file"] = "efo.obo"
+            row["confidence"] = "0.980"
+            row["term_not_in_efo"] = ""
+            row["mondo_missing_ids"] = ""
+            negated = normalize(row.get("negation", "")) == "yes"
+            row["validation"] = "review_required" if negated else "validated"
+            row["qc_review_flag"] = "yes" if negated else "no"
+            evidence = normalize(row.get("evidence", ""))
+            note = "field_response_status_harmonized=physical_activity_measurement_cues"
+            if changed:
+                note = f"{note}; replaced_broad_physical_activity_term_with_measurement_term"
+            row["evidence"] = f"{evidence}; {note}" if evidence else note
+            normalized_physical_activity_rows = True
+        if normalized_physical_activity_rows:
+            mapped_ids = {
+                canonicalize_trait_ontology_id(term_id)
+                for row in group_rows
+                for term_id in split_multi_ids(normalize(row.get("mapped_trait_id", "")))
+                if canonicalize_trait_ontology_id(term_id)
+            }
+            non_go_ids = {mid for mid in mapped_ids if trait_ontology_prefix(mid) != "GO"}
+            inconsistent = len(mapped_ids) > 1
         medication_field_group = field_id in {"6177", "20003"}
         medication_context_group = medication_field_group
         if not medication_context_group:
@@ -30746,6 +31626,17 @@ def main() -> int:
                     override_index=manual_curator_rescue_index,
                     override_source_name=manual_curator_rescue_overrides_path.name,
                 )
+                rows = apply_obsolete_trait_id_output_guard(
+                    rows,
+                    ontology_terms=ontology_index["terms"],
+                    obsolete_terms=ontology_index["obsolete_terms"],
+                    ontology_exact_index=ontology_index["exact_index"],
+                )
+                rows = apply_no_uberon_output_guard(
+                    rows,
+                    ontology_terms=ontology_index["terms"],
+                    ontology_exact_index=ontology_index["exact_index"],
+                )
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)
@@ -30800,6 +31691,17 @@ def main() -> int:
                     ontology_terms=ontology_index["terms"],
                     override_index=manual_curator_rescue_index,
                     override_source_name=manual_curator_rescue_overrides_path.name,
+                )
+                rows = apply_obsolete_trait_id_output_guard(
+                    rows,
+                    ontology_terms=ontology_index["terms"],
+                    obsolete_terms=ontology_index["obsolete_terms"],
+                    ontology_exact_index=ontology_index["exact_index"],
+                )
+                rows = apply_no_uberon_output_guard(
+                    rows,
+                    ontology_terms=ontology_index["terms"],
+                    ontology_exact_index=ontology_index["exact_index"],
                 )
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
