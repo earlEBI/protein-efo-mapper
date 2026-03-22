@@ -1228,6 +1228,7 @@ FORBIDDEN_TRAIT_LABEL_KEYS = {
     "normal",
     "mental health",
     "family relationship",
+    "recurrent",
     "volume",
 }
 DISALLOWED_TRAIT_OUTPUT_PREFIXES = {"UBERON", "NCIT"}
@@ -5257,6 +5258,47 @@ def candidate_has_forbidden_trait_mapping(mapped_ids: str, mapped_labels: str) -
         if norm_key(label) in FORBIDDEN_TRAIT_LABEL_KEYS:
             return True
     return False
+
+
+def prune_forbidden_trait_candidate_components(candidate: Candidate) -> tuple[Candidate | None, tuple[str, ...]]:
+    ids = [canonicalize_trait_ontology_id(item) for item in split_multi_ids(candidate.efo_id)]
+    ids = [item for item in ids if item]
+    if not ids:
+        return candidate, ()
+    labels = split_multi_labels(candidate.label, expected_n=len(ids))
+    if not labels:
+        labels = [normalize(candidate.label)] * len(ids)
+
+    kept_pairs: list[tuple[str, str]] = []
+    removed_components: list[str] = []
+    for idx, term_id in enumerate(ids):
+        label = normalize(labels[idx] if idx < len(labels) else "")
+        if term_id in FORBIDDEN_TRAIT_IDS or norm_key(label) in FORBIDDEN_TRAIT_LABEL_KEYS:
+            removed_components.append(label or term_id)
+            continue
+        kept_pairs.append((term_id, label or term_id))
+
+    if not removed_components:
+        return candidate, ()
+    if not kept_pairs:
+        return None, tuple(removed_components)
+
+    normalized_ids = "|".join(term_id for term_id, _ in kept_pairs)
+    normalized_labels = "|".join(label for _, label in kept_pairs)
+    return (
+        Candidate(
+            efo_id=normalized_ids,
+            label=normalized_labels,
+            score=candidate.score,
+            matched_via=candidate.matched_via,
+            evidence=candidate.evidence,
+            is_validated=candidate.is_validated,
+            roundtrip_status=candidate.roundtrip_status,
+            roundtrip_accessions=candidate.roundtrip_accessions,
+            roundtrip_symbols=candidate.roundtrip_symbols,
+        ),
+        tuple(removed_components),
+    )
 
 
 def candidate_is_standalone_temporal_mapping(mapped_ids: str, mapped_labels: str) -> bool:
@@ -11470,6 +11512,23 @@ def map_trait_queries(
         filtered_candidates: list[Candidate] = []
         response_scale_context = trait_query_looks_response_scale(query_for_matching)
         for candidate in candidates:
+            original_candidate = candidate
+            candidate, removed_forbidden_components = prune_forbidden_trait_candidate_components(candidate)
+            if removed_forbidden_components:
+                removed_note = (
+                    "removed forbidden trait component(s): "
+                    + "|".join(removed_forbidden_components)
+                )
+                if candidate is None:
+                    original_candidate.evidence = (
+                        f"{original_candidate.evidence}; blocked forbidden-only mapping component(s): "
+                        f"{'|'.join(removed_forbidden_components)}"
+                    )
+                    blocked_review_candidates.append(original_candidate)
+                    continue
+                candidate.evidence = (
+                    f"{candidate.evidence}; {removed_note}" if candidate.evidence else removed_note
+                )
             query_key_norm = normalize(query_for_matching).lower()
             if "other than for varicose veins" in query_key_norm and "varicose" in norm_key(candidate.label):
                 candidate.evidence = (
@@ -11531,6 +11590,23 @@ def map_trait_queries(
         candidates = filtered_candidates
         filtered_best_any: list[Candidate] = []
         for candidate in best_any:
+            original_candidate = candidate
+            candidate, removed_forbidden_components = prune_forbidden_trait_candidate_components(candidate)
+            if removed_forbidden_components:
+                removed_note = (
+                    "removed forbidden trait component(s): "
+                    + "|".join(removed_forbidden_components)
+                )
+                if candidate is None:
+                    original_candidate.evidence = (
+                        f"{original_candidate.evidence}; blocked forbidden-only mapping component(s): "
+                        f"{'|'.join(removed_forbidden_components)}"
+                    )
+                    blocked_review_candidates.append(original_candidate)
+                    continue
+                candidate.evidence = (
+                    f"{candidate.evidence}; {removed_note}" if candidate.evidence else removed_note
+                )
             query_key_norm = normalize(query_for_matching).lower()
             if "other than for varicose veins" in query_key_norm and "varicose" in norm_key(candidate.label):
                 candidate.evidence = (
