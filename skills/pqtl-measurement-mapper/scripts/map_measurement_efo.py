@@ -21802,93 +21802,92 @@ def trait_new_efo_reason_text(reason_key: str) -> tuple[str, str]:
     )
 
 
-def trait_new_efo_parent_hint(row: dict[str, str]) -> str:
-    mapped_id = normalize(row.get("mapped_trait_id", ""))
-    mapped_label = normalize(row.get("mapped_trait_label", ""))
-    if mapped_id and mapped_label:
-        return f"{mapped_id} ({mapped_label})"
-    if mapped_label:
-        return mapped_label
-    if mapped_id:
-        return mapped_id
-    return ""
+def composite_suggestion_ordered_pairs(
+    mapped_ids_text: str,
+    mapped_labels_text: str,
+) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    ids = [
+        canonicalize_trait_ontology_id(part)
+        for part in split_multi_ids(mapped_ids_text)
+        if canonicalize_trait_ontology_id(part)
+    ]
+    if len(ids) != 2:
+        return None
+    labels = split_multi_labels(mapped_labels_text, expected_n=len(ids))
+    if len(labels) < 2:
+        return None
+    pairs: list[tuple[str, str]] = []
+    for idx, term_id in enumerate(ids):
+        label = normalize(labels[idx] if idx < len(labels) else "")
+        if not label:
+            label = term_id
+        pairs.append((term_id, label))
+
+    def pair_rank(item: tuple[str, str]) -> tuple[int, str, str]:
+        term_id, label = item
+        key = norm_key(label)
+        if key == "family history":
+            return (0, key, term_id)
+        if key == "personal history":
+            return (1, key, term_id)
+        return (2, key, term_id)
+
+    ordered = tuple(sorted(pairs, key=pair_rank))
+    return (ordered[0], ordered[1])
 
 
-def trait_new_term_candidate_is_non_trait_context(text: str) -> bool:
-    key = norm_key(text)
-    if not key:
-        return True
-    if key in TRAIT_LATERALITY_ONLY_KEYS:
-        return True
-    if key in {
-        "place",
-        "street and highway",
-        "street",
-        "highway",
-        "home",
-        "school",
-        "workplace",
-        "both eyes",
-        "left eye",
-        "right eye",
-        "eye",
-        "eyes",
-    }:
-        return True
-    if "place of occurrence" in key:
-        return True
-    return False
+def composite_suggestion_candidate_term(label_a: str, label_b: str) -> str:
+    key_a = norm_key(label_a)
+    key_b = norm_key(label_b)
+    if key_a == "family history":
+        return f"family history of {label_b}"
+    if key_b == "family history":
+        return f"family history of {label_a}"
+    if key_a == "personal history":
+        return f"personal history of {label_b}"
+    if key_b == "personal history":
+        return f"personal history of {label_a}"
+    return f"{label_a} and {label_b}"
 
 
 def build_trait_new_efo_term_suggestions(
     rows: list[dict[str, str]],
     *,
     min_count: int = 2,
+    ontology_exact_index: dict[str, set[str]] | None = None,
 ) -> list[dict[str, str]]:
+    exact_index = ontology_exact_index or {}
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
-        include, reason_key = trait_row_needs_new_efo_suggestion(row)
-        if not include:
+        pairs = composite_suggestion_ordered_pairs(
+            normalize(row.get("mapped_trait_id", "")),
+            normalize(row.get("mapped_trait_label", "")),
+        )
+        if pairs is None:
             continue
-        candidate_term = derive_trait_new_efo_candidate_term(row)
-        if not candidate_term:
+        (id_a, label_a), (id_b, label_b) = pairs
+        candidate_term = normalize(composite_suggestion_candidate_term(label_a, label_b))
+        candidate_key = norm_key(candidate_term)
+        if not candidate_key:
+            continue
+        if exact_index.get(candidate_key):
+            # Candidate term already exists in ontology; no "new term" suggestion needed.
             continue
 
-        core_candidate = normalize_trait_new_term_core(candidate_term)
-        key = norm_key(core_candidate or candidate_term)
-        if not key:
-            continue
-        if trait_new_term_candidate_is_non_trait_context(core_candidate or candidate_term):
-            continue
-        if key in {
-            "unspecified place",
-            "unspecified site",
-            "other specified",
-            "other and unspecified",
-            "other",
-            "unspecified",
-        }:
-            continue
-        mapped_label_key = norm_key(row.get("mapped_trait_label", ""))
-        if mapped_label_key and key == mapped_label_key:
-            continue
+        parent_hint = f"{id_a} ({label_a}) + {id_b} ({label_b})"
         bucket = grouped.setdefault(
-            key,
+            candidate_key,
             {
                 "candidate_terms": Counter(),
                 "parent_hints": Counter(),
-                "reason_keys": Counter(),
                 "count": 0,
                 "example_query": "",
                 "example_row_id": "",
                 "example_icd10": "",
             },
         )
-        bucket["candidate_terms"][core_candidate or candidate_term] += 1
-        parent_hint = trait_new_efo_parent_hint(row)
-        if parent_hint:
-            bucket["parent_hints"][parent_hint] += 1
-        bucket["reason_keys"][reason_key] += 1
+        bucket["candidate_terms"][candidate_term] += 1
+        bucket["parent_hints"][parent_hint] += 1
         bucket["count"] += 1
         if not bucket["example_query"]:
             bucket["example_query"] = normalize(row.get("input_query", ""))
@@ -21902,24 +21901,26 @@ def build_trait_new_efo_term_suggestions(
             continue
         candidate_term = bucket["candidate_terms"].most_common(1)[0][0]
         parent_hint = bucket["parent_hints"].most_common(1)[0][0] if bucket["parent_hints"] else ""
-        reason_key = bucket["reason_keys"].most_common(1)[0][0] if bucket["reason_keys"] else "not_mapped"
-        why_new_term, search_utility = trait_new_efo_reason_text(reason_key)
-        alternative = (
-            f"Map to {parent_hint} and keep validation=review_required until the new term is added."
-            if parent_hint
-            else "Keep as review_required and map to the nearest stable broad term."
-        )
         suggestion_rows.append(
             {
                 "candidate_term": candidate_term,
                 "proposed_parent_or_related": parent_hint,
-                "why_new_term": why_new_term,
+                "why_new_term": (
+                    "Current mapping repeatedly requires a 2-term composite; "
+                    "a single reusable term would improve consistency."
+                ),
                 "evidence_count_in_run": str(bucket["count"]),
                 "example_input_query": bucket["example_query"],
                 "example_input_row_id": bucket["example_row_id"],
                 "example_input_icd10": bucket["example_icd10"],
-                "search_utility": search_utility,
-                "alternative_if_no_new_term": alternative,
+                "search_utility": (
+                    "High: enables direct search on one term instead of relying on composite term pairs."
+                ),
+                "alternative_if_no_new_term": (
+                    f"Keep composite mapping ({parent_hint}) and flag review when needed."
+                    if parent_hint
+                    else "Keep current 2-term composite mapping."
+                ),
             }
         )
 
@@ -30757,6 +30758,7 @@ def main() -> int:
                 suggestion_rows = build_trait_new_efo_term_suggestions(
                     rows,
                     min_count=max(1, int(args.new_efo_suggestions_min_count)),
+                    ontology_exact_index=ontology_index["exact_index"],
                 )
                 suggestion_count = write_trait_new_efo_suggestions_tsv(
                     suggestion_rows,
