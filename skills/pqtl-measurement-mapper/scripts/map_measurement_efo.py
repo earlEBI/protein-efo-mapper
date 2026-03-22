@@ -431,7 +431,6 @@ DEFAULT_CATALOG_SUMMARY_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-tr
 DEFAULT_CATALOG_REFRESH_STATE_OUTPUT = REPO_ROOT / "final_output" / "Catalog-mapped-traits_refresh_state.json"
 DEFAULT_TRAIT_QC_RISK_SUFFIX = "_qc_risk.tsv"
 DEFAULT_TRAIT_QC_SUMMARY_SUFFIX = "_qc_summary.json"
-DEFAULT_TRAIT_NEW_EFO_SUGGESTIONS_SUFFIX = "_suggested_new_efo_terms.tsv"
 DEFAULT_MEASUREMENT_ROOT = "EFO:0001444"
 DEFAULT_MATRIX_PRIORITY = ["plasma", "blood", "serum"]
 DEFAULT_MEASUREMENT_CONTEXT = "blood"
