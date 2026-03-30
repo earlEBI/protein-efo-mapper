@@ -34,6 +34,7 @@ DEFAULT_ANALYTE_CACHE = SKILL_DIR / "references" / "analyte_to_efo_cache.tsv"
 DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
 DEFAULT_EFO_OBO = SKILL_DIR / "references" / "efo.obo"
 DEFAULT_UKB_FIELD_CATALOG = ROOT_DIR / "references" / "ukb" / "fieldsum.txt"
+PYODIDE_WEB_DIR = SKILL_DIR / "web" / "pyodide"
 PYTHON_BIN = ROOT_DIR / ".venv" / "bin" / "python"
 JOB_ROOT = ROOT_DIR / "final_output" / "web_jobs"
 EXPORT_ROOT = ROOT_DIR / "final_output" / "web_exports"
@@ -505,6 +506,10 @@ def home(request: Request) -> str:
     <section class=\"hero\">
       <h1>pQTL Measurement Mapper</h1>
       <p class=\"sub\">Run analyte map (protein/metabolite) or trait-map, track progress, and download result artifacts.</p>
+      <p class=\"sub\" style=\"margin-top:8px;\">
+        Browser-only prototype available:
+        <a href=\"/pyodide\" style=\"font-weight:700;color:#0d6d63;text-decoration:none;\">Open Pyodide Trait Mapper</a>
+      </p>
     </section>
 
     <div class=\"grid\">
@@ -760,6 +765,40 @@ if (restoreJobId) {
 </html>
 """
     return html.replace("__SERVER_FALLBACK__", server_fallback)
+
+
+def _resolve_pyodide_asset(asset_path: str) -> Path:
+    safe = (asset_path or "").lstrip("/")
+    candidate = (PYODIDE_WEB_DIR / safe).resolve()
+    root = PYODIDE_WEB_DIR.resolve()
+    if root not in candidate.parents and candidate != root:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return candidate
+
+
+@app.get("/pyodide")
+def pyodide_home() -> FileResponse:
+    index_path = PYODIDE_WEB_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="Pyodide prototype not available")
+    return FileResponse(path=str(index_path), media_type="text/html")
+
+
+@app.get("/pyodide/{asset_path:path}")
+def pyodide_asset(asset_path: str) -> FileResponse:
+    path = _resolve_pyodide_asset(asset_path)
+    media_type = None
+    if path.suffix == ".js":
+        media_type = "application/javascript"
+    elif path.suffix == ".json":
+        media_type = "application/json"
+    elif path.suffix == ".py":
+        media_type = "text/x-python"
+    elif path.suffix == ".css":
+        media_type = "text/css"
+    return FileResponse(path=str(path), media_type=media_type)
 
 
 @app.post("/api/jobs")
