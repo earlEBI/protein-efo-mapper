@@ -10,7 +10,9 @@ Features:
 
 from __future__ import annotations
 
+import csv
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -19,8 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 SKILL_DIR = ROOT_DIR / "skills" / "pqtl-measurement-mapper"
@@ -29,8 +31,13 @@ DEFAULT_INDEX = SKILL_DIR / "references" / "measurement_index.json"
 DEFAULT_UNIPROT_ALIASES = SKILL_DIR / "references" / "uniprot_aliases.tsv"
 DEFAULT_TERM_CACHE = SKILL_DIR / "references" / "efo_measurement_terms_cache.tsv"
 DEFAULT_ANALYTE_CACHE = SKILL_DIR / "references" / "analyte_to_efo_cache.tsv"
+DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
+DEFAULT_EFO_OBO = SKILL_DIR / "references" / "efo.obo"
+DEFAULT_UKB_FIELD_CATALOG = ROOT_DIR / "references" / "ukb" / "fieldsum.txt"
+PYODIDE_WEB_DIR = SKILL_DIR / "web" / "pyodide"
 PYTHON_BIN = ROOT_DIR / ".venv" / "bin" / "python"
 JOB_ROOT = ROOT_DIR / "final_output" / "web_jobs"
+EXPORT_ROOT = ROOT_DIR / "final_output" / "web_exports"
 PROGRESS_RE = re.compile(r"\[progress\]\s+(\d+)/(\d+)\s+\((\d+\.?\d*)%\)")
 
 
@@ -49,6 +56,10 @@ class JobState:
     input_path: str = ""
     mapped_path: str = ""
     unmapped_path: str = ""
+    review_path: str = ""
+    qc_risk_path: str = ""
+    qc_summary_path: str = ""
+    local_export_dir: str = ""
     options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -86,67 +97,143 @@ def get_job(job_id: str) -> JobState:
     return job
 
 
+def write_csv_copy(tsv_path: Path) -> Path | None:
+    if not tsv_path.exists() or tsv_path.suffix.lower() != ".tsv":
+        return None
+    csv_path = tsv_path.with_suffix(".csv")
+    with tsv_path.open("r", encoding="utf-8", newline="") as src, csv_path.open(
+        "w", encoding="utf-8", newline=""
+    ) as dst:
+        reader = csv.reader(src, delimiter="\t")
+        writer = csv.writer(dst)
+        for row in reader:
+            writer.writerow(row)
+    return csv_path
+
+
+def stage_job_exports(job: JobState) -> None:
+    export_dir = Path(job.local_export_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = [
+        Path(job.input_path),
+        Path(job.mapped_path),
+        Path(job.unmapped_path),
+        Path(job.review_path),
+        Path(job.qc_risk_path),
+        Path(job.qc_summary_path),
+    ]
+    for path in artifacts:
+        if path.exists():
+            shutil.copy2(path, export_dir / path.name)
+            csv_path = write_csv_copy(path)
+            if csv_path is not None and csv_path.exists():
+                shutil.copy2(csv_path, export_dir / csv_path.name)
+
+
 def run_mapping_job(job_id: str) -> None:
     job = get_job(job_id)
 
     try:
-        cmd = [
-            str(PYTHON_BIN),
-            str(MAPPER_SCRIPT),
-            "map",
-            "--input",
-            job.input_path,
-            "--output",
-            job.mapped_path,
-            "--index",
-            str(job.options.get("index_path", DEFAULT_INDEX)),
-            "--unmapped-output",
-            job.unmapped_path,
-            "--top-k",
-            str(job.options.get("top_k", 1)),
-            "--min-score",
-            str(job.options.get("min_score", 0.55)),
-            "--workers",
-            str(job.options.get("workers", 8)),
-            "--measurement-context",
-            str(job.options.get("measurement_context", "blood")),
-            "--entity-type",
-            str(job.options.get("entity_type", "auto")),
-            "--matrix-priority",
-            str(job.options.get("matrix_priority", "plasma,blood,serum")),
-            "--progress",
-        ]
+        mode = str(job.options.get("mode", "map")).strip().lower()
+        if mode == "trait-map":
+            cmd = [
+                str(PYTHON_BIN),
+                str(MAPPER_SCRIPT),
+                "trait-map",
+                "--input",
+                job.input_path,
+                "--output",
+                job.mapped_path,
+                "--trait-cache",
+                str(job.options.get("trait_cache_path", DEFAULT_TRAIT_CACHE)),
+                "--efo-obo",
+                str(job.options.get("efo_obo_path", DEFAULT_EFO_OBO)),
+                "--ukb-field-catalog",
+                str(job.options.get("ukb_field_catalog_path", DEFAULT_UKB_FIELD_CATALOG)),
+                "--top-k",
+                str(job.options.get("top_k", 1)),
+                "--min-score",
+                str(job.options.get("min_score", 0.82)),
+                "--default-trait-scale",
+                str(job.options.get("default_trait_scale", "auto")),
+                "--review-output",
+                job.review_path,
+                "--qc-risk-output",
+                job.qc_risk_path,
+                "--qc-summary-output",
+                job.qc_summary_path,
+                "--flush-every",
+                str(job.options.get("flush_every", 50)),
+                "--progress",
+            ]
+            if job.options.get("stream_output", True):
+                cmd.append("--stream-output")
+            else:
+                cmd.append("--no-stream-output")
+            if job.options.get("memoize_queries", True):
+                cmd.append("--memoize-queries")
+            else:
+                cmd.append("--no-memoize-queries")
+            if job.options.get("force_map_best", False):
+                cmd.append("--force-map-best")
+        else:
+            cmd = [
+                str(PYTHON_BIN),
+                str(MAPPER_SCRIPT),
+                "map",
+                "--input",
+                job.input_path,
+                "--output",
+                job.mapped_path,
+                "--index",
+                str(job.options.get("index_path", DEFAULT_INDEX)),
+                "--unmapped-output",
+                job.unmapped_path,
+                "--top-k",
+                str(job.options.get("top_k", 1)),
+                "--min-score",
+                str(job.options.get("min_score", 0.55)),
+                "--workers",
+                str(job.options.get("workers", 8)),
+                "--measurement-context",
+                str(job.options.get("measurement_context", "blood")),
+                "--entity-type",
+                str(job.options.get("entity_type", "auto")),
+                "--matrix-priority",
+                str(job.options.get("matrix_priority", "plasma,blood,serum")),
+                "--progress",
+            ]
 
-        if job.options.get("auto_enrich", True):
-            cmd.extend(
-                [
-                    "--auto-enrich-uniprot",
-                    "--uniprot-aliases",
-                    str(job.options.get("uniprot_aliases_path", DEFAULT_UNIPROT_ALIASES)),
-                    "--term-cache",
-                    str(job.options.get("term_cache_path", DEFAULT_TERM_CACHE)),
-                ]
-            )
+            if job.options.get("auto_enrich", True):
+                cmd.extend(
+                    [
+                        "--auto-enrich-uniprot",
+                        "--uniprot-aliases",
+                        str(job.options.get("uniprot_aliases_path", DEFAULT_UNIPROT_ALIASES)),
+                        "--term-cache",
+                        str(job.options.get("term_cache_path", DEFAULT_TERM_CACHE)),
+                    ]
+                )
 
-        if job.options.get("cache_writeback", False):
-            cmd.extend(
-                [
-                    "--cache-writeback",
-                    "--analyte-cache",
-                    str(job.options.get("analyte_cache_path", DEFAULT_ANALYTE_CACHE)),
-                    "--cache-min-confidence",
-                    str(job.options.get("cache_min_confidence", 0.80)),
-                ]
-            )
+            if job.options.get("cache_writeback", False):
+                cmd.extend(
+                    [
+                        "--cache-writeback",
+                        "--analyte-cache",
+                        str(job.options.get("analyte_cache_path", DEFAULT_ANALYTE_CACHE)),
+                        "--cache-min-confidence",
+                        str(job.options.get("cache_min_confidence", 0.80)),
+                    ]
+                )
 
-        if job.options.get("force_map_best", False):
-            cmd.append("--force-map-best")
-            fallback_id = str(job.options.get("fallback_efo_id", "")).strip()
-            if fallback_id:
-                cmd.extend(["--fallback-efo-id", fallback_id])
+            if job.options.get("force_map_best", False):
+                cmd.append("--force-map-best")
+                fallback_id = str(job.options.get("fallback_efo_id", "")).strip()
+                if fallback_id:
+                    cmd.extend(["--fallback-efo-id", fallback_id])
 
         job.status = "running"
-        job.message = "mapping"
+        job.message = "mapping" if mode == "map" else "trait-mapping"
         job.updated_at = time.time()
 
         proc = subprocess.Popen(
@@ -184,6 +271,7 @@ def run_mapping_job(job_id: str) -> None:
             if live.progress_total == 0:
                 live.progress_total = 1
                 live.progress_current = 1
+            stage_job_exports(live)
 
     except Exception as exc:
         with JOBS_LOCK:
@@ -195,8 +283,45 @@ def run_mapping_job(job_id: str) -> None:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home() -> str:
-    return """<!doctype html>
+def home(request: Request) -> str:
+    server_fallback = ""
+    raw_job_id = (request.query_params.get("job_id", "") or "").strip()
+    if raw_job_id:
+        safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_job_id)
+        job_dir = JOB_ROOT / safe_job_id
+        mode = "trait-map" if (job_dir / "traits_mapped.tsv").exists() else "map"
+        links: list[str] = []
+        if (job_dir / "mapped.tsv").exists() or (job_dir / "traits_mapped.tsv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/mapped">Download mapped</a>')
+        if (job_dir / "mapped.csv").exists() or (job_dir / "traits_mapped.csv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/mapped_csv">Download mapped CSV</a>')
+        if (job_dir / "unmapped.tsv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/unmapped">Download unmapped</a>')
+        if (job_dir / "unmapped.csv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/unmapped_csv">Download unmapped CSV</a>')
+        if (job_dir / "traits_review.tsv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/review">Download review</a>')
+        if (job_dir / "traits_review.csv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/review_csv">Download review CSV</a>')
+        if (job_dir / "traits_qc_risk.tsv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_risk">Download QC risk</a>')
+        if (job_dir / "traits_qc_risk.csv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_risk_csv">Download QC risk CSV</a>')
+        if (job_dir / "traits_qc_summary.json").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_summary">Download QC summary</a>')
+        if links:
+            server_fallback = (
+                f'<div class="status">job={safe_job_id} mode={mode} (server fallback)</div>'
+                f'<div class="status">Local output folder: {str(EXPORT_ROOT / safe_job_id)}</div>'
+                f'<div class="links">{"".join(links)}</div>'
+            )
+        else:
+            server_fallback = (
+                f'<div class="status">job={safe_job_id} queued/running (server fallback). '
+                "Refresh this page in a few seconds.</div>"
+            )
+
+    html = """<!doctype html>
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\" />
@@ -380,14 +505,24 @@ def home() -> str:
   <div class=\"wrap\">
     <section class=\"hero\">
       <h1>pQTL Measurement Mapper</h1>
-      <p class=\"sub\">Upload analytes, run deterministic mapping, track progress, and download mapped/unmapped results.</p>
+      <p class=\"sub\">Run analyte map (protein/metabolite) or trait-map, track progress, and download result artifacts.</p>
+      <p class=\"sub\" style=\"margin-top:8px;\">
+        Browser-only prototype available:
+        <a href=\"/pyodide\" style=\"font-weight:700;color:#0d6d63;text-decoration:none;\">Open Pyodide Trait Mapper</a>
+      </p>
     </section>
 
     <div class=\"grid\">
       <section class=\"card\">
-        <form id=\"jobForm\">
+        <form id=\"jobForm\" method=\"post\" action=\"/api/jobs\" enctype=\"multipart/form-data\">
           <label>Input File (.txt/.tsv/.csv)</label>
           <input name=\"file\" type=\"file\" required />
+
+          <label>Mode</label>
+          <select name=\"mode\">
+            <option value=\"map\" selected>map (analyte: protein/metabolite)</option>
+            <option value=\"trait-map\">trait-map (disease/phenotype)</option>
+          </select>
 
           <div class=\"row\">
             <div>
@@ -435,11 +570,31 @@ def home() -> str:
           <label>Fallback EFO ID (optional)</label>
           <input name=\"fallback_efo_id\" type=\"text\" placeholder=\"EFO:0001444\" />
 
+          <label>Trait Default Scale</label>
+          <select name=\"default_trait_scale\">
+            <option value=\"auto\" selected>auto</option>
+            <option value=\"binary\">binary</option>
+            <option value=\"quantitative\">quantitative</option>
+          </select>
+
+          <div class=\"row\">
+            <div>
+              <label>Trait Flush Every</label>
+              <input name=\"flush_every\" type=\"number\" min=\"1\" value=\"50\" />
+            </div>
+            <div></div>
+          </div>
+
+          <label class=\"check\"><input name=\"stream_output\" type=\"checkbox\" checked />Trait: stream output while running</label>
+          <label class=\"check\"><input name=\"memoize_queries\" type=\"checkbox\" checked />Trait: memoize duplicate queries</label>
+
           <button class=\"btn\" id=\"runBtn\" type=\"submit\">Run Mapping</button>
+          <noscript><div class=\"status err\">JavaScript is disabled. Submit will return JSON only; enable JavaScript for live progress and download links.</div></noscript>
           <div class=\"status\" id=\"status\">Idle</div>
           <div class=\"bar\"><div id=\"barFill\"></div></div>
 
           <div class=\"links\" id=\"links\"></div>
+          __SERVER_FALLBACK__
         </form>
       </section>
 
@@ -499,18 +654,26 @@ function setProgress(percent) {
   barFill.style.width = pct.toFixed(1) + '%';
 }
 
-function renderLinks(jobId, ready) {
+function renderLinks(downloads, ready) {
   linksEl.innerHTML = '';
-  if (!ready) return;
-  const mapped = document.createElement('a');
-  mapped.href = `/api/jobs/${jobId}/download/mapped`;
-  mapped.textContent = 'Download mapped TSV';
-  linksEl.appendChild(mapped);
-
-  const unmapped = document.createElement('a');
-  unmapped.href = `/api/jobs/${jobId}/download/unmapped`;
-  unmapped.textContent = 'Download unmapped TSV';
-  linksEl.appendChild(unmapped);
+  if (!ready || !downloads) return;
+  const labels = {
+    mapped: 'Download mapped TSV',
+    mapped_csv: 'Download mapped CSV',
+    unmapped: 'Download unmapped TSV',
+    unmapped_csv: 'Download unmapped CSV',
+    review: 'Download review TSV',
+    review_csv: 'Download review CSV',
+    qc_risk: 'Download QC risk TSV',
+    qc_risk_csv: 'Download QC risk CSV',
+    qc_summary: 'Download QC summary JSON',
+  };
+  for (const [key, href] of Object.entries(downloads)) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.textContent = labels[key] || `Download ${key}`;
+    linksEl.appendChild(a);
+  }
 }
 
 async function pollJob(jobId) {
@@ -529,14 +692,14 @@ async function pollJob(jobId) {
       clearInterval(timer);
       timer = null;
       runBtn.disabled = false;
-      renderLinks(jobId, true);
+      renderLinks(data.downloads, true);
       return;
     }
     if (data.status === 'failed') {
       clearInterval(timer);
       timer = null;
       runBtn.disabled = false;
-      renderLinks(jobId, false);
+      renderLinks(null, false);
       return;
     }
   } catch (err) {
@@ -558,15 +721,21 @@ form.addEventListener('submit', async (e) => {
   fd.set('auto_enrich', boolFromForm(fd, 'auto_enrich'));
   fd.set('cache_writeback', boolFromForm(fd, 'cache_writeback'));
   fd.set('force_map_best', boolFromForm(fd, 'force_map_best'));
+  fd.set('stream_output', boolFromForm(fd, 'stream_output'));
+  fd.set('memoize_queries', boolFromForm(fd, 'memoize_queries'));
 
   runBtn.disabled = true;
-  renderLinks('', false);
+  renderLinks(null, false);
   logsEl.textContent = '';
   setProgress(0);
   setStatus('Submitting job...');
 
   try {
-    const res = await fetch('/api/jobs', { method: 'POST', body: fd });
+    const res = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'fetch' },
+      body: fd
+    });
     if (!res.ok) {
       const txt = await res.text();
       throw new Error(txt || `status ${res.status}`);
@@ -581,15 +750,62 @@ form.addEventListener('submit', async (e) => {
     setStatus(`Submit failed: ${err}`, true);
   }
 });
+
+const qs = new URLSearchParams(window.location.search);
+const restoreJobId = qs.get('job_id');
+if (restoreJobId) {
+  currentJobId = restoreJobId;
+  runBtn.disabled = true;
+  setStatus(`queued: ${restoreJobId}`);
+  timer = setInterval(() => pollJob(currentJobId), 1000);
+  pollJob(currentJobId);
+}
 </script>
 </body>
 </html>
 """
+    return html.replace("__SERVER_FALLBACK__", server_fallback)
+
+
+def _resolve_pyodide_asset(asset_path: str) -> Path:
+    safe = (asset_path or "").lstrip("/")
+    candidate = (PYODIDE_WEB_DIR / safe).resolve()
+    root = PYODIDE_WEB_DIR.resolve()
+    if root not in candidate.parents and candidate != root:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return candidate
+
+
+@app.get("/pyodide")
+def pyodide_home() -> FileResponse:
+    index_path = PYODIDE_WEB_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="Pyodide prototype not available")
+    return FileResponse(path=str(index_path), media_type="text/html")
+
+
+@app.get("/pyodide/{asset_path:path}")
+def pyodide_asset(asset_path: str) -> FileResponse:
+    path = _resolve_pyodide_asset(asset_path)
+    media_type = None
+    if path.suffix == ".js":
+        media_type = "application/javascript"
+    elif path.suffix == ".json":
+        media_type = "application/json"
+    elif path.suffix == ".py":
+        media_type = "text/x-python"
+    elif path.suffix == ".css":
+        media_type = "text/css"
+    return FileResponse(path=str(path), media_type=media_type)
 
 
 @app.post("/api/jobs")
 def create_job(
+    request: Request,
     file: UploadFile = File(...),
+    mode: str = Form("map"),
     workers: int = Form(8),
     top_k: int = Form(1),
     min_score: float = Form(0.55),
@@ -600,6 +816,10 @@ def create_job(
     cache_writeback: bool = Form(False),
     force_map_best: bool = Form(False),
     fallback_efo_id: str = Form(""),
+    default_trait_scale: str = Form("auto"),
+    stream_output: bool = Form(True),
+    memoize_queries: bool = Form(True),
+    flush_every: int = Form(50),
 ) -> JSONResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing input filename")
@@ -607,17 +827,29 @@ def create_job(
     ext = Path(file.filename).suffix.lower()
     if ext not in {".txt", ".tsv", ".csv", ".list", ".tab"}:
         raise HTTPException(status_code=400, detail="Unsupported file type")
+    mode_clean = (mode or "").strip().lower() or "map"
+    if mode_clean not in {"map", "trait-map"}:
+        raise HTTPException(status_code=400, detail="Invalid mode")
+
     entity_type_clean = (entity_type or "").strip().lower() or "auto"
     if entity_type_clean not in {"auto", "protein", "metabolite"}:
         raise HTTPException(status_code=400, detail="Invalid entity_type")
+    default_trait_scale_clean = (default_trait_scale or "").strip().lower() or "auto"
+    if default_trait_scale_clean not in {"auto", "binary", "quantitative"}:
+        raise HTTPException(status_code=400, detail="Invalid default_trait_scale")
 
     job_id = uuid.uuid4().hex[:12]
     job_dir = JOB_ROOT / job_id
+    export_dir = EXPORT_ROOT / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
 
     input_path = job_dir / f"input{ext if ext else '.txt'}"
-    mapped_path = job_dir / "mapped.tsv"
+    mapped_path = job_dir / ("traits_mapped.tsv" if mode_clean == "trait-map" else "mapped.tsv")
     unmapped_path = job_dir / "unmapped.tsv"
+    review_path = job_dir / "traits_review.tsv"
+    qc_risk_path = job_dir / "traits_qc_risk.tsv"
+    qc_summary_path = job_dir / "traits_qc_summary.json"
 
     content = file.file.read()
     input_path.write_bytes(content)
@@ -631,7 +863,12 @@ def create_job(
         input_path=str(input_path),
         mapped_path=str(mapped_path),
         unmapped_path=str(unmapped_path),
+        review_path=str(review_path),
+        qc_risk_path=str(qc_risk_path),
+        qc_summary_path=str(qc_summary_path),
+        local_export_dir=str(export_dir),
         options={
+            "mode": mode_clean,
             "workers": max(1, int(workers)),
             "top_k": max(1, int(top_k)),
             "min_score": max(0.0, float(min_score)),
@@ -642,10 +879,17 @@ def create_job(
             "cache_writeback": bool(cache_writeback),
             "force_map_best": bool(force_map_best),
             "fallback_efo_id": fallback_efo_id.strip(),
+            "default_trait_scale": default_trait_scale_clean,
+            "stream_output": bool(stream_output),
+            "memoize_queries": bool(memoize_queries),
+            "flush_every": max(1, int(flush_every)),
             "index_path": str(DEFAULT_INDEX),
             "uniprot_aliases_path": str(DEFAULT_UNIPROT_ALIASES),
             "term_cache_path": str(DEFAULT_TERM_CACHE),
             "analyte_cache_path": str(DEFAULT_ANALYTE_CACHE),
+            "trait_cache_path": str(DEFAULT_TRAIT_CACHE),
+            "efo_obo_path": str(DEFAULT_EFO_OBO),
+            "ukb_field_catalog_path": str(DEFAULT_UKB_FIELD_CATALOG),
         },
     )
 
@@ -654,6 +898,11 @@ def create_job(
 
     thread = threading.Thread(target=run_mapping_job, args=(job_id,), daemon=True)
     thread.start()
+
+    requested_with = (request.headers.get("x-requested-with", "") or "").strip().lower()
+    accept = request.headers.get("accept", "")
+    if requested_with != "fetch" and "text/html" in accept:
+        return RedirectResponse(url=f"/?job_id={job_id}", status_code=303)
 
     return JSONResponse({"job_id": job_id, "status": "queued"})
 
@@ -673,10 +922,33 @@ def job_status(job_id: str) -> JSONResponse:
             "message": job.message,
             "error": job.error,
             "logs": job.logs,
-            "downloads": {
-                "mapped": f"/api/jobs/{job_id}/download/mapped",
-                "unmapped": f"/api/jobs/{job_id}/download/unmapped",
+            "local_export_dir": job.local_export_dir,
+            "local_paths": {
+                "input": str(Path(job.local_export_dir) / Path(job.input_path).name),
+                "mapped": str(Path(job.local_export_dir) / Path(job.mapped_path).name),
+                "unmapped": str(Path(job.local_export_dir) / Path(job.unmapped_path).name),
+                "review": str(Path(job.local_export_dir) / Path(job.review_path).name),
+                "qc_risk": str(Path(job.local_export_dir) / Path(job.qc_risk_path).name),
+                "qc_summary": str(Path(job.local_export_dir) / Path(job.qc_summary_path).name),
             },
+            "downloads": (
+                {
+                    "mapped": f"/api/jobs/{job_id}/download/mapped",
+                    "mapped_csv": f"/api/jobs/{job_id}/download/mapped_csv",
+                    "review": f"/api/jobs/{job_id}/download/review",
+                    "review_csv": f"/api/jobs/{job_id}/download/review_csv",
+                    "qc_risk": f"/api/jobs/{job_id}/download/qc_risk",
+                    "qc_risk_csv": f"/api/jobs/{job_id}/download/qc_risk_csv",
+                    "qc_summary": f"/api/jobs/{job_id}/download/qc_summary",
+                }
+                if job.options.get("mode") == "trait-map"
+                else {
+                    "mapped": f"/api/jobs/{job_id}/download/mapped",
+                    "mapped_csv": f"/api/jobs/{job_id}/download/mapped_csv",
+                    "unmapped": f"/api/jobs/{job_id}/download/unmapped",
+                    "unmapped_csv": f"/api/jobs/{job_id}/download/unmapped_csv",
+                }
+            ),
         }
     return JSONResponse(payload)
 
@@ -684,18 +956,38 @@ def job_status(job_id: str) -> JSONResponse:
 @app.get("/api/jobs/{job_id}/download/{kind}")
 def download_job_file(job_id: str, kind: str) -> FileResponse:
     job = get_job(job_id)
+    media_type = "text/tab-separated-values"
 
     if kind == "mapped":
         path = Path(job.mapped_path)
+    elif kind == "mapped_csv":
+        path = Path(job.mapped_path).with_suffix(".csv")
+        media_type = "text/csv"
     elif kind == "unmapped":
         path = Path(job.unmapped_path)
+    elif kind == "unmapped_csv":
+        path = Path(job.unmapped_path).with_suffix(".csv")
+        media_type = "text/csv"
+    elif kind == "review":
+        path = Path(job.review_path)
+    elif kind == "review_csv":
+        path = Path(job.review_path).with_suffix(".csv")
+        media_type = "text/csv"
+    elif kind == "qc_risk":
+        path = Path(job.qc_risk_path)
+    elif kind == "qc_risk_csv":
+        path = Path(job.qc_risk_path).with_suffix(".csv")
+        media_type = "text/csv"
+    elif kind == "qc_summary":
+        path = Path(job.qc_summary_path)
+        media_type = "application/json"
     else:
         raise HTTPException(status_code=404, detail="Unknown artifact")
 
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not available yet")
 
-    return FileResponse(path=str(path), filename=path.name, media_type="text/tab-separated-values")
+    return FileResponse(path=str(path), filename=path.name, media_type=media_type)
 
 
 @app.get("/healthz")

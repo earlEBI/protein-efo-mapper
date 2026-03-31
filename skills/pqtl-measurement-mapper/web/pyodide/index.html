@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pyodide Trait Mapper Prototype</title>
+  <style>
+    :root {
+      --bg: #f5f8fb;
+      --card: #ffffff;
+      --ink: #10222e;
+      --muted: #4c6475;
+      --line: #d4e0e9;
+      --accent: #1369a8;
+      --accent-2: #0d8659;
+      --warn: #9d3c06;
+      --error: #ba1f1f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1200px 500px at -15% -20%, #d9ecfb 0%, var(--bg) 50%);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+    }
+    .hero {
+      border: 1px solid #c3dced;
+      background: linear-gradient(135deg, #e8f6ff, #f7fcff 45%, #f2fff9);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 8px; font-size: 1.35rem; }
+    p { margin: 6px 0; color: var(--muted); line-height: 1.42; }
+    .pill {
+      display: inline-block;
+      font-size: 0.8rem;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid #a7d4f3;
+      background: #ecf8ff;
+      color: #0a4f7a;
+      margin-right: 6px;
+      margin-top: 4px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+    }
+    label {
+      display: block;
+      margin: 10px 0 6px;
+      font-size: 0.86rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    input[type=file], input[type=number] {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #b9ccda;
+      padding: 9px 10px;
+      font-size: 0.95rem;
+      background: #fff;
+      color: var(--ink);
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .btn {
+      border: 0;
+      border-radius: 9px;
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      padding: 10px 12px;
+      flex: 1;
+    }
+    .btn.run { background: linear-gradient(120deg, var(--accent), #2f8fcf); }
+    .btn.dl { background: linear-gradient(120deg, var(--accent-2), #26a775); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status {
+      margin-top: 10px;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+    .status.warn { color: var(--warn); }
+    .status.err { color: var(--error); }
+    pre {
+      margin: 0;
+      background: #0e1c27;
+      color: #d0e6f5;
+      border-radius: 10px;
+      border: 1px solid #25465d;
+      min-height: 240px;
+      max-height: 520px;
+      overflow: auto;
+      padding: 12px;
+      line-height: 1.42;
+      font-size: 0.79rem;
+    }
+    .links a {
+      color: #0d5f9d;
+      text-decoration: none;
+      font-weight: 700;
+    }
+    code {
+      background: #eef4f8;
+      border: 1px solid #d6e0e7;
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-size: 0.84rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>Pyodide Trait Mapper Prototype</h1>
+      <p>Runs mapping directly in your browser via a Web Worker + Python (Pyodide), without server-side subprocess mapping.</p>
+      <div>
+        <span class="pill">Browser execution</span>
+        <span class="pill">Cache-driven</span>
+        <span class="pill">EFO/MONDO/HP/OBA constrained</span>
+      </div>
+      <p class="links">
+        Use <code>build_pyodide_trait_bundle.py</code> to generate a larger bundle from the full trait cache.
+        Return to <a href="/">server mapper</a>.
+      </p>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <label>Input traits file (.tsv/.csv/.txt)</label>
+        <input id="inputFile" type="file" accept=".tsv,.csv,.txt,.tab,.list" />
+
+        <label>Optional cache bundle override (.json)</label>
+        <input id="bundleFile" type="file" accept=".json" />
+
+        <label>Minimum confidence threshold</label>
+        <input id="minScore" type="number" min="0" max="1" step="0.01" value="0.82" />
+
+        <div class="actions">
+          <button class="btn run" id="runBtn">Run Mapping</button>
+          <button class="btn dl" id="dlBtn" disabled>Download TSV</button>
+        </div>
+        <div class="status" id="status">Initializing worker...</div>
+      </section>
+
+      <section class="card">
+        <h3 style="margin:0 0 8px;font-size:1rem;">Output Preview</h3>
+        <pre id="preview"></pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const inputFile = document.getElementById("inputFile");
+    const bundleFile = document.getElementById("bundleFile");
+    const minScore = document.getElementById("minScore");
+    const runBtn = document.getElementById("runBtn");
+    const dlBtn = document.getElementById("dlBtn");
+    const statusEl = document.getElementById("status");
+    const preview = document.getElementById("preview");
+
+    let latestOutput = "";
+    let workerReady = false;
+    let worker = null;
+    let downloadUrl = null;
+
+    function setStatus(message, kind = "") {
+      statusEl.className = `status ${kind}`.trim();
+      statusEl.textContent = message;
+    }
+
+    function teardownDownloadUrl() {
+      if (downloadUrl) {
+        URL.revokeObjectURL(downloadUrl);
+        downloadUrl = null;
+      }
+    }
+
+    function initWorker() {
+      worker = new Worker("./worker.js");
+      worker.onmessage = (event) => {
+        const type = event?.data?.type;
+        const payload = event?.data?.payload || {};
+        if (type === "status") {
+          setStatus(payload.message || "Working...");
+          return;
+        }
+        if (type === "ready") {
+          workerReady = true;
+          setStatus("Worker ready.");
+          return;
+        }
+        if (type === "mapped") {
+          latestOutput = String(payload.outputText || "");
+          preview.textContent = latestOutput.split("\n").slice(0, 120).join("\n");
+          teardownDownloadUrl();
+          downloadUrl = URL.createObjectURL(new Blob([latestOutput], { type: "text/tab-separated-values" }));
+          dlBtn.disabled = !latestOutput;
+          runBtn.disabled = false;
+          setStatus("Mapping complete.");
+          return;
+        }
+        if (type === "error") {
+          runBtn.disabled = false;
+          setStatus(payload.message || "Worker error", "err");
+        }
+      };
+      worker.postMessage({ type: "init" });
+    }
+
+    async function readTextFile(file) {
+      return await file.text();
+    }
+
+    runBtn.addEventListener("click", async () => {
+      try {
+        if (!workerReady) {
+          setStatus("Worker not ready yet.", "warn");
+          return;
+        }
+        if (!inputFile.files || !inputFile.files[0]) {
+          setStatus("Choose an input file first.", "warn");
+          return;
+        }
+
+        runBtn.disabled = true;
+        dlBtn.disabled = true;
+        preview.textContent = "";
+        latestOutput = "";
+        teardownDownloadUrl();
+
+        const inputText = await readTextFile(inputFile.files[0]);
+        let cacheText = "";
+        if (bundleFile.files && bundleFile.files[0]) {
+          cacheText = await readTextFile(bundleFile.files[0]);
+        }
+
+        setStatus("Submitting to worker...");
+        worker.postMessage({
+          type: "map",
+          payload: {
+            inputText,
+            cacheText,
+            minScore: Number(minScore.value || 0.82),
+          },
+        });
+      } catch (err) {
+        runBtn.disabled = false;
+        setStatus(String(err), "err");
+      }
+    });
+
+    dlBtn.addEventListener("click", () => {
+      if (!downloadUrl) {
+        return;
+      }
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = "traits_mapped_pyodide.tsv";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    });
+
+    initWorker();
+  </script>
+</body>
+</html>
