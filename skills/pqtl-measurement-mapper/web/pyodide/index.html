@@ -70,7 +70,7 @@
       color: var(--muted);
       font-weight: 600;
     }
-    input[type=file], input[type=number] {
+    input[type=file], input[type=number], select {
       width: 100%;
       border-radius: 8px;
       border: 1px solid #b9ccda;
@@ -78,6 +78,12 @@
       font-size: 0.95rem;
       background: #fff;
       color: var(--ink);
+    }
+    .hint {
+      margin-top: 4px;
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.35;
     }
     .actions {
       display: flex;
@@ -134,15 +140,17 @@
 <body>
   <main class="wrap">
     <section class="hero">
-      <h1>Pyodide Trait Mapper Prototype</h1>
-      <p>Runs mapping directly in your browser via a Web Worker + Python (Pyodide), without server-side subprocess mapping.</p>
+      <h1>Pyodide Trait Mapper</h1>
+      <p>Runs mapping directly in your browser via a Web Worker + Python (Pyodide), with a fast prototype mode and a CLI-compatible mode.</p>
       <div>
         <span class="pill">Browser execution</span>
-        <span class="pill">Cache-driven</span>
+        <span class="pill">Fast cache mode</span>
+        <span class="pill">CLI-compatible mode</span>
         <span class="pill">EFO/MONDO/HP/OBA constrained</span>
       </div>
       <p class="links">
-        Use <code>build_pyodide_trait_bundle.py</code> to generate a larger bundle from the full trait cache.
+        Use <code>build_pyodide_trait_bundle.py</code> for fast mode cache bundles and
+        <code>build_pyodide_trait_runtime_bundle.py</code> for CLI-compatible runtime ZIP bundles.
         Return to <a href="/">server mapper</a>.
       </p>
     </section>
@@ -152,8 +160,23 @@
         <label>Input traits file (.tsv/.csv/.txt)</label>
         <input id="inputFile" type="file" accept=".tsv,.csv,.txt,.tab,.list" />
 
-        <label>Optional cache bundle override (.json)</label>
+        <label>Engine</label>
+        <select id="engine">
+          <option value="fast">fast (cache JSON; faster startup)</option>
+          <option value="cli_compat" selected>cli_compat (same trait-map script + refs; best parity)</option>
+        </select>
+        <div class="hint">
+          `cli_compat` runs the full trait-map script in-browser using a runtime ZIP bundle.
+        </div>
+
+        <label>Fast mode: optional cache bundle override (.json)</label>
         <input id="bundleFile" type="file" accept=".json" />
+
+        <label>CLI-compatible mode: optional runtime bundle override (.zip)</label>
+        <input id="runtimeBundleFile" type="file" accept=".zip" />
+        <div class="hint">
+          If left blank, the app tries <code>trait_runtime_bundle.zip</code> in this directory.
+        </div>
 
         <label>Minimum confidence threshold</label>
         <input id="minScore" type="number" min="0" max="1" step="0.01" value="0.82" />
@@ -174,7 +197,9 @@
 
   <script>
     const inputFile = document.getElementById("inputFile");
+    const engine = document.getElementById("engine");
     const bundleFile = document.getElementById("bundleFile");
+    const runtimeBundleFile = document.getElementById("runtimeBundleFile");
     const minScore = document.getElementById("minScore");
     const runBtn = document.getElementById("runBtn");
     const dlBtn = document.getElementById("dlBtn");
@@ -219,7 +244,8 @@
           downloadUrl = URL.createObjectURL(new Blob([latestOutput], { type: "text/tab-separated-values" }));
           dlBtn.disabled = !latestOutput;
           runBtn.disabled = false;
-          setStatus("Mapping complete.");
+          const engineName = String(payload.engine || "fast");
+          setStatus(`Mapping complete (${engineName}).`);
           return;
         }
         if (type === "error") {
@@ -252,20 +278,35 @@
         teardownDownloadUrl();
 
         const inputText = await readTextFile(inputFile.files[0]);
+        const selectedEngine = String(engine.value || "fast");
         let cacheText = "";
         if (bundleFile.files && bundleFile.files[0]) {
           cacheText = await readTextFile(bundleFile.files[0]);
         }
+        let runtimeBundleBytes = null;
+        let runtimeBundleName = "";
+        if (runtimeBundleFile.files && runtimeBundleFile.files[0]) {
+          runtimeBundleName = runtimeBundleFile.files[0].name || "runtime_bundle.zip";
+          runtimeBundleBytes = await runtimeBundleFile.files[0].arrayBuffer();
+        }
 
         setStatus("Submitting to worker...");
-        worker.postMessage({
+        const message = {
           type: "map",
           payload: {
+            engine: selectedEngine,
             inputText,
             cacheText,
             minScore: Number(minScore.value || 0.82),
+            runtimeBundleName,
+            runtimeBundleBytes,
           },
-        });
+        };
+        const transfer = [];
+        if (runtimeBundleBytes) {
+          transfer.push(runtimeBundleBytes);
+        }
+        worker.postMessage(message, transfer);
       } catch (err) {
         runBtn.disabled = false;
         setStatus(String(err), "err");

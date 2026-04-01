@@ -794,6 +794,8 @@ def pyodide_asset(asset_path: str) -> FileResponse:
         media_type = "application/javascript"
     elif path.suffix == ".json":
         media_type = "application/json"
+    elif path.suffix == ".zip":
+        media_type = "application/zip"
     elif path.suffix == ".py":
         media_type = "text/x-python"
     elif path.suffix == ".css":

@@ -31,24 +31,30 @@ Run trait mapping directly in the browser (no server-side subprocess) so the web
 
 ## Implementation Phases
 
-1. POC scaffold (this change)
+1. POC scaffold (completed)
 - Add `web/pyodide/index.html`, `worker.js`, `mapper_core.py`
 - Add cache-bundle builder script:
   `skills/pqtl-measurement-mapper/scripts/build_pyodide_trait_bundle.py`
 - Add route in FastAPI app:
   `/pyodide`
 
-2. Shared logic extraction
+2. CLI-compatible runtime mode (completed)
+- Add runtime ZIP builder:
+  `skills/pqtl-measurement-mapper/scripts/build_pyodide_trait_runtime_bundle.py`
+- Add `cli_compat` engine to worker/UI, executing the same
+  `map_measurement_efo.py trait-map` script in-browser using bundled references.
+
+3. Shared logic extraction (next)
 - Move trait scoring / normalization into importable pure module
 - Reuse same module in both CLI and Pyodide worker
 - Reduce drift between web and CLI behavior
 
-3. Full parity and performance
+4. Full parity and performance (next)
 - Build full browser bundle from `trait_mapping_cache.tsv`
 - Chunk/cache by prefix and first-token shard if payload is too large
 - Add small regression fixtures and compare Pyodide vs CLI outputs
 
-4. Static deploy option
+5. Static deploy option (next)
 - Ship static files only (any CDN/object storage)
 - Keep server only for optional advanced workflows
 
