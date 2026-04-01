@@ -2878,7 +2878,7 @@ def extract_ukb_descriptive_query_label(text: str) -> str:
         return ""
     stripped = normalize(
         re.sub(
-            r"\(\s*UKB(?:\s*data)?\s*f(?:ield|iled)\s*\d{1,7}(?:\s*[_#]\s*[A-Za-z0-9.\-]+(?:\s*-\s*[A-Za-z0-9.\-]+)?)?\s*\)\s*$",
+            r"(?:\(\s*UKB(?:\s*data)?\s*f(?:ield|iled)\s*\d{1,7}(?:\s*[_#]\s*[A-Za-z0-9.\-]+(?:\s*-\s*[A-Za-z0-9.\-]+)?)?\s*\)|\(\s*\d{1,7}\s*\))\s*$",
             "",
             raw,
             flags=re.IGNORECASE,
@@ -15578,11 +15578,43 @@ def map_trait_queries(
                 evidence="late override: cancer-register melanoma-in-situ row forced to melanoma (no dedicated in-situ melanoma term in EFO import)",
                 is_validated=False,
             )
+        elif raw_query_cancer_context_key.startswith("type of cancer: other and unspecified malignant neoplasm of skin"):
+            # Normalize UKB cancer-register skin-site rows to stable skin-neoplasm
+            # family terms so they do not collapse to generic "cancer".
+            if "eyelid" in raw_query_cancer_context_key:
+                skin_phrase = "eyelid cancer"
+            elif any(
+                token in raw_query_cancer_context_key
+                for token in (
+                    "parts of face",
+                    "skin of other and unspecified parts of face",
+                    "skin of scalp and neck",
+                    "skin of trunk",
+                )
+            ):
+                skin_phrase = "non-melanoma skin carcinoma"
+            else:
+                skin_phrase = "skin neoplasm"
+            forced_skin_candidate = phrase_rule_exact_candidate(
+                phrase=skin_phrase,
+                score=1.06,
+                matched_via="trait_phrase_rule",
+                evidence=f"late override: type-of-cancer skin-site row normalized to '{skin_phrase}'",
+                validated=True,
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if forced_skin_candidate is not None:
+                late_forced_candidate = forced_skin_candidate
         elif (
             raw_query_cancer_context_key.startswith("type of cancer: malignant melanoma")
             or raw_query_cancer_context_key.startswith("type of cancer: malignant neoplasm of ")
+            or raw_query_cancer_context_key.startswith("type of cancer: other and unspecified malignant neoplasm of ")
         ):
             cancer_fragment = normalize(raw_query_cancer_context_key.split("type of cancer:", 1)[1])
+            cancer_fragment = normalize(
+                re.sub(r"^other and unspecified\s+", "", cancer_fragment, flags=re.IGNORECASE)
+            )
             forced_phrase = ""
             if cancer_fragment.startswith("malignant melanoma"):
                 forced_phrase = "melanoma"
@@ -15623,6 +15655,7 @@ def map_trait_queries(
                         ("liver", "liver neoplasm"),
                         ("pleura", "pleural neoplasm"),
                         ("lung", "lung neoplasm"),
+                        ("skin", "skin neoplasm"),
                     )
                     fallback_phrase = ""
                     for token, phrase in site_fallbacks:
@@ -23118,6 +23151,119 @@ def harmonize_trait_rows_by_query_constraints(
         evidence = normalize(row.get("evidence", ""))
         row["evidence"] = f"{evidence}; {note}" if evidence else note
 
+    def best_fracture_site_injury_component(
+        *,
+        query_label: str,
+        query_key: str,
+        query_raw_key: str,
+        query_similarity_text: str,
+        query_tokens: set[str],
+        mapped_ids: list[str],
+        mapped_labels: list[str],
+        exclude_ids: set[str] | None = None,
+    ) -> tuple[str, str]:
+        exclude_ids = {canonicalize_trait_ontology_id(item) for item in (exclude_ids or set()) if canonicalize_trait_ontology_id(item)}
+        generic_injury_label_keys = {
+            "injury",
+            "head injury",
+            "limb injury",
+            "musculoskeletal injury",
+        }
+        query_location_tokens = trait_location_hint_tokens(f"{query_label} {query_raw_key}")
+        candidates: list[tuple[float, str, str]] = []
+
+        def add_candidate(term_id: str, label: str) -> None:
+            canonical_id = canonicalize_trait_ontology_id(term_id)
+            label_norm = normalize(label)
+            if not canonical_id or not label_norm:
+                return
+            if canonical_id in exclude_ids:
+                return
+            label_key = norm_key(label_norm)
+            if "injury" not in label_key or label_key in generic_injury_label_keys:
+                return
+            if not trait_output_id_allowed(canonical_id):
+                return
+            label_location_tokens = trait_location_hint_tokens(label_norm)
+            if (
+                query_location_tokens
+                and label_location_tokens
+                and query_location_tokens.isdisjoint(label_location_tokens)
+            ):
+                return
+            score = trait_similarity_score(query_similarity_text, query_tokens, label_norm)
+            candidates.append((score, canonical_id, label_norm))
+
+        for term_id, label in zip(mapped_ids, mapped_labels):
+            add_candidate(term_id, label)
+
+        if not candidates:
+            fracture_site_variants: list[str] = []
+            for fracture_source in (query_raw_key, query_key):
+                fracture_site_match = re.search(
+                    r"\bfracture(?:\s+of)?\s+([a-z0-9][a-z0-9\s\-/]+)",
+                    fracture_source,
+                    flags=re.IGNORECASE,
+                )
+                if not fracture_site_match:
+                    continue
+                fracture_site = normalize(fracture_site_match.group(1))
+                fracture_site = normalize(
+                    re.split(
+                        r"\b(?:and|or|with|without|due to|from|in|after|before)\b",
+                        fracture_site,
+                        maxsplit=1,
+                    )[0]
+                )
+                fracture_site = normalize(re.sub(r"[^a-z0-9\s-]", " ", fracture_site))
+                fracture_site = normalize(
+                    re.sub(
+                        r"\b(?:self|reported|non|cancer|illness|code|icd10|ukb|field|gene|based|burden)\b",
+                        " ",
+                        fracture_site,
+                        flags=re.IGNORECASE,
+                    )
+                )
+                if fracture_site:
+                    fracture_site_variants.append(fracture_site)
+
+            if query_location_tokens:
+                fracture_site_variants.extend(
+                    sorted(
+                        (
+                            token
+                            for token in query_location_tokens
+                            if token
+                            and token not in {"fracture", "bone", "bones", "injury", "trauma", "wound"}
+                        ),
+                        key=len,
+                        reverse=True,
+                    )
+                )
+
+            seen_site_keys: set[str] = set()
+            for site_variant in fracture_site_variants:
+                site_norm = normalize(site_variant)
+                site_key = norm_key(site_norm)
+                if not site_key or site_key in seen_site_keys:
+                    continue
+                seen_site_keys.add(site_key)
+                for injury_phrase in (f"{site_norm} injury", f"injury of {site_norm}"):
+                    injury_id, injury_label = preferred_exact_term_for_phrase(
+                        injury_phrase,
+                        ontology_exact_index=ontology_exact_index,
+                        ontology_terms=ontology_terms,
+                    )
+                    if not injury_id or not injury_label:
+                        continue
+                    add_candidate(injury_id, injury_label)
+
+        if not candidates:
+            return ("", "")
+        candidates.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+        _score, best_id, best_label = candidates[0]
+        return (best_id, best_label)
+
     def has_strict_manual_cache_clue(row: dict[str, str]) -> bool:
         if not normalize_icd10_code(row.get("input_icd10", "")):
             return False
@@ -23131,6 +23277,23 @@ def harmonize_trait_rows_by_query_constraints(
             return False
         evidence_text = normalize(row.get("evidence", "")).lower()
         return any(marker in evidence_text for marker in strict_manual_cache_publication_markers)
+
+    def type_of_cancer_skin_site_rescue_phrase(query_text: str) -> str:
+        query_key = norm_key(query_text)
+        if not query_key.startswith("type of cancer: other and unspecified malignant neoplasm of skin"):
+            return ""
+        if "skin of eyelid" in query_key:
+            return "eyelid cancer"
+        if any(
+            token in query_key
+            for token in (
+                "skin of other and unspecified parts of face",
+                "skin of scalp and neck",
+                "skin of trunk",
+            )
+        ):
+            return "non-melanoma skin carcinoma"
+        return "skin neoplasm"
 
     @lru_cache(maxsize=200_000)
     def parse_source_report_icd_trait_context(query_text: str) -> tuple[str, str]:
@@ -23152,6 +23315,24 @@ def harmonize_trait_rows_by_query_constraints(
 
     for row in rows:
         mapped_ids_raw = normalize(row.get("mapped_trait_id", ""))
+        skin_site_rescue_phrase = type_of_cancer_skin_site_rescue_phrase(normalize(row.get("input_query", "")))
+        if not mapped_ids_raw and skin_site_rescue_phrase:
+            rescue_id, rescue_label = preferred_exact_term_for_phrase(
+                skin_site_rescue_phrase,
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if rescue_id and rescue_label and trait_output_id_allowed(rescue_id):
+                set_single_mapping(
+                    row,
+                    mapped_id=rescue_id,
+                    mapped_label=rescue_label,
+                    matched_via="query_phrase_harmonized",
+                    note=f"type_of_cancer_skin_site_rescue={norm_key(skin_site_rescue_phrase)}",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids_raw = normalize(row.get("mapped_trait_id", ""))
         if not mapped_ids_raw:
             continue
         strict_manual_cache_locked = has_strict_manual_cache_clue(row)
@@ -23192,6 +23373,25 @@ def harmonize_trait_rows_by_query_constraints(
         query_similarity_text = normalize_trait_text_for_similarity(query_label) or query_key
         query_tokens = informative_trait_tokens(query_similarity_text)
         mapped_label_keys = [norm_key(label) for label in mapped_labels]
+        if skin_site_rescue_phrase and any(label_key in {"cancer", "neoplasm"} for label_key in mapped_label_keys):
+            rescue_id, rescue_label = preferred_exact_term_for_phrase(
+                skin_site_rescue_phrase,
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if rescue_id and rescue_label and trait_output_id_allowed(rescue_id):
+                set_single_mapping(
+                    row,
+                    mapped_id=rescue_id,
+                    mapped_label=rescue_label,
+                    matched_via="query_phrase_harmonized",
+                    note=f"type_of_cancer_skin_site_rescue={norm_key(skin_site_rescue_phrase)}",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(rescue_id)]
+                mapped_labels = [normalize(rescue_label)]
+                mapped_label_keys = [norm_key(rescue_label)]
         is_icd_context = bool(icd10_code) or query_key.startswith("icd10 ")
         # Preserve strict curator-seeded ICD10 exact-cache winners and skip
         # downstream post-hoc ICD10 override/harmonization rewrites.
@@ -23234,6 +23434,10 @@ def harmonize_trait_rows_by_query_constraints(
                 and "secondary malignant neoplasm" not in query_key
                 and "cancer" in mapped_label_key
                 and "neoplasm" not in mapped_label_key
+                and not (
+                    "malignant neoplasm of skin of eyelid" in query_key
+                    and "eyelid cancer" in mapped_label_key
+                )
             ):
                 malignant_phrase_variants: list[str] = []
                 neoplasm_variant_from_label = normalize(
@@ -25268,18 +25472,77 @@ def harmonize_trait_rows_by_query_constraints(
                         ontology_terms=ontology_terms,
                     )
                 if fracture_id and fracture_label:
-                    set_single_mapping(
+                    injury_component_id, injury_component_label = best_fracture_site_injury_component(
+                        query_label=query_label,
+                        query_key=query_key,
+                        query_raw_key=query_raw_key,
+                        query_similarity_text=query_similarity_text,
+                        query_tokens=query_tokens,
+                        mapped_ids=mapped_ids,
+                        mapped_labels=mapped_labels,
+                        exclude_ids={fracture_id},
+                    )
+                    if injury_component_id and injury_component_label:
+                        set_multi_mapping(
+                            row,
+                            mapped_ids_text=f"{fracture_id}|{injury_component_id}",
+                            mapped_labels_text=f"{fracture_label}|{injury_component_label}",
+                            matched_via="icd10_injury_chapter_harmonized",
+                            note=(
+                                "icd10_injury_chapter_harmonized="
+                                "fracture_phrase_to_bone_fracture_plus_site_injury"
+                            ),
+                            confidence_floor=0.820,
+                            force_review=False,
+                        )
+                        mapped_ids = [
+                            canonicalize_trait_ontology_id(fracture_id),
+                            canonicalize_trait_ontology_id(injury_component_id),
+                        ]
+                        mapped_labels = [fracture_label, injury_component_label]
+                        mapped_label_keys = [norm_key(fracture_label), norm_key(injury_component_label)]
+                    else:
+                        set_single_mapping(
+                            row,
+                            mapped_id=fracture_id,
+                            mapped_label=fracture_label,
+                            matched_via="icd10_injury_chapter_harmonized",
+                            note="icd10_injury_chapter_harmonized=fracture_phrase_to_bone_fracture",
+                            confidence_floor=0.800,
+                            force_review=False,
+                        )
+                        mapped_ids = [canonicalize_trait_ontology_id(fracture_id)]
+                        mapped_labels = [fracture_label]
+                        mapped_label_keys = [norm_key(fracture_label)]
+            if (
+                icd10_code.startswith(("S", "T"))
+                and "fracture" in query_key
+                and len(mapped_ids) == 1
+                and "fracture" in mapped_label_keys[0]
+            ):
+                injury_component_id, injury_component_label = best_fracture_site_injury_component(
+                    query_label=query_label,
+                    query_key=query_key,
+                    query_raw_key=query_raw_key,
+                    query_similarity_text=query_similarity_text,
+                    query_tokens=query_tokens,
+                    mapped_ids=mapped_ids,
+                    mapped_labels=mapped_labels,
+                    exclude_ids={mapped_ids[0]},
+                )
+                if injury_component_id and injury_component_label:
+                    set_multi_mapping(
                         row,
-                        mapped_id=fracture_id,
-                        mapped_label=fracture_label,
+                        mapped_ids_text=f"{mapped_ids[0]}|{injury_component_id}",
+                        mapped_labels_text=f"{mapped_labels[0]}|{injury_component_label}",
                         matched_via="icd10_injury_chapter_harmonized",
-                        note="icd10_injury_chapter_harmonized=fracture_phrase_to_bone_fracture",
-                        confidence_floor=0.800,
+                        note="icd10_injury_chapter_harmonized=augmented_fracture_with_site_injury_component",
+                        confidence_floor=0.820,
                         force_review=False,
                     )
-                    mapped_ids = [canonicalize_trait_ontology_id(fracture_id)]
-                    mapped_labels = [fracture_label]
-                    mapped_label_keys = [norm_key(fracture_label)]
+                    mapped_ids = [mapped_ids[0], canonicalize_trait_ontology_id(injury_component_id)]
+                    mapped_labels = [mapped_labels[0], injury_component_label]
+                    mapped_label_keys = [norm_key(mapped_labels[0]), norm_key(injury_component_label)]
             if (
                 icd10_code.startswith("M79.6")
                 and limb_pain_override_id
@@ -28427,6 +28690,30 @@ def harmonize_trait_rows_by_query_constraints(
             and "back pain" in mapped_label_keys
         ):
             continue
+        if (
+            icd10_code.startswith(("S", "T"))
+            and "fracture" in query_key
+            and len(mapped_ids) > 1
+        ):
+            has_fracture_component = any("fracture" in norm_key(label) for label in mapped_labels)
+            has_specific_injury_component = False
+            for label in mapped_labels:
+                label_key = norm_key(label)
+                if "injury" not in label_key:
+                    continue
+                if label_key in {
+                    "injury",
+                    "head injury",
+                    "limb injury",
+                    "musculoskeletal injury",
+                }:
+                    continue
+                has_specific_injury_component = True
+                break
+            if has_fracture_component and has_specific_injury_component:
+                # Preserve clinically meaningful fracture + anatomic-site injury
+                # composites (for example bone fracture + nose injury).
+                continue
 
         # Collapse single-trait composite rows to one best-supported term.
         explicit_multi = (
