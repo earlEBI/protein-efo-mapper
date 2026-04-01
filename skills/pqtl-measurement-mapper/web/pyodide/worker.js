@@ -221,6 +221,28 @@ import json
 import pathlib
 import runpy
 import sys
+import types
+
+# Pyodide does not provide _multiprocessing, so importing
+# concurrent.futures.process fails. Inject a thread-backed shim so
+# "from concurrent.futures import ProcessPoolExecutor" still works.
+if "concurrent.futures.process" not in sys.modules:
+    from concurrent.futures.thread import ThreadPoolExecutor as _ThreadPoolExecutor
+
+    _process_mod = types.ModuleType("concurrent.futures.process")
+
+    class ProcessPoolExecutor(_ThreadPoolExecutor):
+        def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=()):
+            # Ignore process-specific kwargs in browser mode.
+            super().__init__(max_workers=max_workers)
+
+    class BrokenProcessPool(RuntimeError):
+        pass
+
+    _process_mod.ProcessPoolExecutor = ProcessPoolExecutor
+    _process_mod.BrokenProcessPool = BrokenProcessPool
+    _process_mod.__all__ = ["ProcessPoolExecutor", "BrokenProcessPool"]
+    sys.modules["concurrent.futures.process"] = _process_mod
 
 runtime_root = pathlib.Path(__CLI_RUNTIME_ROOT__)
 work_root = pathlib.Path(__CLI_WORK_ROOT__)
