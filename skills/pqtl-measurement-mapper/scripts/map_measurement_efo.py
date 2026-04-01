@@ -16912,6 +16912,14 @@ def harmonize_trait_rows_by_base_query(rows: list[dict[str, str]]) -> list[dict[
         if base:
             grouped.setdefault(base, []).append(row)
 
+    def row_has_explicit_icd_variant(row: dict[str, str]) -> bool:
+        query_text = normalize(row.get("input_query", ""))
+        if query_text and ICD10_QUERY_SUFFIX_RE.search(query_text):
+            return True
+        if normalize_trait_input_type(row.get("input_type", "")) == "icd10":
+            return True
+        return bool(normalize_icd10_code(row.get("input_icd10", "")))
+
     for base, group_rows in grouped.items():
         has_icd = any(ICD10_QUERY_SUFFIX_RE.search(normalize(row.get("input_query", ""))) for row in group_rows)
         has_plain = any(not ICD10_QUERY_SUFFIX_RE.search(normalize(row.get("input_query", ""))) for row in group_rows)
@@ -16942,13 +16950,14 @@ def harmonize_trait_rows_by_base_query(rows: list[dict[str, str]]) -> list[dict[
         if not candidate_rows:
             continue
 
-        def row_rank(row: dict[str, str]) -> tuple[int, float, int, int, str]:
+        def row_rank(row: dict[str, str]) -> tuple[int, int, float, int, int, str]:
             validation = normalize(row.get("validation", ""))
             matched_via = normalize(row.get("matched_via", ""))
             label = normalize(row.get("mapped_trait_label", ""))
             confidence = float(row.get("confidence", "0") or 0.0)
             return (
                 1 if validation == "validated" else 0,
+                1 if row_has_explicit_icd_variant(row) else 0,
                 confidence,
                 0 if matched_via == "trait_phrase_rule" else 1,
                 0 if not candidate_is_broad_umbrella_trait(
@@ -16969,6 +16978,7 @@ def harmonize_trait_rows_by_base_query(rows: list[dict[str, str]]) -> list[dict[
         best_label = normalize(best_row.get("mapped_trait_label", ""))
         best_via = normalize(best_row.get("matched_via", ""))
         best_conf = best_row.get("confidence", "0.000")
+        best_row_explicit_icd = row_has_explicit_icd_variant(best_row)
 
         for row in group_rows:
             mapped_id = normalize(row.get("mapped_trait_id", ""))
@@ -16986,8 +16996,15 @@ def harmonize_trait_rows_by_base_query(rows: list[dict[str, str]]) -> list[dict[
             row["validation"] = "review_required"
             row["qc_review_flag"] = "yes"
             evidence = normalize(row.get("evidence", ""))
-            note = f"base_query_harmonized={base}"
-            row["evidence"] = f"{evidence}; {note}" if evidence else note
+            note = (
+                f"base_query_harmonized={base}; preferred_icd10_variant_winner"
+                if best_row_explicit_icd
+                else f"base_query_harmonized={base}"
+            )
+            if evidence and note in evidence:
+                row["evidence"] = evidence
+            else:
+                row["evidence"] = f"{evidence}; {note}" if evidence else note
 
         # Final alignment pass: when all variants in this base-query family now
         # share the same mapped term(s), keep validation state consistent.
@@ -38484,6 +38501,10 @@ def main() -> int:
                     ontology_terms=ontology_index["terms"],
                     ontology_exact_index=ontology_index["exact_index"],
                 )
+                # Re-run base-query harmonization after late rescue/guard passes
+                # so plain and /ICD10 variants stay aligned when one variant is
+                # updated later in the pipeline (for example regression rescues).
+                rows = harmonize_trait_rows_by_base_query(rows)
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)
@@ -38554,6 +38575,10 @@ def main() -> int:
                     ontology_terms=ontology_index["terms"],
                     ontology_exact_index=ontology_index["exact_index"],
                 )
+                # Re-run base-query harmonization after late rescue/guard passes
+                # so plain and /ICD10 variants stay aligned when one variant is
+                # updated later in the pipeline (for example regression rescues).
+                rows = harmonize_trait_rows_by_base_query(rows)
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)
