@@ -8122,6 +8122,206 @@ def map_trait_queries(
                 return True
         return False
 
+    text_to_icd10_exact_index: dict[str, dict[str, set[str]]] = {}
+    text_to_icd10_context_pattern = re.compile(
+        r"\b(?:non[-\s]*cancer\s+illness\s+code\s+self\s+reported|"
+        r"illnesses?\s+of\s+(?:mother|father|siblings)|"
+        r"illness[_\s-]*code[_\s-]*sr|"
+        r"self\s+report)\b",
+        flags=re.IGNORECASE,
+    )
+
+    def collapse_trailing_acronym_phrase(text: str) -> str:
+        clean = normalize(text)
+        if not clean:
+            return ""
+        tokens = re.findall(r"[A-Za-z0-9]+", clean)
+        if len(tokens) < 3:
+            return ""
+        acronym = tokens[-1]
+        if not re.fullmatch(r"[A-Za-z]{2,6}", acronym):
+            return ""
+        prefix_tokens = tokens[:-1]
+        if len(prefix_tokens) < len(acronym):
+            return ""
+        initials = "".join(tok[0].lower() for tok in prefix_tokens[-len(acronym) :] if tok)
+        if initials != acronym.lower():
+            return ""
+        return normalize(" ".join(prefix_tokens))
+
+    def normalize_icd10_inference_phrase(text: str) -> str:
+        value = normalize(text)
+        if not value:
+            return ""
+        parsed_code, parsed_label = parse_icd10_labeled_trait_text(value)
+        if parsed_code and parsed_label:
+            value = parsed_label
+        value = normalize(re.sub(r"\(\s*ukb\s+data\s+field\s*[^)]*\)", " ", value, flags=re.IGNORECASE))
+        value = normalize(
+            re.sub(
+                r"\(\s*(?:gene[- ]based burden|firth correction|spa correction)[^)]*\)",
+                " ",
+                value,
+                flags=re.IGNORECASE,
+            )
+        )
+        value = normalize(re.sub(r"\(\s*\d+\s*\)$", "", value))
+        value = normalize(
+            re.sub(r"\s*/\s*icd10\s+[a-z0-9.]+\s*$", "", value, flags=re.IGNORECASE)
+        )
+        value = normalize(
+            re.sub(
+                r"^(?:non cancer illness code self reported|illnesses of (?:mother|father|siblings)|self report)\s*-\s*",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            )
+        )
+        value = normalize_trait_phrase_aliases(value)
+        return normalize(value)
+
+    def add_icd10_inference_phrase(icd10_code: str, phrase: str, label_hint: str) -> None:
+        code = normalize_icd10_code(icd10_code)
+        if not is_strict_icd10_code(code):
+            return
+        clean = normalize_icd10_inference_phrase(phrase)
+        if not clean:
+            return
+        phrase_variants: list[str] = list(trait_query_exact_norm_variants(clean))
+        acronym_collapsed = collapse_trailing_acronym_phrase(clean)
+        if acronym_collapsed:
+            for variant in trait_query_exact_norm_variants(acronym_collapsed):
+                if variant and variant not in phrase_variants:
+                    phrase_variants.append(variant)
+        for variant in phrase_variants:
+            key = norm_key(variant)
+            if not key or is_generic_trait_label(key):
+                continue
+            informative = informative_trait_tokens(key)
+            if len(informative) < 2:
+                continue
+            code_bucket = text_to_icd10_exact_index.setdefault(key, {})
+            label_bucket = code_bucket.setdefault(code, set())
+            if label_hint:
+                label_bucket.add(normalize(label_hint))
+
+    for code, labels in official_icd10_label_index.items():
+        code_norm = normalize_icd10_code(code)
+        if not is_strict_icd10_code(code_norm):
+            continue
+        for label in labels:
+            add_icd10_inference_phrase(code_norm, label, label)
+
+    for code, labels in icd10_label_index.items():
+        code_norm = normalize_icd10_code(code)
+        if not is_strict_icd10_code(code_norm):
+            continue
+        for label in labels:
+            add_icd10_inference_phrase(code_norm, label, label)
+
+    seen_record_phrase_pairs: set[tuple[str, str]] = set()
+    for record in records:
+        code_norm = normalize_icd10_code(record.icd10)
+        if not is_strict_icd10_code(code_norm):
+            continue
+        for phrase in (record.lookup_text, record.reported_trait):
+            phrase_clean = normalize(phrase)
+            if not phrase_clean:
+                continue
+            pair = (code_norm, phrase_clean)
+            if pair in seen_record_phrase_pairs:
+                continue
+            seen_record_phrase_pairs.add(pair)
+            add_icd10_inference_phrase(code_norm, phrase_clean, phrase_clean)
+
+    def query_supports_text_to_icd10_inference(query_text: str, additional_info_text: str, routed_input_type: str) -> bool:
+        if routed_input_type not in {"auto", "trait_text"}:
+            return False
+        if query_explicitly_mentions_icd10(query_text):
+            return False
+        combined = normalize(
+            " ".join(
+                part
+                for part in (
+                    query_text,
+                    extract_professional_diagnosis_trait_fragment(query_text, additional_info_text),
+                    derive_primary_trait_query_from_additional_info(additional_info_text),
+                    additional_info_text,
+                )
+                if normalize(part)
+            )
+        )
+        if not combined:
+            return False
+        combined_key = norm_key(combined)
+        if not combined_key:
+            return False
+        if "opcs4" in combined_key:
+            return False
+        return bool(text_to_icd10_context_pattern.search(combined))
+
+    def infer_icd10_from_noncode_text(query_text: str, additional_info_text: str) -> tuple[str, str, float, int]:
+        seed_phrases: list[str] = []
+        for seed in (
+            query_text,
+            extract_professional_diagnosis_trait_fragment(query_text, additional_info_text),
+            derive_primary_trait_query_from_additional_info(additional_info_text),
+            additional_info_text,
+        ):
+            clean_seed = normalize_icd10_inference_phrase(seed)
+            if clean_seed and clean_seed not in seed_phrases:
+                seed_phrases.append(clean_seed)
+        if not seed_phrases:
+            return ("", "", 0.0, 0)
+
+        variant_keys: list[str] = []
+        seen_keys: set[str] = set()
+        for phrase in seed_phrases:
+            phrase_variants: list[str] = list(trait_query_exact_norm_variants(phrase))
+            acronym_collapsed = collapse_trailing_acronym_phrase(phrase)
+            if acronym_collapsed:
+                for variant in trait_query_exact_norm_variants(acronym_collapsed):
+                    if variant and variant not in phrase_variants:
+                        phrase_variants.append(variant)
+            for variant in phrase_variants:
+                key = norm_key(variant)
+                if not key or key in seen_keys:
+                    continue
+                if key not in text_to_icd10_exact_index:
+                    continue
+                seen_keys.add(key)
+                variant_keys.append(key)
+        if not variant_keys:
+            return ("", "", 0.0, 0)
+
+        code_scores: dict[str, float] = {}
+        code_hits: dict[str, set[str]] = {}
+        code_label_hints: dict[str, set[str]] = {}
+        for key in variant_keys:
+            code_map = text_to_icd10_exact_index.get(key, {})
+            if not code_map:
+                continue
+            token_bonus = min(0.12, 0.015 * len(informative_trait_tokens(key)))
+            for code, labels in code_map.items():
+                code_scores[code] = code_scores.get(code, 0.0) + 1.0 + token_bonus
+                code_hits.setdefault(code, set()).add(key)
+                if labels:
+                    code_label_hints.setdefault(code, set()).update(label for label in labels if label)
+        if not code_scores:
+            return ("", "", 0.0, 0)
+        if len(code_scores) != 1:
+            return ("", "", 0.0, 0)
+
+        inferred_code = next(iter(code_scores))
+        hit_count = len(code_hits.get(inferred_code, set()))
+        if hit_count <= 0:
+            return ("", "", 0.0, 0)
+        label_hint = ""
+        if code_label_hints.get(inferred_code):
+            label_hint = sorted(code_label_hints[inferred_code], key=lambda value: (-len(value), value))[0]
+        confidence = min(0.995, 0.92 + 0.02 * min(3, hit_count))
+        return (inferred_code, label_hint, confidence, hit_count)
+
     for item in query_inputs:
         input_row_id = normalize(item.get("row_id", ""))
         query = normalize(item.get("query", ""))
@@ -8155,6 +8355,9 @@ def map_trait_queries(
         icd10 = normalize_icd10_code(item.get("icd10", ""))
         icd10_label = ""
         icd10_match_label = ""
+        inferred_icd10_from_text = False
+        inferred_icd10_confidence = 0.0
+        inferred_icd10_hits = 0
         phecode = normalize_phecode(item.get("phecode", ""))
         additional_info_icd10 = extract_icd10_code_from_xref(additional_info) if additional_info else ""
         if not additional_info_icd10 and additional_info:
@@ -8211,6 +8414,25 @@ def map_trait_queries(
             query_icd10 = normalize_icd10_code(parsed_query_icd10 or query)
             if query_supports_inferred_icd10(query, query_icd10):
                 icd10 = query_icd10
+        if (
+            not icd10
+            and not opcs4_query_context
+            and query
+            and query_supports_text_to_icd10_inference(query, additional_info, input_type)
+        ):
+            inferred_code, inferred_label_hint, inference_confidence, inference_hits = infer_icd10_from_noncode_text(
+                query,
+                additional_info,
+            )
+            if inferred_code:
+                icd10 = inferred_code
+                inferred_icd10_from_text = True
+                inferred_icd10_confidence = inference_confidence
+                inferred_icd10_hits = inference_hits
+                if inferred_label_hint:
+                    icd10_match_label = inferred_label_hint
+                if input_type == "trait_text":
+                    input_type = "icd10"
         if (
             input_type in {"auto", "ukb_field", "trait_text", "phecode"}
             and source_data_type_key == "icd10"
@@ -16175,6 +16397,17 @@ def map_trait_queries(
                     f"{generated_rows[-1]['evidence']}; top blocked candidate="
                     f"{blocked_mapped_ids} ({blocked_mapped_labels}) via {blocked_matched_via}"
                 )
+            if inferred_icd10_from_text:
+                generated_rows[-1]["evidence"] = (
+                    f"{generated_rows[-1]['evidence']}; inferred ICD10 {icd10} from non-ICD10 text "
+                    f"(high-precision exact-label bridge; hits={inferred_icd10_hits}; "
+                    f"confidence={inferred_icd10_confidence:.3f})"
+                )
+                generated_rows[-1]["provenance"] = normalize(
+                    f"{generated_rows[-1]['provenance']};inferred_icd10={icd10};"
+                    f"inferred_icd10_confidence={inferred_icd10_confidence:.3f};"
+                    f"inferred_icd10_hits={inferred_icd10_hits}"
+                ).strip(";")
         else:
             for candidate in emitted:
                 source_file = (
@@ -16471,6 +16704,17 @@ def map_trait_queries(
                     evidence = f"{evidence}; auto best-candidate fallback for coded UKB trait"
                 if used_blocked_candidate_rescue:
                     evidence = f"{evidence}; rescued blocked candidate retained for review"
+                if inferred_icd10_from_text:
+                    evidence = (
+                        f"{evidence}; inferred ICD10 {icd10} from non-ICD10 text "
+                        f"(high-precision exact-label bridge; hits={inferred_icd10_hits}; "
+                        f"confidence={inferred_icd10_confidence:.3f})"
+                    )
+                    provenance = normalize(
+                        f"{provenance};inferred_icd10={icd10};"
+                        f"inferred_icd10_confidence={inferred_icd10_confidence:.3f};"
+                        f"inferred_icd10_hits={inferred_icd10_hits}"
+                    ).strip(";")
 
                 # Never keep a row as validated when we explicitly recorded
                 # conflict/specificity warning fragments in evidence.
