@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Build a CLI-compatible trait-map runtime bundle for Pyodide execution."""
+"""Build a CLI-compatible mapper runtime bundle for Pyodide execution."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import os
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +17,7 @@ class BundleFile:
     required: bool = True
 
 
-RUNTIME_FILES: tuple[BundleFile, ...] = (
+BASE_RUNTIME_FILES: tuple[BundleFile, ...] = (
     BundleFile("skills/pqtl-measurement-mapper/scripts/map_measurement_efo.py"),
     BundleFile("skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv"),
     BundleFile("skills/pqtl-measurement-mapper/references/efo.obo"),
@@ -33,6 +32,10 @@ RUNTIME_FILES: tuple[BundleFile, ...] = (
     BundleFile("references/icd10/icd10_label_index.tsv"),
     BundleFile("references/icd10/icd10_label_alias_index.tsv", required=False),
     BundleFile("references/icd10/mondo.sssom.tsv", required=False),
+)
+
+ANALYTE_RUNTIME_FILES: tuple[BundleFile, ...] = (
+    BundleFile("skills/pqtl-measurement-mapper/references/measurement_index.json"),
 )
 
 
@@ -51,12 +54,21 @@ def normalize_relative(path: str) -> str:
     return path.replace("\\", "/").lstrip("/")
 
 
-def build_runtime_bundle(repo_root: Path, output_zip: Path, compresslevel: int = 6) -> dict[str, object]:
+def build_runtime_bundle(
+    repo_root: Path,
+    output_zip: Path,
+    compresslevel: int = 6,
+    include_analyte_assets: bool = False,
+) -> dict[str, object]:
     selected_paths: list[Path] = []
     manifest_files: list[dict[str, object]] = []
     missing_required: list[str] = []
 
-    for entry in RUNTIME_FILES:
+    entries = list(BASE_RUNTIME_FILES)
+    if include_analyte_assets:
+        entries.extend(ANALYTE_RUNTIME_FILES)
+
+    for entry in entries:
         rel = normalize_relative(entry.relative_path)
         abs_path = (repo_root / rel).resolve()
         if not abs_path.exists():
@@ -94,8 +106,9 @@ def build_runtime_bundle(repo_root: Path, output_zip: Path, compresslevel: int =
             archive.write(abs_path, arcname=rel)
 
         manifest = {
-            "version": "pyodide-trait-runtime-v1",
+            "version": "pyodide-mapper-runtime-v2",
             "repo_root": str(repo_root),
+            "includes_analyte_assets": bool(include_analyte_assets),
             "file_count": len(selected_paths),
             "files": manifest_files,
         }
@@ -114,6 +127,7 @@ def build_runtime_bundle(repo_root: Path, output_zip: Path, compresslevel: int =
         "input_size_bytes": input_size,
         "archive_size_bytes": archive_size,
         "compression_ratio": round(ratio, 4),
+        "includes_analyte_assets": bool(include_analyte_assets),
     }
 
 
@@ -136,6 +150,14 @@ def main() -> None:
         default=6,
         help="ZIP deflate compression level (0-9, default: 6)",
     )
+    parser.add_argument(
+        "--include-analyte-assets",
+        action="store_true",
+        help=(
+            "Include analyte map assets (measurement_index.json). "
+            "This increases bundle size significantly but enables cli_compat map mode."
+        ),
+    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -146,6 +168,7 @@ def main() -> None:
         repo_root=repo_root,
         output_zip=output_zip,
         compresslevel=int(args.compresslevel),
+        include_analyte_assets=bool(args.include_analyte_assets),
     )
     print(json.dumps(summary, indent=2))
 

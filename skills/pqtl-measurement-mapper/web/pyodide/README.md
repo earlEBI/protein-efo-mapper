@@ -9,8 +9,10 @@ This directory contains a browser-only trait-mapping app:
 
 Modes:
 
-- `fast`: lightweight cache JSON + simplified logic (quick startup)
-- `cli_compat`: runs the same `map_measurement_efo.py trait-map` code path in-browser using a runtime ZIP bundle (best parity with Python CLI)
+- `fast`: lightweight cache JSON + simplified logic (quick startup, trait mapping only)
+- `cli_compat`: runs the same `map_measurement_efo.py` code path in-browser using a runtime ZIP bundle
+  - supports `trait-map`
+  - supports `map` (analyte) when runtime bundle includes analyte assets
 
 ## Build a larger cache bundle
 
@@ -44,6 +46,17 @@ This ZIP includes:
 - manual curator seed/override caches
 
 The UI will auto-load `trait_runtime_bundle.zip` when `cli_compat` mode is selected (or you can upload a custom ZIP).
+
+To include analyte map assets (`measurement_index.json`) for protein/metabolite mapping:
+
+```bash
+.venv/bin/python skills/pqtl-measurement-mapper/scripts/build_pyodide_trait_runtime_bundle.py \
+  --repo-root . \
+  --include-analyte-assets \
+  --output skills/pqtl-measurement-mapper/web/pyodide/analyte_runtime_bundle.zip
+```
+
+Note: analyte-enabled runtime bundles are substantially larger.
 
 ## Parity QC Against UKB Master Mapping
 

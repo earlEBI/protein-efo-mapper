@@ -8,6 +8,7 @@ const RUNTIME_ZIP_FS_PATH = "/runtime/trait_runtime_bundle.zip";
 const RUNTIME_REPO_ROOT = "/runtime/repo";
 const RUNTIME_WORK_ROOT = "/runtime/work";
 const SUPPORTED_ENGINES = new Set(["fast", "cli_compat"]);
+const SUPPORTED_TASK_TYPES = new Set(["trait", "analyte"]);
 
 let pyodideReadyPromise = null;
 let pyodide = null;
@@ -59,6 +60,41 @@ function parseEngine(payload) {
     return raw;
   }
   return "fast";
+}
+
+function parseTaskType(payload) {
+  const raw = String(payload?.taskType ?? "trait").trim().toLowerCase();
+  if (SUPPORTED_TASK_TYPES.has(raw)) {
+    return raw;
+  }
+  return "trait";
+}
+
+function parseEntityType(payload) {
+  const raw = String(payload?.entityType ?? "auto").trim().toLowerCase();
+  if (["auto", "protein", "metabolite"].includes(raw)) {
+    return raw;
+  }
+  return "auto";
+}
+
+function parseMeasurementContext(payload) {
+  const raw = String(payload?.measurementContext ?? "blood").trim().toLowerCase();
+  if (
+    [
+      "blood",
+      "plasma",
+      "serum",
+      "cerebrospinal_fluid",
+      "urine",
+      "saliva",
+      "tissue",
+      "auto",
+    ].includes(raw)
+  ) {
+    return raw;
+  }
+  return "blood";
 }
 
 async function ensureRuntimeBundle(runtimeBundleBytes, runtimeBundleName) {
@@ -117,6 +153,10 @@ with zipfile.ZipFile(zip_path, "r") as archive:
 async function runFastMap(payload) {
   await loadPyodideRuntime();
 
+  const taskType = parseTaskType(payload);
+  if (taskType !== "trait") {
+    throw new Error("Fast mode currently supports trait mapping only. Use cli_compat for analyte mapping.");
+  }
   const inputText = String(payload?.inputText ?? "");
   const minScore = Number(payload?.minScore ?? 0.82);
   const cacheText = payload?.cacheText ? String(payload.cacheText) : defaultCacheText;
@@ -139,6 +179,7 @@ async function runFastMap(payload) {
         outputText: resultText,
         logs: "",
         engine: "fast",
+        taskType: "trait",
       },
     });
   } finally {
@@ -151,17 +192,28 @@ async function runFastMap(payload) {
 async function runCliCompatMap(payload) {
   await ensureRuntimeBundle(payload?.runtimeBundleBytes, payload?.runtimeBundleName);
 
+  const taskType = parseTaskType(payload);
   const inputText = String(payload?.inputText ?? "");
   const minScore = Number(payload?.minScore ?? 0.82);
+  const topK = Math.max(1, Number(payload?.topK ?? 1));
+  const entityType = parseEntityType(payload);
+  const measurementContext = parseMeasurementContext(payload);
+  const matrixPriority = String(payload?.matrixPriority ?? "plasma,blood,serum").trim() || "plasma,blood,serum";
+
   pyodide.FS.mkdirTree(RUNTIME_WORK_ROOT);
   pyodide.FS.writeFile(`${RUNTIME_WORK_ROOT}/input.tsv`, inputText, { encoding: "utf8" });
 
   pyodide.globals.set("__CLI_RUNTIME_ROOT__", RUNTIME_REPO_ROOT);
   pyodide.globals.set("__CLI_WORK_ROOT__", RUNTIME_WORK_ROOT);
   pyodide.globals.set("__CLI_MIN_SCORE__", minScore);
+  pyodide.globals.set("__CLI_TASK_TYPE__", taskType);
+  pyodide.globals.set("__CLI_TOP_K__", topK);
+  pyodide.globals.set("__CLI_ENTITY_TYPE__", entityType);
+  pyodide.globals.set("__CLI_MEASUREMENT_CONTEXT__", measurementContext);
+  pyodide.globals.set("__CLI_MATRIX_PRIORITY__", matrixPriority);
 
   try {
-    postStatus("Running CLI-compatible trait-map in worker...");
+    postStatus(`Running CLI-compatible ${taskType === "analyte" ? "map" : "trait-map"} in worker...`);
     const resultJson = await pyodide.runPythonAsync(`
 import contextlib
 import io
@@ -172,6 +224,7 @@ import sys
 
 runtime_root = pathlib.Path(__CLI_RUNTIME_ROOT__)
 work_root = pathlib.Path(__CLI_WORK_ROOT__)
+task_type = str(__CLI_TASK_TYPE__)
 script_path = runtime_root / "skills" / "pqtl-measurement-mapper" / "scripts" / "map_measurement_efo.py"
 if not script_path.exists():
     raise FileNotFoundError(f"Mapper script not found in runtime bundle: {script_path}")
@@ -181,31 +234,58 @@ output_path = work_root / "mapped.tsv"
 review_path = work_root / "review.tsv"
 qc_risk_path = work_root / "qc_risk.tsv"
 qc_summary_path = work_root / "qc_summary.json"
+unmapped_path = work_root / "unmapped.tsv"
 
 trait_cache = runtime_root / "skills" / "pqtl-measurement-mapper" / "references" / "trait_mapping_cache.tsv"
 efo_obo = runtime_root / "skills" / "pqtl-measurement-mapper" / "references" / "efo.obo"
 ukb_fieldsum = runtime_root / "references" / "ukb" / "fieldsum.txt"
 icd10_supp = runtime_root / "references" / "icd10" / "icd10_trait_supplement_cache.tsv"
 icd10_labels = runtime_root / "references" / "icd10" / "icd10_label_index.tsv"
+measurement_index = runtime_root / "skills" / "pqtl-measurement-mapper" / "references" / "measurement_index.json"
 
-argv = [
-    str(script_path),
-    "trait-map",
-    "--input", str(input_path),
-    "--output", str(output_path),
-    "--review-output", str(review_path),
-    "--qc-risk-output", str(qc_risk_path),
-    "--qc-summary-output", str(qc_summary_path),
-    "--trait-cache", str(trait_cache),
-    "--efo-obo", str(efo_obo),
-    "--ukb-field-catalog", str(ukb_fieldsum),
-    "--icd10-supplement-cache", str(icd10_supp),
-    "--icd10-label-cache", str(icd10_labels),
-    "--min-score", str(float(__CLI_MIN_SCORE__)),
-    "--stream-output",
-    "--memoize-queries",
-    "--progress",
-]
+if task_type == "analyte":
+    if not measurement_index.exists():
+        raise FileNotFoundError(
+            "measurement_index.json missing in runtime bundle. Rebuild runtime bundle with "
+            "--include-analyte-assets."
+        )
+    argv = [
+        str(script_path),
+        "map",
+        "--input", str(input_path),
+        "--output", str(output_path),
+        "--index", str(measurement_index),
+        "--unmapped-output", str(unmapped_path),
+        "--review-output", str(review_path),
+        "--top-k", str(max(1, int(__CLI_TOP_K__))),
+        "--min-score", str(float(__CLI_MIN_SCORE__)),
+        "--workers", "1",
+        "--parallel-mode", "thread",
+        "--entity-type", str(__CLI_ENTITY_TYPE__),
+        "--measurement-context", str(__CLI_MEASUREMENT_CONTEXT__),
+        "--matrix-priority", str(__CLI_MATRIX_PRIORITY__),
+        "--name-mode", "strict",
+        "--no-progress",
+    ]
+else:
+    argv = [
+        str(script_path),
+        "trait-map",
+        "--input", str(input_path),
+        "--output", str(output_path),
+        "--review-output", str(review_path),
+        "--qc-risk-output", str(qc_risk_path),
+        "--qc-summary-output", str(qc_summary_path),
+        "--trait-cache", str(trait_cache),
+        "--efo-obo", str(efo_obo),
+        "--ukb-field-catalog", str(ukb_fieldsum),
+        "--icd10-supplement-cache", str(icd10_supp),
+        "--icd10-label-cache", str(icd10_labels),
+        "--min-score", str(float(__CLI_MIN_SCORE__)),
+        "--stream-output",
+        "--memoize-queries",
+        "--no-progress",
+    ]
 
 log_buffer = io.StringIO()
 old_argv = sys.argv[:]
@@ -217,17 +297,18 @@ try:
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 0
             if code not in (0, None):
-                raise RuntimeError(f"trait-map exited with code {code}")
+                raise RuntimeError(f"mapper exited with code {code}")
 finally:
     sys.argv = old_argv
 
 if not output_path.exists():
-    raise RuntimeError("CLI-compatible trait-map did not produce output TSV")
+    raise RuntimeError("CLI-compatible mapper did not produce output TSV")
 
 json.dumps(
     {
         "output_text": output_path.read_text(encoding="utf-8"),
-        "logs": log_buffer.getvalue()[-50000:],
+        "logs": log_buffer.getvalue()[-80000:],
+        "task_type": task_type,
     }
 )
 `);
@@ -238,12 +319,18 @@ json.dumps(
         outputText: String(parsed.output_text || ""),
         logs: String(parsed.logs || ""),
         engine: "cli_compat",
+        taskType: String(parsed.task_type || taskType),
       },
     });
   } finally {
     pyodide.globals.delete("__CLI_RUNTIME_ROOT__");
     pyodide.globals.delete("__CLI_WORK_ROOT__");
     pyodide.globals.delete("__CLI_MIN_SCORE__");
+    pyodide.globals.delete("__CLI_TASK_TYPE__");
+    pyodide.globals.delete("__CLI_TOP_K__");
+    pyodide.globals.delete("__CLI_ENTITY_TYPE__");
+    pyodide.globals.delete("__CLI_MEASUREMENT_CONTEXT__");
+    pyodide.globals.delete("__CLI_MATRIX_PRIORITY__");
   }
 }
 

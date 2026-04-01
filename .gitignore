@@ -19,6 +19,7 @@ skills/pqtl-measurement-mapper/references/efo.obo
 skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv
 skills/pqtl-measurement-mapper/web/pyodide/cache_bundle.json
 skills/pqtl-measurement-mapper/web/pyodide/trait_runtime_bundle.zip
+skills/pqtl-measurement-mapper/web/pyodide/analyte_runtime_bundle.zip
 monthly_curation/outputs/
 .env
 monthly_curation/.env

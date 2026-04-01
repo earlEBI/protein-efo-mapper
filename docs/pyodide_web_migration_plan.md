@@ -43,6 +43,8 @@ Run trait mapping directly in the browser (no server-side subprocess) so the web
   `skills/pqtl-measurement-mapper/scripts/build_pyodide_trait_runtime_bundle.py`
 - Add `cli_compat` engine to worker/UI, executing the same
   `map_measurement_efo.py trait-map` script in-browser using bundled references.
+- Extend `cli_compat` to analyte `map` mode when runtime bundles include
+  `measurement_index.json` (`--include-analyte-assets`).
 
 3. Shared logic extraction (next)
 - Move trait scoring / normalization into importable pure module
