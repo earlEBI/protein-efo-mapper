@@ -108,6 +108,20 @@
       font-size: 0.92rem;
       color: var(--muted);
     }
+    .bar {
+      height: 12px;
+      background: #e7eef3;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 10px;
+      border: 1px solid #d6e1ea;
+    }
+    .bar > div {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0f8f81, #18b79f);
+      transition: width 0.25s ease;
+    }
     .status.warn { color: var(--warn); }
     .status.err { color: var(--error); }
     pre {
@@ -218,6 +232,8 @@
           <button class="btn dl" id="dlBtn" disabled>Download TSV</button>
         </div>
         <div class="status" id="status">Initializing worker...</div>
+        <div class="bar"><div id="barFill"></div></div>
+        <div class="hint" id="progressMeta">Idle</div>
       </section>
 
       <section class="card">
@@ -241,6 +257,8 @@
     const runBtn = document.getElementById("runBtn");
     const dlBtn = document.getElementById("dlBtn");
     const statusEl = document.getElementById("status");
+    const barFill = document.getElementById("barFill");
+    const progressMeta = document.getElementById("progressMeta");
     const preview = document.getElementById("preview");
 
     let latestOutput = "";
@@ -252,6 +270,11 @@
     function setStatus(message, kind = "") {
       statusEl.className = `status ${kind}`.trim();
       statusEl.textContent = message;
+    }
+
+    function setProgress(percent) {
+      const pct = Math.max(0, Math.min(100, Number(percent || 0)));
+      barFill.style.width = `${pct.toFixed(1)}%`;
     }
 
     function teardownDownloadUrl() {
@@ -273,22 +296,50 @@
         if (type === "ready") {
           workerReady = true;
           setStatus("Worker ready.");
+          setProgress(0);
+          progressMeta.textContent = "Ready";
+          return;
+        }
+        if (type === "progress") {
+          const percent = Number(payload.percent || 0);
+          const current = Number(payload.current || 0);
+          const total = Number(payload.total || 0);
+          setProgress(percent);
+          if (total > 0) {
+            progressMeta.textContent = `${current}/${total} (${percent.toFixed(1)}%)`;
+          } else {
+            progressMeta.textContent = `${percent.toFixed(1)}%`;
+          }
+          return;
+        }
+        if (type === "log") {
+          const line = String(payload.line || "").trim();
+          if (line) {
+            const existing = preview.textContent;
+            const next = existing ? `${existing}\n${line}` : line;
+            const lines = next.split("\n");
+            preview.textContent = lines.slice(-300).join("\n");
+            preview.scrollTop = preview.scrollHeight;
+          }
           return;
         }
         if (type === "mapped") {
           latestOutput = String(payload.outputText || "");
-          preview.textContent = latestOutput.split("\n").slice(0, 120).join("\n");
+          preview.textContent = latestOutput.split("\n").slice(0, 200).join("\n");
           teardownDownloadUrl();
           downloadUrl = URL.createObjectURL(new Blob([latestOutput], { type: "text/tab-separated-values" }));
           dlBtn.disabled = !latestOutput;
           runBtn.disabled = false;
           const engineName = String(payload.engine || "fast");
           const taskName = String(payload.taskType || lastTaskType || "trait");
+          setProgress(100);
+          progressMeta.textContent = "Completed";
           setStatus(`Mapping complete (${engineName}, ${taskName}).`);
           return;
         }
         if (type === "error") {
           runBtn.disabled = false;
+          progressMeta.textContent = "Failed";
           setStatus(payload.message || "Worker error", "err");
         }
       };
@@ -315,6 +366,8 @@
         preview.textContent = "";
         latestOutput = "";
         teardownDownloadUrl();
+        setProgress(0);
+        progressMeta.textContent = "Submitting";
 
         const inputText = await readTextFile(inputFile.files[0]);
         const selectedTaskType = String(taskType.value || "trait");
@@ -355,6 +408,7 @@
         worker.postMessage(message, transfer);
       } catch (err) {
         runBtn.disabled = false;
+        progressMeta.textContent = "Failed";
         setStatus(String(err), "err");
       }
     });

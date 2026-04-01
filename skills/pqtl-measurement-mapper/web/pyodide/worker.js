@@ -15,9 +15,60 @@ let pyodide = null;
 let defaultCacheText = "";
 let runtimeBundleReady = false;
 let runtimeBundleKey = "";
+let currentRunLogLines = [];
+
+function resetRunLogs() {
+  currentRunLogLines = [];
+}
+
+function pushRunLog(line) {
+  currentRunLogLines.push(line);
+  if (currentRunLogLines.length > 3000) {
+    currentRunLogLines = currentRunLogLines.slice(-3000);
+  }
+}
+
+function getRunLogsText() {
+  return currentRunLogLines.join("\n");
+}
 
 function postStatus(message) {
   self.postMessage({ type: "status", payload: { message } });
+}
+
+function postLog(line, stream = "stdout") {
+  self.postMessage({ type: "log", payload: { line, stream } });
+}
+
+function postProgress(current, total, percent, line = "") {
+  self.postMessage({
+    type: "progress",
+    payload: {
+      current: Number(current) || 0,
+      total: Number(total) || 0,
+      percent: Number(percent) || 0,
+      line: String(line || ""),
+    },
+  });
+}
+
+function handleRuntimeText(rawText, stream = "stdout") {
+  if (!rawText) {
+    return;
+  }
+  const lines = String(rawText).split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line) {
+      continue;
+    }
+    pushRunLog(line);
+    postLog(line, stream);
+    const match = line.match(/^\[progress\]\s+(\d+)\/(\d+)\s+\(([\d.]+)%\)/i);
+    if (match) {
+      postProgress(match[1], match[2], match[3], line);
+    }
+  }
 }
 
 async function loadPyodideRuntime() {
@@ -31,6 +82,8 @@ async function loadPyodideRuntime() {
       importScripts(`${PYODIDE_INDEX_URL}pyodide.js`);
     }
     pyodide = await loadPyodide({ indexURL: PYODIDE_INDEX_URL });
+    pyodide.setStdout({ batched: (text) => handleRuntimeText(text, "stdout") });
+    pyodide.setStderr({ batched: (text) => handleRuntimeText(text, "stderr") });
 
     postStatus("Loading fast mapper core...");
     const coreResponse = await fetch(CORE_PATH);
@@ -152,6 +205,7 @@ with zipfile.ZipFile(zip_path, "r") as archive:
 
 async function runFastMap(payload) {
   await loadPyodideRuntime();
+  resetRunLogs();
 
   const taskType = parseTaskType(payload);
   if (taskType !== "trait") {
@@ -177,7 +231,7 @@ async function runFastMap(payload) {
       type: "mapped",
       payload: {
         outputText: resultText,
-        logs: "",
+        logs: getRunLogsText(),
         engine: "fast",
         taskType: "trait",
       },
@@ -191,6 +245,7 @@ async function runFastMap(payload) {
 
 async function runCliCompatMap(payload) {
   await ensureRuntimeBundle(payload?.runtimeBundleBytes, payload?.runtimeBundleName);
+  resetRunLogs();
 
   const taskType = parseTaskType(payload);
   const inputText = String(payload?.inputText ?? "");
@@ -215,8 +270,6 @@ async function runCliCompatMap(payload) {
   try {
     postStatus(`Running CLI-compatible ${taskType === "analyte" ? "map" : "trait-map"} in worker...`);
     const resultJson = await pyodide.runPythonAsync(`
-import contextlib
-import io
 import json
 import pathlib
 import runpy
@@ -287,7 +340,7 @@ if task_type == "analyte":
         "--measurement-context", str(__CLI_MEASUREMENT_CONTEXT__),
         "--matrix-priority", str(__CLI_MATRIX_PRIORITY__),
         "--name-mode", "strict",
-        "--no-progress",
+        "--progress",
     ]
 else:
     argv = [
@@ -306,20 +359,18 @@ else:
         "--min-score", str(float(__CLI_MIN_SCORE__)),
         "--stream-output",
         "--memoize-queries",
-        "--no-progress",
+        "--progress",
     ]
 
-log_buffer = io.StringIO()
 old_argv = sys.argv[:]
 try:
     sys.argv = argv
-    with contextlib.redirect_stdout(log_buffer), contextlib.redirect_stderr(log_buffer):
-        try:
-            runpy.run_path(str(script_path), run_name="__main__")
-        except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else 0
-            if code not in (0, None):
-                raise RuntimeError(f"mapper exited with code {code}")
+    try:
+        runpy.run_path(str(script_path), run_name="__main__")
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 0
+        if code not in (0, None):
+            raise RuntimeError(f"mapper exited with code {code}")
 finally:
     sys.argv = old_argv
 
@@ -329,7 +380,6 @@ if not output_path.exists():
 json.dumps(
     {
         "output_text": output_path.read_text(encoding="utf-8"),
-        "logs": log_buffer.getvalue()[-80000:],
         "task_type": task_type,
     }
 )
@@ -339,7 +389,7 @@ json.dumps(
       type: "mapped",
       payload: {
         outputText: String(parsed.output_text || ""),
-        logs: String(parsed.logs || ""),
+        logs: getRunLogsText(),
         engine: "cli_compat",
         taskType: String(parsed.task_type || taskType),
       },
