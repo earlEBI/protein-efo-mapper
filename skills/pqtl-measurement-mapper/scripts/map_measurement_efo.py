@@ -13133,16 +13133,10 @@ def map_trait_queries(
         filtered_candidates: list[Candidate] = []
         response_scale_context = trait_query_looks_response_scale(query_for_matching)
         non_pediatric_query = not trait_query_has_pediatric_context(query_for_matching)
-        pediatric_sensitive_methods = {
-            "efo_obo_exact_multi",
-            "multi_component_harmonized",
-            "disallowed_prefix_guard_harmonized",
-        }
 
         def candidate_has_unexpected_pediatric_component(candidate: Candidate) -> bool:
             return (
                 non_pediatric_query
-                and candidate.matched_via in pediatric_sensitive_methods
                 and candidate_has_pediatric_component(candidate, ontology_terms=ontology_terms)
             )
 
@@ -13175,7 +13169,7 @@ def map_trait_queries(
                     continue
             if candidate_has_unexpected_pediatric_component(candidate):
                 candidate.evidence = (
-                    f"{candidate.evidence}; blocked pediatric multi-candidate for non-pediatric query"
+                    f"{candidate.evidence}; blocked pediatric candidate for non-pediatric query"
                 )
                 blocked_review_candidates.append(candidate)
                 continue
@@ -13231,7 +13225,7 @@ def map_trait_queries(
                     continue
             if candidate_has_unexpected_pediatric_component(candidate):
                 candidate.evidence = (
-                    f"{candidate.evidence}; blocked pediatric multi-candidate for non-pediatric query"
+                    f"{candidate.evidence}; blocked pediatric candidate for non-pediatric query"
                 )
                 blocked_review_candidates.append(candidate)
                 continue
@@ -15583,18 +15577,8 @@ def map_trait_queries(
             # family terms so they do not collapse to generic "cancer".
             if "eyelid" in raw_query_cancer_context_key:
                 skin_phrase = "eyelid cancer"
-            elif any(
-                token in raw_query_cancer_context_key
-                for token in (
-                    "parts of face",
-                    "skin of other and unspecified parts of face",
-                    "skin of scalp and neck",
-                    "skin of trunk",
-                )
-            ):
-                skin_phrase = "non-melanoma skin carcinoma"
             else:
-                skin_phrase = "skin neoplasm"
+                skin_phrase = "non-melanoma skin carcinoma"
             forced_skin_candidate = phrase_rule_exact_candidate(
                 phrase=skin_phrase,
                 score=1.06,
@@ -21729,7 +21713,7 @@ def apply_regression_rescue_overrides(
             if "cancer diagnosed by doctor" in query_no_field or "doctor diagnosed cancer" in query_no_field:
                 if set_rescue_mapping(
                     row,
-                    mapped_id_text="EFO_0000616",
+                    mapped_id_text="MONDO_0004992",
                     note="doctor_diagnosed_cancer_phrase_rescue",
                     confidence_floor=0.910,
                 ):
@@ -23284,16 +23268,27 @@ def harmonize_trait_rows_by_query_constraints(
             return ""
         if "skin of eyelid" in query_key:
             return "eyelid cancer"
-        if any(
-            token in query_key
-            for token in (
-                "skin of other and unspecified parts of face",
-                "skin of scalp and neck",
-                "skin of trunk",
-            )
-        ):
+        return "non-melanoma skin carcinoma"
+
+    def malignant_neoplasm_general_rescue_phrase(query_text: str) -> str:
+        query_key = norm_key(query_text)
+        if not query_key:
+            return ""
+        if "personal history of malignant neoplasm" in query_key:
+            return "clinical history"
+        if "secondary and unspecified malignant neoplasm of lymph node" in query_key:
+            return "lymph node cancer"
+        if "secondary and unspecified malignant neoplasm of lymph nodes" in query_key:
+            return "lymph node cancer"
+        if "malignant neoplasm of stomach" in query_key:
+            return "gastric cancer"
+        if "malignant neoplasm of rectum" in query_key:
+            return "rectal cancer"
+        if "other malignant neoplasms of skin" in query_key:
             return "non-melanoma skin carcinoma"
-        return "skin neoplasm"
+        if query_key.startswith("malignant neoplasm of skin"):
+            return "non-melanoma skin carcinoma"
+        return ""
 
     @lru_cache(maxsize=200_000)
     def parse_source_report_icd_trait_context(query_text: str) -> tuple[str, str]:
@@ -23316,6 +23311,9 @@ def harmonize_trait_rows_by_query_constraints(
     for row in rows:
         mapped_ids_raw = normalize(row.get("mapped_trait_id", ""))
         skin_site_rescue_phrase = type_of_cancer_skin_site_rescue_phrase(normalize(row.get("input_query", "")))
+        malignant_general_rescue_phrase = malignant_neoplasm_general_rescue_phrase(
+            normalize(row.get("input_query", ""))
+        )
         if not mapped_ids_raw and skin_site_rescue_phrase:
             rescue_id, rescue_label = preferred_exact_term_for_phrase(
                 skin_site_rescue_phrase,
@@ -23329,6 +23327,23 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_label=rescue_label,
                     matched_via="query_phrase_harmonized",
                     note=f"type_of_cancer_skin_site_rescue={norm_key(skin_site_rescue_phrase)}",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids_raw = normalize(row.get("mapped_trait_id", ""))
+        if not mapped_ids_raw and malignant_general_rescue_phrase:
+            rescue_id, rescue_label = preferred_exact_term_for_phrase(
+                malignant_general_rescue_phrase,
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if rescue_id and rescue_label and trait_output_id_allowed(rescue_id):
+                set_single_mapping(
+                    row,
+                    mapped_id=rescue_id,
+                    mapped_label=rescue_label,
+                    matched_via="query_phrase_harmonized",
+                    note=f"malignant_neoplasm_general_rescue={norm_key(malignant_general_rescue_phrase)}",
                     confidence_floor=0.820,
                     force_review=False,
                 )
@@ -23373,7 +23388,9 @@ def harmonize_trait_rows_by_query_constraints(
         query_similarity_text = normalize_trait_text_for_similarity(query_label) or query_key
         query_tokens = informative_trait_tokens(query_similarity_text)
         mapped_label_keys = [norm_key(label) for label in mapped_labels]
-        if skin_site_rescue_phrase and any(label_key in {"cancer", "neoplasm"} for label_key in mapped_label_keys):
+        if skin_site_rescue_phrase and any(
+            label_key in {"cancer", "neoplasm", "skin neoplasm"} for label_key in mapped_label_keys
+        ):
             rescue_id, rescue_label = preferred_exact_term_for_phrase(
                 skin_site_rescue_phrase,
                 ontology_exact_index=ontology_exact_index,
@@ -23386,6 +23403,27 @@ def harmonize_trait_rows_by_query_constraints(
                     mapped_label=rescue_label,
                     matched_via="query_phrase_harmonized",
                     note=f"type_of_cancer_skin_site_rescue={norm_key(skin_site_rescue_phrase)}",
+                    confidence_floor=0.820,
+                    force_review=False,
+                )
+                mapped_ids = [canonicalize_trait_ontology_id(rescue_id)]
+                mapped_labels = [normalize(rescue_label)]
+                mapped_label_keys = [norm_key(rescue_label)]
+        if malignant_general_rescue_phrase and any(
+            label_key in {"cancer", "neoplasm", "skin neoplasm"} for label_key in mapped_label_keys
+        ):
+            rescue_id, rescue_label = preferred_exact_term_for_phrase(
+                malignant_general_rescue_phrase,
+                ontology_exact_index=ontology_exact_index,
+                ontology_terms=ontology_terms,
+            )
+            if rescue_id and rescue_label and trait_output_id_allowed(rescue_id):
+                set_single_mapping(
+                    row,
+                    mapped_id=rescue_id,
+                    mapped_label=rescue_label,
+                    matched_via="query_phrase_harmonized",
+                    note=f"malignant_neoplasm_general_rescue={norm_key(malignant_general_rescue_phrase)}",
                     confidence_floor=0.820,
                     force_review=False,
                 )
