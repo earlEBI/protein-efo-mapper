@@ -3532,7 +3532,7 @@ def trait_query_contradicts_candidate(query_text: str, candidate: Candidate) -> 
     if (query_tokens & {"injury", "wound", "trauma", "contusion", "laceration", "fracture"}) and "hiv" in label_tokens and "hiv" not in query_tokens:
         return True
     q_neg = extract_negated_trait_targets(query_text)
-    if "non hodgkin lymphoma" in query_key_spaced:
+    if re.search(r"\bnon[-\s]*hodgkin(?:'?s)?\s+lymphoma\b", query_key_spaced, flags=re.IGNORECASE):
         q_neg = set()
     if q_neg:
         label_tokens = {normalize_negation_target(tok) for tok in tokenize(label_key)}
@@ -9657,7 +9657,11 @@ def map_trait_queries(
                             is_validated=True,
                         )
                     )
-        if "non melanoma skin cancer" in normalized_query_context_spaced or "non melanoma skin carcinoma" in normalized_query_context_spaced:
+        if re.search(
+            r"\bnon[-\s]*melanoma\b[^\n]*\bskin\b[^\n]*\b(?:cancer|carcinoma|neoplasm)\b",
+            normalized_query_context_spaced,
+            flags=re.IGNORECASE,
+        ):
             term_id, term_label = preferred_exact_term_for_phrase_with_required_tokens(
                 "non-melanoma skin cancer",
                 required_tokens=("non", "melanoma"),
@@ -10550,7 +10554,10 @@ def map_trait_queries(
                 )
             )
         if (
-            input_type == "ukb_field"
+            (
+                input_type == "ukb_field"
+                or bool(re.search(r"\bpast tobacco smoking\s*-\s*", normalize(query), flags=re.IGNORECASE))
+            )
             and (
                 "past tobacco smoking" in normalized_query_only_context_spaced
                 or "past tobacco smoking" in normalized_family_context
@@ -14380,7 +14387,13 @@ def map_trait_queries(
                         ],
                     ]
         query_family_key = (normalize_trait_phrase_aliases(query_for_matching) or query_for_matching).replace("-", " ")
-        non_melanoma_query = "non melanoma skin cancer" in query_family_key or "non melanoma skin carcinoma" in query_family_key
+        non_melanoma_query = bool(
+            re.search(
+                r"\bnon[-\s]*melanoma\b[^\n]*\bskin\b[^\n]*\b(?:cancer|carcinoma|neoplasm)\b",
+                query_family_key,
+                flags=re.IGNORECASE,
+            )
+        )
         if non_melanoma_query:
             term_id, term_label = preferred_exact_term_for_phrase_with_required_tokens(
                 "non-melanoma skin cancer",
@@ -15712,7 +15725,11 @@ def map_trait_queries(
                 evidence="late override: cancer-behaviour malignant primary site row forced to cancer",
                 is_validated=True,
             )
-        elif "non melanoma skin cancer" in raw_query_key or "non melanoma skin carcinoma" in raw_query_key:
+        elif re.search(
+            r"\bnon[-\s]*melanoma\b[^\n]*\bskin\b[^\n]*\b(?:cancer|carcinoma|neoplasm)\b",
+            raw_query_key,
+            flags=re.IGNORECASE,
+        ):
             late_forced_candidate = Candidate(
                 efo_id="EFO_0009260",
                 label="non-melanoma skin carcinoma",
@@ -17895,6 +17912,55 @@ def enforce_review_required_evidence_flags(rows: list[dict[str, str]]) -> list[d
         provenance = normalize(row.get("provenance", ""))
         if provenance:
             row["provenance"] = provenance.replace("needs_review=no", "needs_review=yes")
+    return rows
+
+
+def apply_conditional_when_review_guard(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    for row in rows:
+        validation = normalize(row.get("validation", "")).lower()
+        if validation not in {"validated", "review_required"}:
+            continue
+        query = normalize(row.get("input_query", ""))
+        if not query:
+            continue
+        query_key = norm_key(query)
+        if " when " not in f" {query_key} ":
+            continue
+
+        # Keep explicit temporal age/year traits as-is; these are handled by
+        # dedicated age-at/onset mapping logic and should not be blanket-demoted.
+        if re.search(r"\b(?:age|year)\s+when\b", query_key):
+            continue
+        if query_key.startswith("interpolated age of participant when") or query_key.startswith(
+            "interpolated year when"
+        ):
+            continue
+        mapped_label_key = norm_key(row.get("mapped_trait_label", ""))
+        if re.search(r"\bage(?:\s+at|\s+of onset)\b", mapped_label_key):
+            continue
+
+        response_like = bool(
+            " - " in query
+            and re.search(
+                r"\b(?:yes|no|never|always|often|sometimes|occasionally|rarely|none)\b",
+                query_key,
+            )
+        )
+        conditional_onset_like = bool(
+            re.search(
+                r"\bwhen\b.+\b(?:first\s+(?:began|started|occurred|happened)|began|started)\b",
+                query_key,
+            )
+        )
+        if not (response_like or conditional_onset_like):
+            continue
+
+        row["validation"] = "review_required"
+        row["qc_review_flag"] = "yes"
+        evidence = normalize(row.get("evidence", ""))
+        review_note = "conditional_when_questionnaire_context=possible_background_trait_requires_review"
+        if review_note not in evidence:
+            row["evidence"] = f"{evidence}; {review_note}" if evidence else review_note
     return rows
 
 
@@ -22196,11 +22262,62 @@ def apply_regression_rescue_overrides(
                 confidence_floor=0.920,
             )
             continue
-        if "non hodgkin" in query_key and "lymphoma" in query_key:
+        if re.search(r"\bnon[-\s]*hodgkin(?:'?s)?\b", query_key, flags=re.IGNORECASE) and "lymphoma" in query_key:
             if set_rescue_mapping(
                 row,
                 mapped_id_text="MONDO_0018908",
                 note="non_hodgkin_lymphoma_phrase_to_non_hodgkin_lymphoma",
+                confidence_floor=0.920,
+            ):
+                continue
+        if re.search(
+            r"\bnon[-\s]*melanoma\b[^\n]*\bskin\b[^\n]*\b(?:cancer|carcinoma|neoplasm)\b",
+            query_key,
+            flags=re.IGNORECASE,
+        ):
+            if set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0009260",
+                note="non_melanoma_skin_cancer_phrase_to_non_melanoma_skin_carcinoma",
+                confidence_floor=0.920,
+            ):
+                continue
+        tanning_response_row = bool(
+            re.search(r"\bease of skin tanning\b", query_key, flags=re.IGNORECASE)
+            and re.search(r"\b(?:tan|tanned|burn|sun)\b", query_key, flags=re.IGNORECASE)
+        )
+        if tanning_response_row:
+            if set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0004795",
+                note="ease_of_skin_tanning_phrase_to_skin_sensitivity_to_sun",
+                confidence_floor=0.920,
+            ):
+                continue
+        smoking_response_row = bool(
+            (" - " in query_no_field)
+            and (
+                "past tobacco smoking" in query_no_field
+                or query_no_field.startswith("smoking status")
+            )
+            and any(
+                token in query_no_field
+                for token in (
+                    "i have never smoked",
+                    "never smoked",
+                    "smoked on most or all days",
+                    "smoked on most days",
+                    "smoked occasionally",
+                    "ex smoker",
+                    "current smoker",
+                )
+            )
+        )
+        if smoking_response_row:
+            if set_rescue_mapping(
+                row,
+                mapped_id_text="EFO_0006527",
+                note="past_tobacco_smoking_response_phrase_to_smoking_status_measurement",
                 confidence_floor=0.920,
             ):
                 continue
@@ -38830,6 +38947,7 @@ def main() -> int:
                 # so plain and /ICD10 variants stay aligned when one variant is
                 # updated later in the pipeline (for example regression rescues).
                 rows = harmonize_trait_rows_by_base_query(rows)
+                rows = apply_conditional_when_review_guard(rows)
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)
@@ -38904,6 +39022,7 @@ def main() -> int:
                 # so plain and /ICD10 variants stay aligned when one variant is
                 # updated later in the pipeline (for example regression rescues).
                 rows = harmonize_trait_rows_by_base_query(rows)
+                rows = apply_conditional_when_review_guard(rows)
                 rows = refresh_trait_rows_provenance(rows)
                 write_trait_tsv(rows, output_path)
                 total_rows = len(rows)

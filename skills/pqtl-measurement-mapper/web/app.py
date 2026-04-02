@@ -11,12 +11,16 @@ Features:
 from __future__ import annotations
 
 import csv
+import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,12 +64,116 @@ class JobState:
     qc_risk_path: str = ""
     qc_summary_path: str = ""
     local_export_dir: str = ""
+    log_path: str = ""
+    state_path: str = ""
     options: dict[str, Any] = field(default_factory=dict)
 
 
 app = FastAPI(title="pQTL Measurement Mapper")
 JOBS: dict[str, JobState] = {}
 JOBS_LOCK = threading.Lock()
+
+
+def _safe_job_id(job_id: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "", (job_id or "").strip())
+
+
+def _tail_log_lines(path: Path, max_lines: int = 500) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = deque(fh, maxlen=max(1, max_lines))
+        return [line.rstrip("\n") for line in lines if line.rstrip("\n")]
+    except Exception:
+        return []
+
+
+def _persist_job_state(job: JobState) -> None:
+    if not job.state_path:
+        return
+    state_path = Path(job.state_path)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "progress_current": job.progress_current,
+        "progress_total": job.progress_total,
+        "progress_percent": job.progress_percent,
+        "message": job.message,
+        "error": job.error,
+        "input_path": job.input_path,
+        "mapped_path": job.mapped_path,
+        "unmapped_path": job.unmapped_path,
+        "review_path": job.review_path,
+        "qc_risk_path": job.qc_risk_path,
+        "qc_summary_path": job.qc_summary_path,
+        "local_export_dir": job.local_export_dir,
+        "log_path": job.log_path,
+        "state_path": job.state_path,
+        "options": {
+            "mode": str(job.options.get("mode", "map")).strip().lower() or "map",
+        },
+    }
+    tmp_path = state_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    tmp_path.replace(state_path)
+
+
+def _load_job_from_disk(job_id: str) -> JobState | None:
+    safe_job_id = _safe_job_id(job_id)
+    if not safe_job_id:
+        return None
+    job_dir = JOB_ROOT / safe_job_id
+    state_path = job_dir / "job_state.json"
+    if not state_path.exists():
+        return None
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    def _as_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _as_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    options = payload.get("options", {})
+    if not isinstance(options, dict):
+        options = {}
+    log_path = Path(payload.get("log_path", job_dir / "job.log"))
+    job = JobState(
+        job_id=str(payload.get("job_id", safe_job_id)),
+        status=str(payload.get("status", "queued")),
+        created_at=_as_float(payload.get("created_at"), time.time()),
+        updated_at=_as_float(payload.get("updated_at"), time.time()),
+        progress_current=_as_int(payload.get("progress_current"), 0),
+        progress_total=_as_int(payload.get("progress_total"), 0),
+        progress_percent=_as_float(payload.get("progress_percent"), 0.0),
+        message=str(payload.get("message", "")),
+        error=str(payload.get("error", "")),
+        input_path=str(payload.get("input_path", "")),
+        mapped_path=str(payload.get("mapped_path", "")),
+        unmapped_path=str(payload.get("unmapped_path", "")),
+        review_path=str(payload.get("review_path", "")),
+        qc_risk_path=str(payload.get("qc_risk_path", "")),
+        qc_summary_path=str(payload.get("qc_summary_path", "")),
+        local_export_dir=str(payload.get("local_export_dir", "")),
+        log_path=str(log_path),
+        state_path=str(payload.get("state_path", state_path)),
+        options=options,
+    )
+    job.logs = _tail_log_lines(Path(job.log_path), max_lines=500)
+    return job
 
 
 def add_log(job: JobState, line: str) -> None:
@@ -75,6 +183,14 @@ def add_log(job: JobState, line: str) -> None:
     job.logs.append(line)
     if len(job.logs) > 500:
         job.logs = job.logs[-500:]
+    if job.log_path:
+        try:
+            log_path = Path(job.log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:
+            pass
 
 
 def set_progress_from_line(job: JobState, line: str) -> None:
@@ -90,10 +206,18 @@ def set_progress_from_line(job: JobState, line: str) -> None:
 
 
 def get_job(job_id: str) -> JobState:
-    with JOBS_LOCK:
-        job = JOBS.get(job_id)
-    if not job:
+    safe_job_id = _safe_job_id(job_id)
+    if not safe_job_id:
         raise HTTPException(status_code=404, detail="Job not found")
+    with JOBS_LOCK:
+        job = JOBS.get(safe_job_id)
+    if not job:
+        disk_job = _load_job_from_disk(safe_job_id)
+        if disk_job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        with JOBS_LOCK:
+            JOBS[safe_job_id] = disk_job
+        job = disk_job
     return job
 
 
@@ -122,6 +246,10 @@ def stage_job_exports(job: JobState) -> None:
         Path(job.qc_risk_path),
         Path(job.qc_summary_path),
     ]
+    if job.log_path:
+        artifacts.append(Path(job.log_path))
+    if job.state_path:
+        artifacts.append(Path(job.state_path))
     for path in artifacts:
         if path.exists():
             shutil.copy2(path, export_dir / path.name)
@@ -232,9 +360,15 @@ def run_mapping_job(job_id: str) -> None:
                 if fallback_id:
                     cmd.extend(["--fallback-efo-id", fallback_id])
 
-        job.status = "running"
-        job.message = "mapping" if mode == "map" else "trait-mapping"
-        job.updated_at = time.time()
+        with JOBS_LOCK:
+            live = JOBS.get(job_id, job)
+            live.status = "running"
+            live.message = "mapping" if mode == "map" else "trait-mapping"
+            live.updated_at = time.time()
+            add_log(live, f"[status] started mode={mode}")
+            add_log(live, f"[status] launching mapper from {ROOT_DIR}")
+            add_log(live, f"[cmd] {shlex.join(cmd)}")
+            _persist_job_state(live)
 
         proc = subprocess.Popen(
             cmd,
@@ -243,6 +377,7 @@ def run_mapping_job(job_id: str) -> None:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
 
         assert proc.stdout is not None
@@ -252,6 +387,7 @@ def run_mapping_job(job_id: str) -> None:
                 add_log(live, line)
                 set_progress_from_line(live, line)
                 live.updated_at = time.time()
+                _persist_job_state(live)
 
         ret = proc.wait()
 
@@ -263,6 +399,8 @@ def run_mapping_job(job_id: str) -> None:
                 live.message = "mapper failed"
                 if live.logs:
                     live.error = live.logs[-1]
+                add_log(live, f"[status] failed exit_code={ret}")
+                _persist_job_state(live)
                 return
 
             live.status = "completed"
@@ -271,15 +409,19 @@ def run_mapping_job(job_id: str) -> None:
             if live.progress_total == 0:
                 live.progress_total = 1
                 live.progress_current = 1
+            add_log(live, "[status] completed")
             stage_job_exports(live)
+            _persist_job_state(live)
 
     except Exception as exc:
         with JOBS_LOCK:
-            live = JOBS[job_id]
+            live = JOBS.get(job_id, job)
             live.status = "failed"
             live.error = str(exc)
             live.message = "exception"
             live.updated_at = time.time()
+            add_log(live, f"[status] exception {exc}")
+            _persist_job_state(live)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -287,9 +429,25 @@ def home(request: Request) -> str:
     server_fallback = ""
     raw_job_id = (request.query_params.get("job_id", "") or "").strip()
     if raw_job_id:
-        safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_job_id)
+        safe_job_id = _safe_job_id(raw_job_id)
         job_dir = JOB_ROOT / safe_job_id
         mode = "trait-map" if (job_dir / "traits_mapped.tsv").exists() else "map"
+        state_payload: dict[str, Any] = {}
+        state_path = job_dir / "job_state.json"
+        if state_path.exists():
+            try:
+                state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state_payload = {}
+        status_text = str(state_payload.get("status", "unknown")).strip() or "unknown"
+        message_text = str(state_payload.get("message", "")).strip()
+        progress_pct = state_payload.get("progress_percent", 0.0)
+        try:
+            progress_pct_text = f"{float(progress_pct):.1f}%"
+        except Exception:
+            progress_pct_text = "0.0%"
+        log_lines = _tail_log_lines(job_dir / "job.log", max_lines=80)
+        log_preview = "\n".join(log_lines) if log_lines else "No log lines yet."
         links: list[str] = []
         if (job_dir / "mapped.tsv").exists() or (job_dir / "traits_mapped.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/mapped">Download mapped</a>')
@@ -309,16 +467,22 @@ def home(request: Request) -> str:
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_risk_csv">Download QC risk CSV</a>')
         if (job_dir / "traits_qc_summary.json").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_summary">Download QC summary</a>')
+        if (job_dir / "job.log").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/log">Download run log</a>')
         if links:
             server_fallback = (
                 f'<div class="status">job={safe_job_id} mode={mode} (server fallback)</div>'
+                f'<div class="status">status={status_text} message={message_text} progress={progress_pct_text}</div>'
                 f'<div class="status">Local output folder: {str(EXPORT_ROOT / safe_job_id)}</div>'
                 f'<div class="links">{"".join(links)}</div>'
+                f'<pre id="serverFallbackLogs">{log_preview}</pre>'
             )
         else:
             server_fallback = (
                 f'<div class="status">job={safe_job_id} queued/running (server fallback). '
                 "Refresh this page in a few seconds.</div>"
+                f'<div class="status">status={status_text} message={message_text} progress={progress_pct_text}</div>'
+                f'<pre id="serverFallbackLogs">{log_preview}</pre>'
             )
 
     html = """<!doctype html>
@@ -429,6 +593,8 @@ def home(request: Request) -> str:
       font-size: 0.93rem;
       color: var(--muted);
       margin-top: 8px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .bar {
       height: 12px;
@@ -459,18 +625,21 @@ def home(request: Request) -> str:
       padding: 7px 9px;
       background: #f8fcff;
     }
-    #logs {
+    #serverFallbackLogs {
       margin: 0;
-      background: #0c1f2b;
-      color: #cde8f2;
+      margin-top: 10px;
+      background: #f8fcff;
+      color: #123349;
       border-radius: 10px;
-      border: 1px solid #19435a;
-      min-height: 210px;
-      max-height: 410px;
+      border: 1px solid #bfd3e0;
+      max-width: 100%;
+      max-height: 260px;
       overflow: auto;
       padding: 12px;
-      font-size: 0.79rem;
+      font-size: 0.80rem;
       line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .help {
       margin-top: 12px;
@@ -598,11 +767,6 @@ def home(request: Request) -> str:
         </form>
       </section>
 
-      <section class=\"card\">
-        <h3 style=\"margin:0 0 8px;font-size:1rem;\">Job Logs</h3>
-        <pre id=\"logs\"></pre>
-        <div class=\"status\" id=\"jobMeta\"></div>
-      </section>
     </div>
 
     <section class=\"card help\">
@@ -632,16 +796,51 @@ git stash pop</code></div>
 const form = document.getElementById('jobForm');
 const statusEl = document.getElementById('status');
 const barFill = document.getElementById('barFill');
-const logsEl = document.getElementById('logs');
 const linksEl = document.getElementById('links');
 const runBtn = document.getElementById('runBtn');
-const jobMeta = document.getElementById('jobMeta');
+const logsEl = document.getElementById('serverFallbackLogs');
 
 let timer = null;
 let currentJobId = null;
+const LAST_JOB_STORAGE_KEY = 'pqtl_mapper_last_job_id';
+let pollTick = 0;
 
 function boolFromForm(fd, key) {
   return fd.get(key) !== null;
+}
+
+function rememberLastJobId(jobId) {
+  try {
+    if (jobId) {
+      window.localStorage.setItem(LAST_JOB_STORAGE_KEY, jobId);
+    } else {
+      window.localStorage.removeItem(LAST_JOB_STORAGE_KEY);
+    }
+  } catch (_err) {
+    // Ignore storage failures (privacy mode, blocked storage, etc).
+  }
+}
+
+function loadRememberedJobId() {
+  try {
+    return (window.localStorage.getItem(LAST_JOB_STORAGE_KEY) || '').trim();
+  } catch (_err) {
+    return '';
+  }
+}
+
+function syncUrlJobId(jobId) {
+  try {
+    const url = new URL(window.location.href);
+    if (jobId) {
+      url.searchParams.set('job_id', jobId);
+    } else {
+      url.searchParams.delete('job_id');
+    }
+    window.history.replaceState({}, '', url.toString());
+  } catch (_err) {
+    // Ignore URL sync failures.
+  }
 }
 
 function setStatus(msg, isError=false) {
@@ -667,6 +866,7 @@ function renderLinks(downloads, ready) {
     qc_risk: 'Download QC risk TSV',
     qc_risk_csv: 'Download QC risk CSV',
     qc_summary: 'Download QC summary JSON',
+    log: 'Download run log',
   };
   for (const [key, href] of Object.entries(downloads)) {
     const a = document.createElement('a');
@@ -681,12 +881,37 @@ async function pollJob(jobId) {
     const res = await fetch(`/api/jobs/${jobId}`);
     if (!res.ok) throw new Error(`status ${res.status}`);
     const data = await res.json();
+    pollTick += 1;
 
     setProgress(data.progress_percent || 0);
     setStatus(`${data.status}: ${data.message || ''}`.trim(), data.status === 'failed');
-    logsEl.textContent = (data.logs || []).join('\n');
-    logsEl.scrollTop = logsEl.scrollHeight;
-    jobMeta.textContent = `job=${data.job_id} updated=${new Date(data.updated_at * 1000).toLocaleTimeString()}`;
+    if (logsEl) {
+      const logs = data.logs || [];
+      if (logs.length) {
+        logsEl.textContent = logs.join('\n');
+      } else {
+        let fallbackText = 'No log lines yet. This is normal during reference loading.';
+        const logHref = data.downloads && data.downloads.log ? data.downloads.log : '';
+        if (logHref && (pollTick % 3 === 0)) {
+          try {
+            const logRes = await fetch(logHref, { cache: 'no-store' });
+            if (logRes.ok) {
+              const logTxt = await logRes.text();
+              const logLines = logTxt.split(/\r?\n/).map(s => s.trimEnd()).filter(Boolean);
+              if (logLines.length) {
+                fallbackText = logLines.slice(-500).join('\n');
+              }
+            }
+          } catch (_err) {
+            // Keep default fallback text when log fetch fails.
+          }
+        }
+        logsEl.textContent = fallbackText;
+      }
+      logsEl.scrollTop = logsEl.scrollHeight;
+    }
+    rememberLastJobId(data.job_id);
+    syncUrlJobId(data.job_id);
 
     if (data.status === 'completed') {
       clearInterval(timer);
@@ -703,11 +928,31 @@ async function pollJob(jobId) {
       return;
     }
   } catch (err) {
-    setStatus(`Polling failed: ${err}`, true);
+    const errText = String(err || '');
+    if (errText.includes('status 404')) {
+      setStatus(`Polling failed: live job ${jobId} not found (404). Refresh with ?job_id=${jobId} to show fallback downloads.`, true);
+    } else {
+      setStatus(`Polling failed: ${err}`, true);
+    }
     clearInterval(timer);
     timer = null;
     runBtn.disabled = false;
   }
+}
+
+function startPolling(jobId, statusLabel='queued') {
+  if (!jobId) return;
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  currentJobId = jobId;
+  runBtn.disabled = true;
+  rememberLastJobId(jobId);
+  syncUrlJobId(jobId);
+  setStatus(`${statusLabel}: ${jobId}`);
+  timer = setInterval(() => pollJob(currentJobId), 1000);
+  pollJob(currentJobId);
 }
 
 form.addEventListener('submit', async (e) => {
@@ -726,7 +971,7 @@ form.addEventListener('submit', async (e) => {
 
   runBtn.disabled = true;
   renderLinks(null, false);
-  logsEl.textContent = '';
+  if (logsEl) logsEl.textContent = '';
   setProgress(0);
   setStatus('Submitting job...');
 
@@ -741,10 +986,7 @@ form.addEventListener('submit', async (e) => {
       throw new Error(txt || `status ${res.status}`);
     }
     const data = await res.json();
-    currentJobId = data.job_id;
-    setStatus(`queued: ${data.job_id}`);
-    timer = setInterval(() => pollJob(currentJobId), 1000);
-    pollJob(currentJobId);
+    startPolling(data.job_id, 'queued');
   } catch (err) {
     runBtn.disabled = false;
     setStatus(`Submit failed: ${err}`, true);
@@ -752,13 +994,9 @@ form.addEventListener('submit', async (e) => {
 });
 
 const qs = new URLSearchParams(window.location.search);
-const restoreJobId = qs.get('job_id');
+const restoreJobId = (qs.get('job_id') || '').trim() || loadRememberedJobId();
 if (restoreJobId) {
-  currentJobId = restoreJobId;
-  runBtn.disabled = true;
-  setStatus(`queued: ${restoreJobId}`);
-  timer = setInterval(() => pollJob(currentJobId), 1000);
-  pollJob(currentJobId);
+  startPolling(restoreJobId, 'resuming');
 }
 </script>
 </body>
@@ -852,6 +1090,8 @@ def create_job(
     review_path = job_dir / "traits_review.tsv"
     qc_risk_path = job_dir / "traits_qc_risk.tsv"
     qc_summary_path = job_dir / "traits_qc_summary.json"
+    log_path = job_dir / "job.log"
+    state_path = job_dir / "job_state.json"
 
     content = file.file.read()
     input_path.write_bytes(content)
@@ -869,6 +1109,8 @@ def create_job(
         qc_risk_path=str(qc_risk_path),
         qc_summary_path=str(qc_summary_path),
         local_export_dir=str(export_dir),
+        log_path=str(log_path),
+        state_path=str(state_path),
         options={
             "mode": mode_clean,
             "workers": max(1, int(workers)),
@@ -897,6 +1139,14 @@ def create_job(
 
     with JOBS_LOCK:
         JOBS[job_id] = job
+        add_log(
+            job,
+            (
+                f"[status] queued mode={mode_clean} "
+                f"input={Path(job.input_path).name} rows=unknown"
+            ),
+        )
+        _persist_job_state(job)
 
     thread = threading.Thread(target=run_mapping_job, args=(job_id,), daemon=True)
     thread.start()
@@ -913,6 +1163,11 @@ def create_job(
 def job_status(job_id: str) -> JSONResponse:
     job = get_job(job_id)
     with JOBS_LOCK:
+        if job.log_path:
+            disk_logs = _tail_log_lines(Path(job.log_path), max_lines=500)
+            if disk_logs:
+                job.logs = disk_logs
+        _persist_job_state(job)
         payload = {
             "job_id": job.job_id,
             "status": job.status,
@@ -942,6 +1197,7 @@ def job_status(job_id: str) -> JSONResponse:
                     "qc_risk": f"/api/jobs/{job_id}/download/qc_risk",
                     "qc_risk_csv": f"/api/jobs/{job_id}/download/qc_risk_csv",
                     "qc_summary": f"/api/jobs/{job_id}/download/qc_summary",
+                    "log": f"/api/jobs/{job_id}/download/log",
                 }
                 if job.options.get("mode") == "trait-map"
                 else {
@@ -949,6 +1205,7 @@ def job_status(job_id: str) -> JSONResponse:
                     "mapped_csv": f"/api/jobs/{job_id}/download/mapped_csv",
                     "unmapped": f"/api/jobs/{job_id}/download/unmapped",
                     "unmapped_csv": f"/api/jobs/{job_id}/download/unmapped_csv",
+                    "log": f"/api/jobs/{job_id}/download/log",
                 }
             ),
         }
@@ -983,6 +1240,9 @@ def download_job_file(job_id: str, kind: str) -> FileResponse:
     elif kind == "qc_summary":
         path = Path(job.qc_summary_path)
         media_type = "application/json"
+    elif kind == "log":
+        path = Path(job.log_path)
+        media_type = "text/plain"
     else:
         raise HTTPException(status_code=404, detail="Unknown artifact")
 
