@@ -21,16 +21,13 @@
       --line: rgba(22, 32, 43, 0.12);
       --accent: #0f766e;
       --accent-2: #0b5d8c;
-      --accent-3: #c96d22;
       --soft: rgba(15, 118, 110, 0.08);
-      --soft-2: rgba(11, 93, 140, 0.08);
       --shadow: 0 20px 45px rgba(15, 23, 42, 0.10);
       --radius: 22px;
       --radius-sm: 14px;
     }
 
     * { box-sizing: border-box; }
-
     html { scroll-behavior: smooth; }
 
     body {
@@ -152,8 +149,7 @@
     .cta-box,
     .mini-card,
     .step,
-    .mode-card,
-    .note-box {
+    .mode-card {
       border-radius: var(--radius-sm);
       border: 1px solid var(--line);
       background: var(--panel-strong);
@@ -167,7 +163,6 @@
 
     .mini-card,
     .mode-card,
-    .note-box,
     .step {
       padding: 16px;
     }
@@ -259,9 +254,9 @@
     .banner {
       padding: 12px 14px;
       border-radius: 14px;
-      background: rgba(201, 109, 34, 0.08);
-      border: 1px solid rgba(201, 109, 34, 0.18);
-      color: #7c4717;
+      background: rgba(15, 118, 110, 0.08);
+      border: 1px solid rgba(15, 118, 110, 0.18);
+      color: #0d5e57;
       font-size: 0.92rem;
       font-weight: 500;
     }
@@ -288,8 +283,8 @@
         <div>
           <h1>Run the mapper locally with a browser UI.</h1>
           <p class="lead">
-            This tool lets you upload a file, choose either trait mapping or analyte mapping,
-            and download TSV results from a local Uvicorn web app. You do not need to learn the CLI first.
+            Clone the repository, start the local Uvicorn app, upload a file,
+            and use either the trait mapper or the protein and metabolite mapper from your browser.
           </p>
           <div class="pill-row">
             <span class="pill">Trait mapper</span>
@@ -300,12 +295,13 @@
         </div>
         <div class="cta-box">
           <h3>Fastest path</h3>
-          <p class="small">If you just want the app running, follow these four commands from the repository root.</p>
+          <p class="small">From a fresh GitHub clone, these are the commands most people need.</p>
           <pre>python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -e .
+analyte-efo-mapper setup-bundled-caches
 .venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000</pre>
-          <p class="small" style="margin-top:10px;">Then open <code>http://127.0.0.1:8000</code> in your browser.</p>
+          <p class="small" style="margin-top:10px;">Then open <code>http://127.0.0.1:8000</code>.</p>
         </div>
       </div>
     </section>
@@ -352,7 +348,7 @@ cd analyte-efo-mapper</pre>
           <h3>Prepare bundled caches</h3>
           <pre>analyte-efo-mapper setup-bundled-caches</pre>
           <p class="small" style="margin-top:10px;">
-            This builds or reuses the local reference files the mapper needs, including the measurement index and bundled trait resources.
+            This prepares the local reference files the mapper needs, including the measurement index and bundled trait resources.
           </p>
         </div>
         <div class="step">
@@ -361,10 +357,6 @@ cd analyte-efo-mapper</pre>
           <pre>.venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000</pre>
           <p class="small" style="margin-top:10px;">Open <code>http://127.0.0.1:8000</code> and upload your file.</p>
         </div>
-      </div>
-      <div class="note-box" style="margin-top:14px;">
-        <h3>If your local checkout uses <code>skills-src</code></h3>
-        <pre>.venv/bin/python -m uvicorn --app-dir skills-src/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000</pre>
       </div>
     </section>
 
@@ -410,7 +402,7 @@ glucose	metabolite_name</pre>
         </div>
         <div class="mini-card">
           <h3>2. Pick the mode</h3>
-          <p>Select <code>map</code> for proteins/metabolites or <code>trait-map</code> for traits and diseases.</p>
+          <p>Select <code>map</code> for proteins and metabolites or <code>trait-map</code> for traits and diseases.</p>
         </div>
         <div class="mini-card">
           <h3>3. Download results</h3>
@@ -418,7 +410,7 @@ glucose	metabolite_name</pre>
         </div>
       </div>
       <div class="banner" style="margin-top:14px;">
-        The app is local. Your files stay on your machine unless you choose to move or share them yourself.
+        The app runs locally on your machine. Your files stay local unless you choose to move or share them yourself.
       </div>
     </section>
 
@@ -469,7 +461,7 @@ glucose	metabolite_name</pre>
         </div>
         <div class="mini-card">
           <h3>Catalog-aware output</h3>
-          <p class="small">The mapper now checks proposed terms against the local Catalog export, prefers existing Catalog terms when possible, and can emit a bulk-add TSV for any exact unresolved terms.</p>
+          <p class="small">The mapper checks proposed terms against the local Catalog export, prefers existing Catalog terms when possible, and can emit a bulk-add TSV for any remaining exact unresolved terms.</p>
         </div>
         <div class="mini-card">
           <h3>TSV-only output</h3>

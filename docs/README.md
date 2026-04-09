@@ -6,6 +6,8 @@ It runs locally and uses bundled caches so most workflows are offline after setu
 
 ## 1) Quick Start
 
+If you want the browser app, this is the simplest path from a fresh GitHub clone:
+
 ```bash
 mkdir -p ~/src
 cd ~/src
@@ -20,12 +22,20 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 
 analyte-efo-mapper setup-bundled-caches
+.venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000
+```
+
+Then open `http://127.0.0.1:8000`.
+
+If you prefer to verify the local cache setup before opening the app:
+
+```bash
 analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-`setup-bundled-caches` reuses the bundled UKB and ICD10 side caches when present, and only rebuilds or downloads missing pieces.  
-If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.  
-If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.  
+`setup-bundled-caches` reuses the bundled UKB and ICD10 side caches when present, and only rebuilds or downloads missing pieces.
+If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.
+If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.
 The compiled `measurement_index.json` is generated locally during setup; it is not required in Git history.
 
 ### Fresh Machine Install
@@ -58,7 +68,7 @@ What setup does on a fresh clone:
 - builds the ICD10 label cache when missing
 - generates the local `skills/pqtl-measurement-mapper/references/measurement_index.json`
 
-After that, normal `map` and `trait-map` runs are local/offline unless you explicitly request online refresh behavior.
+After that, you can either use the web app or run `map` and `trait-map` from the CLI. Normal runs are local/offline unless you explicitly request online refresh behavior.
 
 Map analytes:
 
