@@ -23,13 +23,31 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-ROOT_DIR = Path(__file__).resolve().parents[3]
-SKILL_DIR = ROOT_DIR / "skills" / "pqtl-measurement-mapper"
+# Resolve the skill directory from this file location so the app works from
+# either .../skills-src/pqtl-measurement-mapper/web/app.py or
+# .../.codex/skills/pqtl-measurement-mapper/web/app.py.
+SKILL_DIR = Path(__file__).resolve().parents[1]
+
+# Workspace root is usually 2 levels up when running from skills-src.
+# Allow override for non-standard launches, and gracefully fallback.
+_root_override = os.environ.get("PQTL_MAPPER_ROOT", "").strip()
+if _root_override:
+    ROOT_DIR = Path(_root_override).expanduser().resolve()
+else:
+    root_guess = SKILL_DIR.parents[1]
+    if (root_guess / "references" / "ukb" / "fieldsum.txt").exists():
+        ROOT_DIR = root_guess
+    elif (Path.cwd() / "references" / "ukb" / "fieldsum.txt").exists():
+        ROOT_DIR = Path.cwd()
+    else:
+        ROOT_DIR = root_guess
+
 MAPPER_SCRIPT = SKILL_DIR / "scripts" / "map_measurement_efo.py"
 DEFAULT_INDEX = SKILL_DIR / "references" / "measurement_index.json"
 DEFAULT_UNIPROT_ALIASES = SKILL_DIR / "references" / "uniprot_aliases.tsv"
@@ -37,9 +55,11 @@ DEFAULT_TERM_CACHE = SKILL_DIR / "references" / "efo_measurement_terms_cache.tsv
 DEFAULT_ANALYTE_CACHE = SKILL_DIR / "references" / "analyte_to_efo_cache.tsv"
 DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
 DEFAULT_EFO_OBO = SKILL_DIR / "references" / "efo.obo"
+DEFAULT_CATALOG_TRAIT_EXPORT = SKILL_DIR / "references" / "catalog_trait_export.tsv"
 DEFAULT_UKB_FIELD_CATALOG = ROOT_DIR / "references" / "ukb" / "fieldsum.txt"
 PYODIDE_WEB_DIR = SKILL_DIR / "web" / "pyodide"
-PYTHON_BIN = ROOT_DIR / ".venv" / "bin" / "python"
+_venv_python = ROOT_DIR / ".venv" / "bin" / "python"
+PYTHON_BIN = Path(os.environ.get("PQTL_MAPPER_PYTHON", "")).expanduser() if os.environ.get("PQTL_MAPPER_PYTHON") else (_venv_python if _venv_python.exists() else Path(sys.executable))
 JOB_ROOT = ROOT_DIR / "final_output" / "web_jobs"
 EXPORT_ROOT = ROOT_DIR / "final_output" / "web_exports"
 PROGRESS_RE = re.compile(r"\[progress\]\s+(\d+)/(\d+)\s+\((\d+\.?\d*)%\)")
@@ -63,6 +83,7 @@ class JobState:
     review_path: str = ""
     qc_risk_path: str = ""
     qc_summary_path: str = ""
+    catalog_bulk_add_path: str = ""
     local_export_dir: str = ""
     log_path: str = ""
     state_path: str = ""
@@ -110,6 +131,7 @@ def _persist_job_state(job: JobState) -> None:
         "review_path": job.review_path,
         "qc_risk_path": job.qc_risk_path,
         "qc_summary_path": job.qc_summary_path,
+        "catalog_bulk_add_path": job.catalog_bulk_add_path,
         "local_export_dir": job.local_export_dir,
         "log_path": job.log_path,
         "state_path": job.state_path,
@@ -167,6 +189,7 @@ def _load_job_from_disk(job_id: str) -> JobState | None:
         review_path=str(payload.get("review_path", "")),
         qc_risk_path=str(payload.get("qc_risk_path", "")),
         qc_summary_path=str(payload.get("qc_summary_path", "")),
+        catalog_bulk_add_path=str(payload.get("catalog_bulk_add_path", "")),
         local_export_dir=str(payload.get("local_export_dir", "")),
         log_path=str(log_path),
         state_path=str(payload.get("state_path", state_path)),
@@ -221,20 +244,6 @@ def get_job(job_id: str) -> JobState:
     return job
 
 
-def write_csv_copy(tsv_path: Path) -> Path | None:
-    if not tsv_path.exists() or tsv_path.suffix.lower() != ".tsv":
-        return None
-    csv_path = tsv_path.with_suffix(".csv")
-    with tsv_path.open("r", encoding="utf-8", newline="") as src, csv_path.open(
-        "w", encoding="utf-8", newline=""
-    ) as dst:
-        reader = csv.reader(src, delimiter="\t")
-        writer = csv.writer(dst)
-        for row in reader:
-            writer.writerow(row)
-    return csv_path
-
-
 def stage_job_exports(job: JobState) -> None:
     export_dir = Path(job.local_export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -245,6 +254,7 @@ def stage_job_exports(job: JobState) -> None:
         Path(job.review_path),
         Path(job.qc_risk_path),
         Path(job.qc_summary_path),
+        Path(job.catalog_bulk_add_path),
     ]
     if job.log_path:
         artifacts.append(Path(job.log_path))
@@ -253,9 +263,6 @@ def stage_job_exports(job: JobState) -> None:
     for path in artifacts:
         if path.exists():
             shutil.copy2(path, export_dir / path.name)
-            csv_path = write_csv_copy(path)
-            if csv_path is not None and csv_path.exists():
-                shutil.copy2(csv_path, export_dir / csv_path.name)
 
 
 def run_mapping_job(job_id: str) -> None:
@@ -276,6 +283,8 @@ def run_mapping_job(job_id: str) -> None:
                 str(job.options.get("trait_cache_path", DEFAULT_TRAIT_CACHE)),
                 "--efo-obo",
                 str(job.options.get("efo_obo_path", DEFAULT_EFO_OBO)),
+                "--catalog-trait-export",
+                str(job.options.get("catalog_trait_export_path", DEFAULT_CATALOG_TRAIT_EXPORT)),
                 "--ukb-field-catalog",
                 str(job.options.get("ukb_field_catalog_path", DEFAULT_UKB_FIELD_CATALOG)),
                 "--top-k",
@@ -290,6 +299,8 @@ def run_mapping_job(job_id: str) -> None:
                 job.qc_risk_path,
                 "--qc-summary-output",
                 job.qc_summary_path,
+                "--catalog-bulk-add-output",
+                job.catalog_bulk_add_path,
                 "--flush-every",
                 str(job.options.get("flush_every", 50)),
                 "--progress",
@@ -342,18 +353,6 @@ def run_mapping_job(job_id: str) -> None:
                         str(job.options.get("term_cache_path", DEFAULT_TERM_CACHE)),
                     ]
                 )
-
-            if job.options.get("cache_writeback", False):
-                cmd.extend(
-                    [
-                        "--cache-writeback",
-                        "--analyte-cache",
-                        str(job.options.get("analyte_cache_path", DEFAULT_ANALYTE_CACHE)),
-                        "--cache-min-confidence",
-                        str(job.options.get("cache_min_confidence", 0.80)),
-                    ]
-                )
-
             if job.options.get("force_map_best", False):
                 cmd.append("--force-map-best")
                 fallback_id = str(job.options.get("fallback_efo_id", "")).strip()
@@ -451,20 +450,14 @@ def home(request: Request) -> str:
         links: list[str] = []
         if (job_dir / "mapped.tsv").exists() or (job_dir / "traits_mapped.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/mapped">Download mapped</a>')
-        if (job_dir / "mapped.csv").exists() or (job_dir / "traits_mapped.csv").exists():
-            links.append(f'<a href="/api/jobs/{safe_job_id}/download/mapped_csv">Download mapped CSV</a>')
         if (job_dir / "unmapped.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/unmapped">Download unmapped</a>')
-        if (job_dir / "unmapped.csv").exists():
-            links.append(f'<a href="/api/jobs/{safe_job_id}/download/unmapped_csv">Download unmapped CSV</a>')
         if (job_dir / "traits_review.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/review">Download review</a>')
-        if (job_dir / "traits_review.csv").exists():
-            links.append(f'<a href="/api/jobs/{safe_job_id}/download/review_csv">Download review CSV</a>')
         if (job_dir / "traits_qc_risk.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_risk">Download QC risk</a>')
-        if (job_dir / "traits_qc_risk.csv").exists():
-            links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_risk_csv">Download QC risk CSV</a>')
+        if (job_dir / "traits_catalog_bulk_add.tsv").exists():
+            links.append(f'<a href="/api/jobs/{safe_job_id}/download/catalog_bulk_add">Download Catalog bulk add</a>')
         if (job_dir / "traits_qc_summary.json").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_summary">Download QC summary</a>')
         if (job_dir / "job.log").exists():
@@ -676,8 +669,7 @@ def home(request: Request) -> str:
       <h1>pQTL Measurement Mapper</h1>
       <p class=\"sub\">Run analyte map (protein/metabolite) or trait-map, track progress, and download result artifacts.</p>
       <p class=\"sub\" style=\"margin-top:8px;\">
-        Browser-only prototype available:
-        <a href=\"/pyodide\" style=\"font-weight:700;color:#0d6d63;text-decoration:none;\">Open Pyodide Trait Mapper</a>
+        Pyodide browser-only mode is temporarily unavailable in the UI while parity and performance updates are in progress.
       </p>
     </section>
 
@@ -733,7 +725,6 @@ def home(request: Request) -> str:
           <input name=\"matrix_priority\" type=\"text\" value=\"plasma,blood,serum\" />
 
           <label class=\"check\"><input name=\"auto_enrich\" type=\"checkbox\" checked />Auto-enrich missing UniProt aliases</label>
-          <label class=\"check\"><input name=\"cache_writeback\" type=\"checkbox\" />Write high-confidence results to analyte cache</label>
           <label class=\"check\"><input name=\"force_map_best\" type=\"checkbox\" />Force fallback row when unresolved</label>
 
           <label>Fallback EFO ID (optional)</label>
@@ -858,14 +849,11 @@ function renderLinks(downloads, ready) {
   if (!ready || !downloads) return;
   const labels = {
     mapped: 'Download mapped TSV',
-    mapped_csv: 'Download mapped CSV',
     unmapped: 'Download unmapped TSV',
-    unmapped_csv: 'Download unmapped CSV',
     review: 'Download review TSV',
-    review_csv: 'Download review CSV',
     qc_risk: 'Download QC risk TSV',
-    qc_risk_csv: 'Download QC risk CSV',
     qc_summary: 'Download QC summary JSON',
+    catalog_bulk_add: 'Download Catalog bulk add TSV',
     log: 'Download run log',
   };
   for (const [key, href] of Object.entries(downloads)) {
@@ -964,7 +952,6 @@ form.addEventListener('submit', async (e) => {
 
   const fd = new FormData(form);
   fd.set('auto_enrich', boolFromForm(fd, 'auto_enrich'));
-  fd.set('cache_writeback', boolFromForm(fd, 'cache_writeback'));
   fd.set('force_map_best', boolFromForm(fd, 'force_map_best'));
   fd.set('stream_output', boolFromForm(fd, 'stream_output'));
   fd.set('memoize_queries', boolFromForm(fd, 'memoize_queries'));
@@ -1053,7 +1040,6 @@ def create_job(
     measurement_context: str = Form("blood"),
     entity_type: str = Form("auto"),
     auto_enrich: bool = Form(True),
-    cache_writeback: bool = Form(False),
     force_map_best: bool = Form(False),
     fallback_efo_id: str = Form(""),
     default_trait_scale: str = Form("auto"),
@@ -1090,6 +1076,7 @@ def create_job(
     review_path = job_dir / "traits_review.tsv"
     qc_risk_path = job_dir / "traits_qc_risk.tsv"
     qc_summary_path = job_dir / "traits_qc_summary.json"
+    catalog_bulk_add_path = job_dir / "traits_catalog_bulk_add.tsv"
     log_path = job_dir / "job.log"
     state_path = job_dir / "job_state.json"
 
@@ -1108,6 +1095,7 @@ def create_job(
         review_path=str(review_path),
         qc_risk_path=str(qc_risk_path),
         qc_summary_path=str(qc_summary_path),
+        catalog_bulk_add_path=str(catalog_bulk_add_path),
         local_export_dir=str(export_dir),
         log_path=str(log_path),
         state_path=str(state_path),
@@ -1120,7 +1108,6 @@ def create_job(
             "measurement_context": measurement_context.strip() or "blood",
             "entity_type": entity_type_clean,
             "auto_enrich": bool(auto_enrich),
-            "cache_writeback": bool(cache_writeback),
             "force_map_best": bool(force_map_best),
             "fallback_efo_id": fallback_efo_id.strip(),
             "default_trait_scale": default_trait_scale_clean,
@@ -1187,24 +1174,21 @@ def job_status(job_id: str) -> JSONResponse:
                 "review": str(Path(job.local_export_dir) / Path(job.review_path).name),
                 "qc_risk": str(Path(job.local_export_dir) / Path(job.qc_risk_path).name),
                 "qc_summary": str(Path(job.local_export_dir) / Path(job.qc_summary_path).name),
+                "catalog_bulk_add": str(Path(job.local_export_dir) / Path(job.catalog_bulk_add_path).name),
             },
             "downloads": (
                 {
                     "mapped": f"/api/jobs/{job_id}/download/mapped",
-                    "mapped_csv": f"/api/jobs/{job_id}/download/mapped_csv",
                     "review": f"/api/jobs/{job_id}/download/review",
-                    "review_csv": f"/api/jobs/{job_id}/download/review_csv",
                     "qc_risk": f"/api/jobs/{job_id}/download/qc_risk",
-                    "qc_risk_csv": f"/api/jobs/{job_id}/download/qc_risk_csv",
                     "qc_summary": f"/api/jobs/{job_id}/download/qc_summary",
+                    "catalog_bulk_add": f"/api/jobs/{job_id}/download/catalog_bulk_add",
                     "log": f"/api/jobs/{job_id}/download/log",
                 }
                 if job.options.get("mode") == "trait-map"
                 else {
                     "mapped": f"/api/jobs/{job_id}/download/mapped",
-                    "mapped_csv": f"/api/jobs/{job_id}/download/mapped_csv",
                     "unmapped": f"/api/jobs/{job_id}/download/unmapped",
-                    "unmapped_csv": f"/api/jobs/{job_id}/download/unmapped_csv",
                     "log": f"/api/jobs/{job_id}/download/log",
                 }
             ),
@@ -1219,27 +1203,17 @@ def download_job_file(job_id: str, kind: str) -> FileResponse:
 
     if kind == "mapped":
         path = Path(job.mapped_path)
-    elif kind == "mapped_csv":
-        path = Path(job.mapped_path).with_suffix(".csv")
-        media_type = "text/csv"
     elif kind == "unmapped":
         path = Path(job.unmapped_path)
-    elif kind == "unmapped_csv":
-        path = Path(job.unmapped_path).with_suffix(".csv")
-        media_type = "text/csv"
     elif kind == "review":
         path = Path(job.review_path)
-    elif kind == "review_csv":
-        path = Path(job.review_path).with_suffix(".csv")
-        media_type = "text/csv"
     elif kind == "qc_risk":
         path = Path(job.qc_risk_path)
-    elif kind == "qc_risk_csv":
-        path = Path(job.qc_risk_path).with_suffix(".csv")
-        media_type = "text/csv"
     elif kind == "qc_summary":
         path = Path(job.qc_summary_path)
         media_type = "application/json"
+    elif kind == "catalog_bulk_add":
+        path = Path(job.catalog_bulk_add_path)
     elif kind == "log":
         path = Path(job.log_path)
         media_type = "text/plain"
