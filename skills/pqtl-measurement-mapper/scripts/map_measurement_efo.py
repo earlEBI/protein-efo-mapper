@@ -40350,17 +40350,10 @@ def main() -> int:
                     suggestion_rows,
                     new_efo_suggestions_output_path,
                 )
-                suggestion_csv_path = new_efo_suggestions_output_path.with_suffix(".csv")
-                write_dict_rows_csv(
-                    suggestion_rows,
-                    suggestion_csv_path,
-                    TRAIT_NEW_EFO_SUGGESTION_FIELDS,
-                )
                 print(
                     f"[OK] wrote {suggestion_count} suggested-new-EFO rows to "
                     f"{new_efo_suggestions_output_path}"
                 )
-                print(f"[OK] wrote CSV copy to {suggestion_csv_path}")
             if catalog_bulk_add_output_path is not None:
                 catalog_bulk_add_rows = build_catalog_missing_term_bulk_add_rows(
                     rows,
@@ -40370,29 +40363,10 @@ def main() -> int:
                     catalog_bulk_add_rows,
                     catalog_bulk_add_output_path,
                 )
-                catalog_bulk_add_csv_path = catalog_bulk_add_output_path.with_suffix(".csv")
-                write_dict_rows_csv(
-                    catalog_bulk_add_rows,
-                    catalog_bulk_add_csv_path,
-                    CATALOG_BULK_ADD_FIELDS,
-                )
                 print(
                     f"[OK] wrote {bulk_add_count} catalog bulk-add rows to "
                     f"{catalog_bulk_add_output_path}"
                 )
-                print(f"[OK] wrote CSV copy to {catalog_bulk_add_csv_path}")
-            mapped_csv_path = output_path.with_suffix(".csv")
-            write_trait_csv(rows, mapped_csv_path)
-            print(f"[OK] wrote CSV copy to {mapped_csv_path}")
-            if review_output_path is not None:
-                review_rows = read_trait_tsv(review_output_path)
-                review_csv_path = review_output_path.with_suffix(".csv")
-                write_dict_rows_csv(review_rows, review_csv_path, TRAIT_OUTPUT_FIELDS)
-                print(f"[OK] wrote CSV copy to {review_csv_path}")
-            risk_rows = read_trait_tsv(qc_risk_output_path)
-            risk_csv_path = qc_risk_output_path.with_suffix(".csv")
-            write_dict_rows_csv(risk_rows, risk_csv_path, TRAIT_QC_RISK_FIELDS)
-            print(f"[OK] wrote CSV copy to {risk_csv_path}")
             print(f"[OK] wrote trait QC summary to {qc_summary_output_path}")
             print(f"[OK] wrote {total_rows} rows to {output_path}")
             return 0

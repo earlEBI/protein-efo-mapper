@@ -1,0 +1,21 @@
+source_id	source_label	preferred_id	preferred_label	reason
+EFO_0003911	atrial flutter	MONDO_0005310	atrial flutter	existing exact label in catalog export
+EFO_0000275	atrial fibrillation	MONDO_0004981	atrial fibrillation	existing exact label in catalog export
+EFO_0003234	follicle stimulating hormone	EFO_0004768	follicle stimulating hormone measurement	existing measurement term in catalog export
+EFO_0004286	venous thromboembolism	MONDO_0005399	venous thromboembolism	existing exact label in catalog export
+HP_0000870	Increased circulating prolactin concentration	MONDO_0005804	hyperprolactinemia	best existing condition match in catalog export
+HP_0001297	stroke	EFO_0000712	stroke	existing exact label in catalog export
+MONDO_0001409	Esophagitis	HP_0100633	Esophagitis	existing exact label in catalog export
+HP_0000034	Hydrocele testis	EFO_1001859	testicular hydrocele	best existing in-catalog synonym
+MONDO_0004779	Epididymitis	HP_0000031	Epididymitis	existing exact label in catalog export
+MONDO_0002345	Cervicitis	HP_0030160	Cervicitis	existing exact label in catalog export
+EFO_0005669	intracerebral haemorrhage	MONDO_0013792	intracerebral hemorrhage	existing exact label variant in catalog export
+MONDO_1060198	ischemic stroke	HP_0002140	Ischemic stroke	existing exact label in catalog export
+MONDO_0017611	pituitary adenoma	MONDO_0021439	benign neoplasm of pituitary gland	best existing condition match in catalog export
+MONDO_0043839	peptic ulcer	MONDO_0004247	peptic ulcer disease	best existing condition match in catalog export
+EFO_0004244	interstitial lung disease	MONDO_0015925	interstitial lung disease	existing exact label in catalog export
+MONDO_0000945	chronic venous insufficiency	HP_0005293	Venous insufficiency	best existing condition match in catalog export
+EFO_0000668	pre-eclampsia	MONDO_0005081	preeclampsia	existing exact label variant in catalog export
+EFO_0005773	retinal detachment	MONDO_0008375	retinal detachment	existing exact label in catalog export
+HP_0010535	sleep apnea	MONDO_0005296	sleep apnea syndrome	best existing condition match in catalog export
+MONDO_0001941	blindness	HP_0000618	Blindness	existing exact label in catalog export

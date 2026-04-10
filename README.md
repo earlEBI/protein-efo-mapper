@@ -26,7 +26,7 @@ The web app supports:
 - `map` for analyte mapping
 - `trait-map` for disease and phenotype mapping
 
-Trait runs write TSV outputs, and when final mapped terms are still missing from the local Catalog export they also write a Catalog bulk-add TSV.
+Trait runs write TSV outputs only. The bundled Catalog export snapshot is used to check whether mapped terms already exist in the Catalog DB, prefer exact existing Catalog terms when possible, and write a Catalog bulk-add TSV when final mapped terms are still missing. A fresher local `catalog_trait_export.tsv` can override the bundled snapshot.
 
 ## More Docs
 

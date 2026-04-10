@@ -21,7 +21,7 @@ Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 ## Modes
 
 - `map` is for analytes and writes TSV outputs.
-- `trait-map` is for disease/phenotype traits and writes TSV outputs plus a Catalog bulk-add TSV when final mapped terms are still missing from the local Catalog export.
+- `trait-map` writes TSV outputs only. It uses the bundled Catalog export snapshot to check whether mapped terms already exist in the Catalog DB, prefers exact existing Catalog terms when possible, and writes a Catalog bulk-add TSV when final mapped terms are still missing. A fresher local `catalog_trait_export.tsv` can override the bundled snapshot.
 
 ## Notes
 

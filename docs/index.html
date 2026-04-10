@@ -321,7 +321,7 @@ python3 -m pip install -e .
         </div>
         <div class="mini-card">
           <h3>Download Results</h3>
-          <p>The app writes TSV outputs. Trait jobs can also write a Catalog bulk-add TSV when final mapped terms are still missing from the local Catalog export.</p>
+          <p>The app writes TSV outputs only. Trait jobs use the bundled Catalog export snapshot to check for existing Catalog terms, prefer exact existing matches when available, and write a Catalog bulk-add TSV when final mapped terms are still missing.</p>
         </div>
       </div>
     </section>
@@ -464,7 +464,7 @@ glucose	metabolite_name</pre>
         </div>
         <div class="mini-card">
           <h3>Catalog-aware output</h3>
-          <p class="small">The mapper checks proposed terms against the local Catalog export, prefers existing Catalog terms when possible, and can emit a bulk-add TSV for any remaining exact unresolved terms.</p>
+          <p class="small">The mapper checks proposed terms against the bundled Catalog export snapshot by default, prefers existing Catalog terms when possible, and can emit a bulk-add TSV for any remaining exact unresolved terms. A fresher local export can override the bundled snapshot.</p>
         </div>
         <div class="mini-card">
           <h3>TSV-only output</h3>

@@ -33,7 +33,7 @@ If you prefer to verify the local cache setup before opening the app:
 analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-`setup-bundled-caches` reuses the bundled UKB and ICD10 side caches when present, and only rebuilds or downloads missing pieces.
+`setup-bundled-caches` reuses the bundled UKB, ICD10, and Catalog trait-export side caches when present, and only rebuilds or downloads missing pieces.
 If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.
 If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.
 The compiled `measurement_index.json` is generated locally during setup; it is not required in Git history.
@@ -62,11 +62,19 @@ python3 -m pip install -e .
 What setup does on a fresh clone:
 
 - uses the bundled core caches already tracked in the repo
-- uses the bundled UKB field context, UKB supplement cache, and ICD10 side caches when present
+- uses the bundled UKB field context, UKB supplement cache, ICD10 side caches, and Catalog trait-export snapshot when present
 - downloads missing official UKB metadata files when needed
 - refreshes or reuses the MONDO ICD10 cache only when the ICD10 supplement must be rebuilt
 - builds the ICD10 label cache when missing
 - generates the local `skills/pqtl-measurement-mapper/references/measurement_index.json`
+
+Trait-mode Catalog DB behavior on a fresh clone:
+
+- the repo bundles a Catalog trait export snapshot at `skills/pqtl-measurement-mapper/references/catalog_trait_export.tsv`
+- `trait-map` uses that snapshot to check whether proposed mapped terms are already present in the Catalog DB snapshot
+- if a mapped term is absent, the mapper tries to swap to an exact existing Catalog term first
+- if no exact existing Catalog term is found, the mapper can emit a Catalog bulk-add TSV for missing terms
+- if you have a fresher local Catalog export, place it at the same path or pass it explicitly and it will override the bundled snapshot
 
 After that, you can either use the web app or run `map` and `trait-map` from the CLI. Normal runs are local/offline unless you explicitly request online refresh behavior.
 
