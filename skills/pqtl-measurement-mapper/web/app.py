@@ -246,6 +246,10 @@ def get_job(job_id: str) -> JobState:
     return job
 
 
+def _job_is_terminal(job: JobState) -> bool:
+    return job.status in {"completed", "failed"}
+
+
 def stage_job_exports(job: JobState) -> None:
     export_dir = Path(job.local_export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -449,18 +453,19 @@ def home(request: Request) -> str:
             progress_pct_text = "0.0%"
         log_lines = _tail_log_lines(job_dir / "job.log", max_lines=80)
         log_preview = "\n".join(log_lines) if log_lines else "No log lines yet."
+        is_completed = status_text == "completed"
         links: list[str] = []
-        if (job_dir / "mapped.tsv").exists() or (job_dir / "traits_mapped.tsv").exists():
+        if is_completed and ((job_dir / "mapped.tsv").exists() or (job_dir / "traits_mapped.tsv").exists()):
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/mapped">Download mapped</a>')
-        if (job_dir / "unmapped.tsv").exists():
+        if is_completed and (job_dir / "unmapped.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/unmapped">Download unmapped</a>')
-        if (job_dir / "traits_review.tsv").exists():
+        if is_completed and (job_dir / "traits_review.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/review">Download review</a>')
-        if (job_dir / "traits_qc_risk.tsv").exists():
+        if is_completed and (job_dir / "traits_qc_risk.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_risk">Download QC risk</a>')
-        if (job_dir / "traits_catalog_bulk_add.tsv").exists():
+        if is_completed and (job_dir / "traits_catalog_bulk_add.tsv").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/catalog_bulk_add">Download Catalog bulk add</a>')
-        if (job_dir / "traits_qc_summary.json").exists():
+        if is_completed and (job_dir / "traits_qc_summary.json").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/qc_summary">Download QC summary</a>')
         if (job_dir / "job.log").exists():
             links.append(f'<a href="/api/jobs/{safe_job_id}/download/log">Download run log</a>')
@@ -468,6 +473,8 @@ def home(request: Request) -> str:
             server_fallback = (
                 f'<div class="status">job={safe_job_id} mode={mode} (server fallback)</div>'
                 f'<div class="status">status={status_text} message={message_text} progress={progress_pct_text}</div>'
+                '<div class="status note">Download result files only after the job is fully completed. '
+                'If you reopen this page later, refresh once the status says completed to reveal the outputs.</div>'
                 f'<div class="status">Local output folder: {str(EXPORT_ROOT / safe_job_id)}</div>'
                 f'<div class="links">{"".join(links)}</div>'
                 f'<pre id="serverFallbackLogs">{log_preview}</pre>'
@@ -475,7 +482,7 @@ def home(request: Request) -> str:
         else:
             server_fallback = (
                 f'<div class="status">job={safe_job_id} queued/running (server fallback). '
-                "Refresh this page in a few seconds.</div>"
+                "Wait for completed status, then refresh this page to reveal the outputs.</div>"
                 f'<div class="status">status={status_text} message={message_text} progress={progress_pct_text}</div>'
                 f'<pre id="serverFallbackLogs">{log_preview}</pre>'
             )
@@ -591,6 +598,10 @@ def home(request: Request) -> str:
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    .note {
+      color: var(--accent);
+      font-weight: 600;
+    }
     .bar {
       height: 12px;
       background: #e7eef3;
@@ -685,6 +696,9 @@ def home(request: Request) -> str:
     <section class=\"hero\">
       <h1>pQTL Measurement Mapper</h1>
       <p class=\"sub\">Run analyte map (protein/metabolite) or trait-map, track progress, and download result artifacts.</p>
+      <p class=\"sub\" style=\"margin-top:8px;\">
+        Result downloads stay hidden until the run finishes. Keep this page open while it is running, or come back and refresh once the status says completed.
+      </p>
       <p class=\"sub\" style=\"margin-top:8px;\">
         Pyodide browser-only mode is temporarily unavailable in the UI while parity and performance updates are in progress.
       </p>
@@ -791,12 +805,6 @@ analyte-efo-mapper setup-bundled-caches</code></div>
       <p>Bundled UKB dictionaries used by trait mode:
       <code>references/ukb/fieldsum.txt</code>, <code>references/ukb/field.txt</code>,
       <code>references/ukb/category.txt</code>, <code>references/ukb/catbrowse.txt</code>.</p>
-      <p><strong>If you have local uncommitted changes</strong></p>
-      <div class=\"cmd\"><code>git stash
-git pull --rebase origin main
-python -m pip install -e .
-analyte-efo-mapper setup-bundled-caches
-git stash pop</code></div>
       <p><strong>After mapper/cache changes</strong></p>
       <div class=\"cmd\"><code>analyte-efo-mapper index-build</code></div>
       <p>Restart this web app after update so the new code and index are loaded.</p>
@@ -867,7 +875,15 @@ function setProgress(percent) {
 
 function renderLinks(downloads, ready) {
   linksEl.innerHTML = '';
-  if (!ready || !downloads) return;
+  if (!ready || !downloads) {
+    if (currentJobId && timer) {
+      const note = document.createElement('div');
+      note.className = 'status note';
+      note.textContent = 'Outputs will appear here only after the job is fully completed.';
+      linksEl.appendChild(note);
+    }
+    return;
+  }
   const labels = {
     mapped: 'Download mapped TSV',
     unmapped: 'Download unmapped TSV',
@@ -893,7 +909,14 @@ async function pollJob(jobId) {
     pollTick += 1;
 
     setProgress(data.progress_percent || 0);
-    setStatus(`${data.status}: ${data.message || ''}`.trim(), data.status === 'failed');
+    const statusMessage = `${data.status}: ${data.message || ''}`.trim();
+    if (data.status === 'completed') {
+      setStatus(`${statusMessage} Results are ready below.`, false);
+    } else if (data.status === 'failed') {
+      setStatus(statusMessage, true);
+    } else {
+      setStatus(`${statusMessage} Keep this page open. Download links will appear when the run finishes.`, false);
+    }
     if (logsEl) {
       const logs = data.logs || [];
       if (logs.length) {
@@ -981,7 +1004,7 @@ form.addEventListener('submit', async (e) => {
   renderLinks(null, false);
   if (logsEl) logsEl.textContent = '';
   setProgress(0);
-  setStatus('Submitting job...');
+  setStatus('Submitting job... Keep this page open until the run is completed.');
 
   try {
     const res = await fetch('/api/jobs', {
@@ -1215,6 +1238,7 @@ def job_status(job_id: str) -> JSONResponse:
                 "qc_summary": str(Path(job.local_export_dir) / Path(job.qc_summary_path).name),
                 "catalog_bulk_add": str(Path(job.local_export_dir) / Path(job.catalog_bulk_add_path).name),
             },
+            "completed": job.status == "completed",
             "downloads": (
                 {
                     "mapped": f"/api/jobs/{job_id}/download/mapped",
@@ -1239,6 +1263,8 @@ def job_status(job_id: str) -> JSONResponse:
 def download_job_file(job_id: str, kind: str) -> FileResponse:
     job = get_job(job_id)
     media_type = "text/tab-separated-values"
+    if kind != "log" and not _job_is_terminal(job):
+        raise HTTPException(status_code=409, detail="Job still running. Download outputs after completion.")
 
     if kind == "mapped":
         path = Path(job.mapped_path)
