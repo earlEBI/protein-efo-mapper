@@ -57,6 +57,8 @@ DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
 DEFAULT_EFO_OBO = SKILL_DIR / "references" / "efo.obo"
 DEFAULT_CATALOG_TRAIT_EXPORT = SKILL_DIR / "references" / "catalog_trait_export.tsv"
 DEFAULT_UKB_FIELD_CATALOG = ROOT_DIR / "references" / "ukb" / "fieldsum.txt"
+ANALYTE_TEMPLATE_PATH = ROOT_DIR / "docs" / "analyte_input_template.tsv"
+TRAIT_TEMPLATE_PATH = ROOT_DIR / "docs" / "trait_input_template.tsv"
 PYODIDE_WEB_DIR = SKILL_DIR / "web" / "pyodide"
 _venv_python = ROOT_DIR / ".venv" / "bin" / "python"
 PYTHON_BIN = Path(os.environ.get("PQTL_MAPPER_PYTHON", "")).expanduser() if os.environ.get("PQTL_MAPPER_PYTHON") else (_venv_python if _venv_python.exists() else Path(sys.executable))
@@ -618,6 +620,21 @@ def home(request: Request) -> str:
       padding: 7px 9px;
       background: #f8fcff;
     }
+    .template-links {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 10px 0 2px;
+    }
+    .template-links a {
+      font-size: 0.84rem;
+      border: 1px solid #bfd3e0;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #10405e;
+      padding: 7px 9px;
+      background: #f8fcff;
+    }
     #serverFallbackLogs {
       margin: 0;
       margin-top: 10px;
@@ -678,6 +695,10 @@ def home(request: Request) -> str:
         <form id=\"jobForm\" method=\"post\" action=\"/api/jobs\" enctype=\"multipart/form-data\">
           <label>Input File (.txt/.tsv/.csv)</label>
           <input name=\"file\" type=\"file\" required />
+          <div class=\"template-links\">
+            <a href=\"/api/templates/analyte\">Download analyte template</a>
+            <a href=\"/api/templates/trait\">Download trait template</a>
+          </div>
 
           <label>Mode</label>
           <select name=\"mode\">
@@ -1026,6 +1047,24 @@ def pyodide_asset(asset_path: str) -> FileResponse:
     elif path.suffix == ".css":
         media_type = "text/css"
     return FileResponse(path=str(path), media_type=media_type)
+
+
+@app.get("/api/templates/{kind}")
+def download_template(kind: str) -> FileResponse:
+    kind_clean = (kind or "").strip().lower()
+    if kind_clean == "analyte":
+        path = ANALYTE_TEMPLATE_PATH
+    elif kind_clean == "trait":
+        path = TRAIT_TEMPLATE_PATH
+    else:
+        raise HTTPException(status_code=404, detail="Unknown template")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Template not found")
+    return FileResponse(
+        path=str(path),
+        filename=path.name,
+        media_type="text/tab-separated-values",
+    )
 
 
 @app.post("/api/jobs")

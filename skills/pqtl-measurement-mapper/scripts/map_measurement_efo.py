@@ -408,6 +408,7 @@ DEFAULT_EFO_OBO_URL = "https://github.com/EBISPOT/efo/releases/latest/download/e
 DEFAULT_EFO_OBO_LOCAL = SKILL_DIR / "references" / "efo.obo"
 DEFAULT_EFO_OBO_BUNDLED_URL = DEFAULT_EFO_OBO_URL
 DEFAULT_TRAIT_CACHE = SKILL_DIR / "references" / "trait_mapping_cache.tsv"
+DEFAULT_BACKMAN_TEXT_CACHE = SKILL_DIR / "references" / "trait_mapping_backman_text_cache.tsv"
 DEFAULT_CATALOG_TRAIT_EXPORT = SKILL_DIR / "references" / "catalog_trait_export.tsv"
 DEFAULT_CATALOG_TRAIT_PREFERRED_OVERRIDES = (
     SKILL_DIR / "references" / "catalog_trait_preferred_overrides.tsv"
@@ -1344,11 +1345,16 @@ class TraitCacheRecord:
     rownum: int
     reported_trait: str
     lookup_text: str
+    source_code: str
+    source_data_type: str
+    additional_info: str
     icd10: str
     phecode: str
+    ukb_field_ids: tuple[str, ...]
     mapped_ids: tuple[str, ...]
     mapped_labels: tuple[str, ...]
     publication: str
+    is_text_only_supplement: bool
     is_ukb_field_supplement: bool
     is_icd10_supplement: bool
 
@@ -4750,6 +4756,10 @@ def is_icd10_supplement_publication(value: str) -> bool:
     return normalize(value).lower().startswith(normalize(ICD10_SUPPLEMENT_PUBLICATION).lower())
 
 
+def is_text_only_trait_supplement_publication(value: str) -> bool:
+    return normalize(value).lower().startswith("backmanjd_pmid34662886_text_only_seed")
+
+
 def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Trait cache not found: {path}")
@@ -4780,6 +4790,25 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
                 rownum += 1
                 reported_trait = normalize(row.get("Curated reported trait") or row.get("DISEASE/TRAIT") or "")
                 lookup_text = normalize(row.get("Lookup text") or row.get("DISEASE/TRAIT") or reported_trait)
+                source_code = normalize(
+                    row.get("Source code")
+                    or row.get("source_code")
+                    or row.get("input_source_code")
+                    or ""
+                )
+                source_data_type = normalize(
+                    row.get("Source data type")
+                    or row.get("source_data_type")
+                    or row.get("input_source_data_type")
+                    or ""
+                )
+                additional_info = normalize(
+                    row.get("Additional info")
+                    or row.get("additional_info")
+                    or row.get("Further info")
+                    or row.get("further_info")
+                    or ""
+                )
                 raw_icd10 = normalize(row.get("ICD10") or "")
                 if raw_icd10.upper() in missing_cache_markers:
                     raw_icd10 = ""
@@ -4799,6 +4828,7 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
                 publication = normalize(row.get("Publication") or "")
                 is_ukb_field_supplement = is_ukb_field_supplement_publication(publication)
                 is_icd10_supplement = is_icd10_supplement_publication(publication)
+                is_text_only_supplement = is_text_only_trait_supplement_publication(publication)
 
                 raw_ids = split_multi_ids(row.get("main ontology URI(s)") or row.get("MAPPED_TRAIT_URI") or "")
                 if not raw_ids:
@@ -4851,18 +4881,23 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
                     rownum=rownum,
                     reported_trait=reported_trait,
                     lookup_text=lookup_text,
+                    source_code=source_code,
+                    source_data_type=source_data_type,
+                    additional_info=additional_info,
                     icd10=icd10,
                     phecode=phecode,
+                    ukb_field_ids=tuple(sorted(ukb_ids)),
                     mapped_ids=tuple(canon_ids),
                     mapped_labels=tuple(labels),
                     publication=publication,
+                    is_text_only_supplement=is_text_only_supplement,
                     is_ukb_field_supplement=is_ukb_field_supplement,
                     is_icd10_supplement=is_icd10_supplement,
                 )
                 rec_idx = len(records)
                 records.append(record)
 
-                if not is_ukb_field_supplement:
+                if not is_ukb_field_supplement and not is_text_only_supplement:
                     if icd10:
                         icd10_index.setdefault(icd10, []).append(rec_idx)
                         label_hints: set[str] = set()
@@ -4878,8 +4913,9 @@ def load_trait_cache_index(path: Path, extra_paths: list[Path] | None = None) ->
                     if phecode:
                         phecode_index.setdefault(phecode, []).append(rec_idx)
 
-                for ukb_field_id in ukb_ids:
-                    ukb_field_index.setdefault(ukb_field_id, []).append(rec_idx)
+                if not is_text_only_supplement:
+                    for ukb_field_id in ukb_ids:
+                        ukb_field_index.setdefault(ukb_field_id, []).append(rec_idx)
 
                 if not is_ukb_field_supplement and not is_icd10_supplement:
                     for text_value in {reported_trait, lookup_text}:
@@ -39801,6 +39837,7 @@ def main() -> int:
                 if manual_curator_seed_cache_arg
                 else DEFAULT_MANUAL_CURATOR_SEED_CACHE
             )
+            backman_text_cache_path = DEFAULT_BACKMAN_TEXT_CACHE
             manual_curator_rescue_overrides_arg = normalize(args.manual_curator_rescue_overrides)
             manual_curator_rescue_overrides_path = (
                 Path(args.manual_curator_rescue_overrides)
@@ -39829,6 +39866,11 @@ def main() -> int:
                 print(
                     "[WARN] ICD10 supplemental trait cache not found; "
                     "setup can build it with setup-bundled-caches."
+                )
+            if backman_text_cache_path.exists():
+                extra_trait_cache_paths.append(backman_text_cache_path)
+                print(
+                    f"[OK] loaded Backman text-only trait cache from {backman_text_cache_path}"
                 )
             manual_curator_rescue_index: dict[tuple[str, str], dict[str, str]] = {}
             if manual_curator_cache_policy == "disable":
