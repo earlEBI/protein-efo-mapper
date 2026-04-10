@@ -17,11 +17,11 @@ cd analyte-efo-mapper
 
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
+python3 -m pip install -U pip
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
 
-analyte-efo-mapper setup-bundled-caches
+.venv/bin/analyte-efo-mapper setup-bundled-caches
 .venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -51,12 +51,12 @@ cd analyte-efo-mapper
 
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
+python3 -m pip install -U pip
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
 
-analyte-efo-mapper setup-bundled-caches
-analyte-efo-mapper cache-status --strict
+.venv/bin/analyte-efo-mapper setup-bundled-caches
+.venv/bin/analyte-efo-mapper cache-status --strict
 ```
 
 What setup does on a fresh clone:

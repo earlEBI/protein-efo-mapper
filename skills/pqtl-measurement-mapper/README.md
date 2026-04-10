@@ -8,17 +8,15 @@ Set up the local Uvicorn app from the repository root:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+source .venv/bin/activate
+python3 -m pip install -U pip
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
+.venv/bin/analyte-efo-mapper setup-bundled-caches
 .venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
-
-If your checkout uses `skills-src` instead of `skills`, run:
-
-```bash
-.venv/bin/python -m uvicorn --app-dir skills-src/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000
-```
 
 ## Modes
 
