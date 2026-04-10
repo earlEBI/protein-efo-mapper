@@ -303,7 +303,7 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 .venv/bin/analyte-efo-mapper setup-bundled-caches
 .venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000</pre>
-          <p class="small" style="margin-top:10px;">Then open <code>http://127.0.0.1:8000</code>.</p>
+          <p class="small" style="margin-top:10px;">Then open <code>http://127.0.0.1:8000</code>. The repo already bundles the core ontology and cache files, and setup builds the local search index.</p>
         </div>
       </div>
     </section>
@@ -321,7 +321,7 @@ python3 -m pip install -e .
         </div>
         <div class="mini-card">
           <h3>Download Results</h3>
-          <p>The app writes TSV outputs only. Trait jobs use the bundled Catalog export snapshot to check for existing Catalog terms, prefer exact existing matches when available, and write a Catalog bulk-add TSV when final mapped terms are still missing.</p>
+          <p>The app writes TSV outputs only. The repo bundles the core ontology and cache files, and trait jobs use the bundled Catalog export snapshot to check for existing Catalog terms, prefer exact existing matches when available, and write a Catalog bulk-add TSV when final mapped terms are still missing.</p>
         </div>
       </div>
     </section>
@@ -351,7 +351,7 @@ python3 -m pip install -e .</pre>
           <h3>Prepare bundled caches</h3>
           <pre>.venv/bin/analyte-efo-mapper setup-bundled-caches</pre>
           <p class="small" style="margin-top:10px;">
-            This prepares the local reference files the mapper needs, including the measurement index and bundled trait resources.
+            This uses the bundled ontology/cache files and builds the local `measurement_index.json` needed for fast mapping.
           </p>
         </div>
         <div class="step">
@@ -504,7 +504,7 @@ glucose	metabolite_name</pre>
         <tbody>
           <tr>
             <td><code>skills/pqtl-measurement-mapper/references/efo.obo</code></td>
-            <td>Trait fallback ontology and term validation.</td>
+            <td>Bundled trait fallback ontology and term validation.</td>
           </tr>
           <tr>
             <td><code>skills/pqtl-measurement-mapper/references/trait_mapping_cache.tsv</code></td>

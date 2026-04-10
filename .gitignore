@@ -1,3 +1,18 @@
+ Generated/downloaded mapper artifacts. Fresh clones can use bundled caches directly, and setup refreshes or rebuilds them when needed.
+skills/pqtl-measurement-mapper/references/measurement_index.json
+references/ukb/*
+!references/ukb/field.txt
+!references/ukb/fieldsum.txt
+!references/ukb/category.txt
+!references/ukb/catbrowse.txt
+!references/ukb/field_trait_supplement_cache.tsv
+references/icd10/*
+!references/icd10/icd10_label_index.tsv
+!references/icd10/icd10_trait_supplement_cache.tsv
+skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv
+skills/pqtl-measurement-mapper/web/pyodide/cache_bundle.json
+skills/pqtl-measurement-mapper/web/pyodide/trait_runtime_bundle.zip
+skills/pqtl-measurement-mapper/web/pyodide/analyte_runtime_bundle.zip
 .venv/
 __pycache__/
 *.pyc
@@ -15,7 +30,6 @@ references/ukb/*
 references/icd10/*
 !references/icd10/icd10_label_index.tsv
 !references/icd10/icd10_trait_supplement_cache.tsv
-skills/pqtl-measurement-mapper/references/efo.obo
 skills/pqtl-measurement-mapper/references/uniprot_aliases_light.tsv
 skills/pqtl-measurement-mapper/web/pyodide/cache_bundle.json
 skills/pqtl-measurement-mapper/web/pyodide/trait_runtime_bundle.zip

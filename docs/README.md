@@ -33,10 +33,10 @@ If you prefer to verify the local cache setup before opening the app:
 analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-`setup-bundled-caches` reuses the bundled UKB, ICD10, and Catalog trait-export side caches when present, and only rebuilds or downloads missing pieces.
+`setup-bundled-caches` reuses the bundled EFO OBO, UKB, ICD10, UniProt/metabolite, trait, and Catalog trait-export caches when present, and mainly rebuilds the local `measurement_index.json` from those bundled files.
 If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.
 If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.
-The compiled `measurement_index.json` is generated locally during setup; it is not required in Git history.
+The compiled `measurement_index.json` is generated locally during setup. It is intentionally not bundled in Git history because it is much larger than the underlying bundled cache files.
 
 ### Fresh Machine Install
 
@@ -62,7 +62,7 @@ python3 -m pip install -e .
 What setup does on a fresh clone:
 
 - uses the bundled core caches already tracked in the repo
-- uses the bundled UKB field context, UKB supplement cache, ICD10 side caches, and Catalog trait-export snapshot when present
+- uses the bundled EFO OBO, UniProt/metabolite alias caches, trait caches, UKB field context, UKB supplement cache, ICD10 side caches, and Catalog trait-export snapshot when present
 - downloads missing official UKB metadata files when needed
 - refreshes or reuses the MONDO ICD10 cache only when the ICD10 supplement must be rebuilt
 - builds the ICD10 label cache when missing
