@@ -26,7 +26,7 @@ The web app supports:
 - `map` for analyte mapping
 - `trait-map` for disease and phenotype mapping
 
-Trait runs write TSV outputs only. The bundled core caches include `efo.obo`, UniProt aliases, HMDB/metabolite aliases, trait caches, UKB/ICD10 side caches, and the Catalog export snapshot. `setup-bundled-caches` mainly builds the local `measurement_index.json` from those bundled files. Trait runs write TSV outputs only, check mapped terms against the bundled Catalog export snapshot, prefer exact existing Catalog terms when possible, and write a Catalog bulk-add TSV when final mapped terms are still missing. A fresher local `catalog_trait_export.tsv` can override the bundled snapshot.
+Trait runs write TSV outputs only. The bundled core caches include `efo.obo`, UniProt aliases, HMDB/metabolite aliases, trait caches, UKB/ICD10 side caches, the ICD10 alias cache, the MONDO SSSOM cache, and the Catalog export snapshot. `setup-bundled-caches` mainly builds the local `measurement_index.json` from those bundled files and verifies that the quality-preserving ICD10 caches are present. Trait runs write TSV outputs only, check mapped terms against the bundled Catalog export snapshot, prefer exact existing Catalog terms when possible, and write a Catalog bulk-add TSV when final mapped terms are still missing. A fresher local `catalog_trait_export.tsv` can override the bundled snapshot.
 
 ## More Docs
 

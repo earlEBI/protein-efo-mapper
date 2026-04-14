@@ -462,9 +462,9 @@ CACHE_REQUIREMENT_BY_NAME = {
     "ukb_field_supplement_cache": "required",
     "icd10_supplement_cache": "required",
     "icd10_label_cache": "recommended",
-    "icd10_label_alias_cache": "recommended",
+    "icd10_label_alias_cache": "required",
     "efo_obo": "required",
-    "mondo_sssom_cache": "recommended",
+    "mondo_sssom_cache": "required",
     "hmdb_source_dir": "optional",
     "metabolite_download_dir": "optional",
 }
@@ -503,10 +503,10 @@ CACHE_DESCRIPTION_BY_NAME = {
     "ukb_category_tree": "UK Biobank category hierarchy.",
     "ukb_field_supplement_cache": "Derived UKB trait supplement cache built during setup.",
     "icd10_supplement_cache": "Derived ICD10 trait supplement cache built during setup.",
-    "icd10_label_cache": "Optional ICD10 label lookup cache.",
-    "icd10_label_alias_cache": "Optional ICD10 alias lookup cache (order/codes short+long labels and alias snippets).",
+    "icd10_label_cache": "Bundled ICD10 label lookup cache.",
+    "icd10_label_alias_cache": "Bundled ICD10 alias lookup cache (order/codes short+long labels and alias snippets).",
     "efo_obo": "Local EFO ontology fallback used for trait resolution.",
-    "mondo_sssom_cache": "Optional MONDO SSSOM cache used when refreshing ICD10 mappings.",
+    "mondo_sssom_cache": "Bundled MONDO SSSOM cache used for quality-preserving ICD10 enrichment.",
     "hmdb_source_dir": "Optional HMDB source workspace for metabolite refreshes.",
     "metabolite_download_dir": "Optional download workspace for metabolite refreshes.",
 }
@@ -31510,6 +31510,31 @@ def looks_like_tsv_with_columns(path: Path, required_columns: tuple[str, ...]) -
     return all(normalize(col) in normalized_header for col in required_columns)
 
 
+def looks_like_comment_prefixed_tsv_with_columns(
+    path: Path,
+    required_columns: tuple[str, ...],
+    *,
+    comment_prefix: str = "#",
+) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+            header: list[str] = []
+            for raw_line in handle:
+                stripped = raw_line.strip()
+                if not stripped or stripped.startswith(comment_prefix):
+                    continue
+                header = raw_line.rstrip("\r\n").split("\t")
+                break
+    except OSError:
+        return False
+    if not header:
+        return False
+    normalized_header = {normalize(col) for col in header if normalize(col)}
+    return all(normalize(col) in normalized_header for col in required_columns)
+
+
 def ensure_tsv_available(
     *,
     path: Path,
@@ -31540,6 +31565,40 @@ def ensure_tsv_available(
 
     if not looks_like_tsv_with_columns(path, required_columns):
         raise ValueError(f"Downloaded {label} did not contain expected TSV columns: {path}")
+    return path, "downloaded"
+
+
+def ensure_mondo_sssom_cache_available(
+    *,
+    path: Path,
+    download_url: str,
+    timeout: float,
+) -> tuple[Path, str]:
+    required_columns = ("subject_id", "object_id")
+    if looks_like_comment_prefixed_tsv_with_columns(path, required_columns):
+        return path, "local"
+
+    url = normalize(download_url)
+    if not url:
+        raise FileNotFoundError(
+            f"MONDO SSSOM cache not found at {path}, and no download URL was provided."
+        )
+
+    try:
+        download_to_file(url, path, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Failed to download MONDO SSSOM cache (url={url}, http_status={exc.code}). "
+            f"Provide a valid local file via {path} or override the download URL."
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Failed to download MONDO SSSOM cache (url={url}, reason={exc.reason}). "
+            f"Provide a valid local file via {path} or override the download URL."
+        ) from exc
+
+    if not looks_like_comment_prefixed_tsv_with_columns(path, required_columns):
+        raise ValueError(f"Downloaded MONDO SSSOM cache did not contain expected TSV columns: {path}")
     return path, "downloaded"
 
 
@@ -37990,14 +38049,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--icd10-label-alias-cache",
         default=str(DEFAULT_ICD10_LABEL_ALIAS_CACHE),
-        help="Output ICD10 label alias cache TSV path",
+        help="Bundled/local ICD10 label alias cache TSV path",
     )
     p_setup.add_argument(
         "--icd10-mondo-sssom-cache",
         default=str(DEFAULT_MONDO_SSSOM_CACHE),
         help=(
-            "Local MONDO SSSOM cache path used by setup for ICD10 enrichment. "
-            "setup-bundled-caches refreshes this file from --icd10-mondo-sssom-url when reachable."
+            "Bundled/local MONDO SSSOM cache path used by setup for ICD10 enrichment. "
+            "If it is missing, setup-bundled-caches downloads it from --icd10-mondo-sssom-url."
         ),
     )
     p_setup.add_argument(
@@ -38938,6 +38997,16 @@ def main() -> int:
                         ("ukb_category_tree", ukb_category_tree_path),
                     ]
                 )
+            mondo_sssom_cache_path, mondo_sssom_source = ensure_mondo_sssom_cache_available(
+                path=mondo_sssom_cache_path,
+                download_url=args.icd10_mondo_sssom_url,
+                timeout=float(args.icd10_mondo_download_timeout),
+            )
+            if mondo_sssom_source != "local":
+                print(
+                    f"[OK] provisioned MONDO SSSOM cache at {mondo_sssom_cache_path} "
+                    f"(source={mondo_sssom_source})"
+                )
             missing = [f"{name}={path}" for name, path in required_paths if not path.exists()]
             if missing:
                 raise FileNotFoundError(
@@ -39118,6 +39187,19 @@ def main() -> int:
                         f"(codes={icd10_alias_stats.get('codes', 0)}, "
                         f"aliases={icd10_alias_stats.get('aliases', 0)})"
                     )
+
+            quality_cache_paths = [
+                ("icd10_label_alias_cache", icd10_label_alias_cache_path),
+                ("mondo_sssom_cache", mondo_sssom_cache_path),
+            ]
+            quality_cache_missing = [
+                f"{name}={path}" for name, path in quality_cache_paths if not path.exists()
+            ]
+            if quality_cache_missing:
+                raise FileNotFoundError(
+                    "Missing quality-critical setup caches after provisioning: "
+                    + ", ".join(quality_cache_missing)
+                )
 
             extra_trait_cache_paths: list[Path] = []
             if ukb_field_supplement_cache_path.exists():

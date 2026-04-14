@@ -303,7 +303,7 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 .venv/bin/analyte-efo-mapper setup-bundled-caches
 .venv/bin/python -m uvicorn --app-dir skills/pqtl-measurement-mapper/web app:app --reload --host 127.0.0.1 --port 8000</pre>
-          <p class="small" style="margin-top:10px;">Then open <code>http://127.0.0.1:8000</code>. The repo already bundles the core ontology and cache files, and setup builds the local search index.</p>
+          <p class="small" style="margin-top:10px;">Then open <code>http://127.0.0.1:8000</code>. The repo already bundles the core ontology and quality caches, including the MONDO SSSOM and ICD10 alias caches, and setup builds the local search index.</p>
         </div>
       </div>
     </section>
@@ -321,7 +321,7 @@ python3 -m pip install -e .
         </div>
         <div class="mini-card">
           <h3>Download Results</h3>
-          <p>The app writes TSV outputs only. The repo bundles the core ontology and cache files, and trait jobs use the bundled Catalog export snapshot to check for existing Catalog terms, prefer exact existing matches when available, and write a Catalog bulk-add TSV when final mapped terms are still missing.</p>
+          <p>The app writes TSV outputs only. The repo bundles the core ontology and quality caches, and trait jobs use the bundled Catalog export snapshot plus the bundled MONDO and ICD10 quality caches to preserve local mapping quality.</p>
         </div>
       </div>
     </section>
@@ -351,7 +351,7 @@ python3 -m pip install -e .</pre>
           <h3>Prepare bundled caches</h3>
           <pre>.venv/bin/analyte-efo-mapper setup-bundled-caches</pre>
           <p class="small" style="margin-top:10px;">
-            This uses the bundled ontology/cache files and builds the local `measurement_index.json` needed for fast mapping.
+            This uses the bundled ontology/cache files, verifies the bundled MONDO and ICD10 alias quality caches, and builds the local `measurement_index.json` needed for fast mapping.
           </p>
         </div>
         <div class="step">
@@ -521,6 +521,14 @@ glucose	metabolite_name</pre>
           <tr>
             <td><code>references/ukb/*</code></td>
             <td>UKB field and category context used for trait mapping.</td>
+          </tr>
+          <tr>
+            <td><code>references/icd10/mondo.sssom.tsv</code></td>
+            <td>Bundled MONDO ICD10 mapping cache used to preserve ICD10 mapping quality during setup and rebuilds.</td>
+          </tr>
+          <tr>
+            <td><code>references/icd10/icd10_label_alias_index.tsv</code></td>
+            <td>Bundled ICD10 alias cache used to preserve exact ICD10 label and alias coverage during setup and rebuilds.</td>
           </tr>
         </tbody>
       </table>

@@ -33,9 +33,9 @@ If you prefer to verify the local cache setup before opening the app:
 analyte-efo-mapper cache-status --strict --output-json final_output/analyte_mapper_cache_status.json
 ```
 
-`setup-bundled-caches` reuses the bundled EFO OBO, UKB, ICD10, UniProt/metabolite, trait, and Catalog trait-export caches when present, and mainly rebuilds the local `measurement_index.json` from those bundled files.
+`setup-bundled-caches` reuses the bundled EFO OBO, UKB, ICD10, UniProt/metabolite, trait, MONDO SSSOM, ICD10 alias, and Catalog trait-export caches when present, and mainly rebuilds the local `measurement_index.json` from those bundled files.
 If local UKB metadata files are missing, setup downloads the official UKB metadata tables automatically.
-If live MONDO refresh fails (for example offline), setup falls back to the local MONDO cache file.
+If bundled MONDO or ICD10 alias quality caches are missing, setup downloads or rebuilds them before completing.
 The compiled `measurement_index.json` is generated locally during setup. It is intentionally not bundled in Git history because it is much larger than the underlying bundled cache files.
 
 ### Fresh Machine Install
@@ -62,9 +62,9 @@ python3 -m pip install -e .
 What setup does on a fresh clone:
 
 - uses the bundled core caches already tracked in the repo
-- uses the bundled EFO OBO, UniProt/metabolite alias caches, trait caches, UKB field context, UKB supplement cache, ICD10 side caches, and Catalog trait-export snapshot when present
+- uses the bundled EFO OBO, UniProt/metabolite alias caches, trait caches, UKB field context, UKB supplement cache, ICD10 side caches, ICD10 alias cache, MONDO SSSOM cache, and Catalog trait-export snapshot when present
 - downloads missing official UKB metadata files when needed
-- refreshes or reuses the MONDO ICD10 cache only when the ICD10 supplement must be rebuilt
+- verifies that the MONDO SSSOM cache and ICD10 alias cache are present, downloading or rebuilding them when missing
 - builds the ICD10 label cache when missing
 - generates the local `skills/pqtl-measurement-mapper/references/measurement_index.json`
 
@@ -284,8 +284,9 @@ Setup validates and uses:
 - `references/ukb/category.txt`
 - `references/ukb/catbrowse.txt`
 - `references/ukb/field_trait_supplement_cache.tsv` (generated)
-- `references/icd10/mondo.sssom.tsv` (downloaded/refreshed in setup)
+- `references/icd10/mondo.sssom.tsv` (bundled quality cache; setup refreshes or downloads it when missing)
 - `references/icd10/icd10_label_index.tsv` (generated/downloaded from the official CMS ICD10 release when missing)
+- `references/icd10/icd10_label_alias_index.tsv` (bundled quality cache; setup rebuilds it when missing)
 - `references/icd10/icd10_trait_supplement_cache.tsv` (generated from EFO ICD10 xrefs plus local MONDO cache)
 
 ## 7) What The Final Index Contains

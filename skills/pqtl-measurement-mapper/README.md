@@ -21,7 +21,7 @@ Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 ## Modes
 
 - `map` is for analytes and writes TSV outputs.
-- `trait-map` writes TSV outputs only. The repo bundles `efo.obo`, UniProt/metabolite alias caches, trait caches, and the Catalog export snapshot. `setup-bundled-caches` builds the local `measurement_index.json`, and trait-map checks mapped terms against the bundled Catalog export snapshot, prefers exact existing Catalog terms when possible, and writes a Catalog bulk-add TSV when final mapped terms are still missing. A fresher local `catalog_trait_export.tsv` can override the bundled snapshot.
+- `trait-map` writes TSV outputs only. The repo bundles `efo.obo`, UniProt/metabolite alias caches, trait caches, the ICD10 alias cache, the MONDO SSSOM cache, and the Catalog export snapshot. `setup-bundled-caches` builds the local `measurement_index.json`, verifies that the bundled quality-critical ICD10 caches are present, and trait-map checks mapped terms against the bundled Catalog export snapshot, prefers exact existing Catalog terms when possible, and writes a Catalog bulk-add TSV when final mapped terms are still missing. A fresher local `catalog_trait_export.tsv` can override the bundled snapshot.
 
 ## Notes
 
