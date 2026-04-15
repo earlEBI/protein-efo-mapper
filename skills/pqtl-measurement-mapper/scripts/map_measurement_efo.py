@@ -36781,13 +36781,13 @@ def collect_default_cache_status_specs(
             "icd10_label_alias_cache",
             icd10_label_alias_cache_path,
             False,
-            CACHE_REQUIREMENT_BY_NAME.get("icd10_label_alias_cache", "recommended"),
+            CACHE_REQUIREMENT_BY_NAME.get("icd10_label_alias_cache", "required"),
         ),
         CacheStatusSpec(
             "mondo_sssom_cache",
             mondo_sssom_cache_path,
             False,
-            CACHE_REQUIREMENT_BY_NAME.get("mondo_sssom_cache", "recommended"),
+            CACHE_REQUIREMENT_BY_NAME.get("mondo_sssom_cache", "required"),
         ),
         CacheStatusSpec("efo_obo", efo_obo_path, False, CACHE_REQUIREMENT_BY_NAME.get("efo_obo", "required")),
     ]
