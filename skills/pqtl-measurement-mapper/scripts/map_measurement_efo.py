@@ -1246,6 +1246,14 @@ GENERIC_TRAIT_LABEL_KEYS = {
 }
 ALLOWED_TRAIT_OUTPUT_PREFIXES = {"EFO", "MONDO", "HP", "OBA"}
 FORBIDDEN_TRAIT_IDS = {"PATO_0000461"}
+ALLOWED_TRAIT_GO_FALLBACK_LABELS = {
+    "response to stimulus",
+}
+ALLOWED_TRAIT_GO_FALLBACK_PREFIXES = (
+    "response to ",
+    "cellular response to ",
+)
+ACTIVE_TRAIT_GO_FALLBACK_IDS: set[str] = set()
 FORBIDDEN_TRAIT_LABEL_KEYS = {
     "normal",
     "mental health",
@@ -2517,8 +2525,30 @@ def trait_output_prefix_allowed(prefix: str) -> bool:
     return prefix in ALLOWED_TRAIT_OUTPUT_PREFIXES
 
 
+def trait_go_fallback_label_allowed(label: str) -> bool:
+    label_key = normalize_trait_semantic_text(label) or norm_key(label)
+    if not label_key:
+        return False
+    return label_key in ALLOWED_TRAIT_GO_FALLBACK_LABELS or any(
+        label_key.startswith(prefix) for prefix in ALLOWED_TRAIT_GO_FALLBACK_PREFIXES
+    )
+
+
+def trait_go_fallback_id_allowed(ontology_id: str) -> bool:
+    oid = canonicalize_trait_ontology_id(ontology_id)
+    return oid in ACTIVE_TRAIT_GO_FALLBACK_IDS
+
+
 def trait_output_id_allowed(ontology_id: str) -> bool:
-    return trait_output_prefix_allowed(trait_ontology_prefix(ontology_id))
+    oid = canonicalize_trait_ontology_id(ontology_id)
+    return trait_output_prefix_allowed(trait_ontology_prefix(oid)) or trait_go_fallback_id_allowed(oid)
+
+
+def trait_output_preference_rank(ontology_id: str) -> int:
+    oid = canonicalize_trait_ontology_id(ontology_id)
+    if trait_go_fallback_id_allowed(oid):
+        return len(TRAIT_PREFERRED_PREFIX_ORDER)
+    return TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(oid), 999)
 
 
 def split_multi_ids(value: str) -> list[str]:
@@ -4144,7 +4174,7 @@ def build_multi_concept_exact_candidate(
         key=lambda item: (
             -max(len(s.split()) for s in item[1]),
             -len(item[1]),
-            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(item[0]), 999),
+            trait_output_preference_rank(item[0]),
             item[0],
         ),
     )
@@ -4956,6 +4986,7 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
     if not obo_path.exists():
         raise FileNotFoundError(f"EFO OBO not found: {obo_path}")
 
+    ACTIVE_TRAIT_GO_FALLBACK_IDS.clear()
     terms: dict[str, TraitOntologyTerm] = {}
     obsolete_terms: dict[str, TraitObsoleteTerm] = {}
     exact_index: dict[str, set[str]] = {}
@@ -4996,6 +5027,9 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
 
         prefix = trait_ontology_prefix(current_id)
         prefix_allowed = prefix in TRAIT_PREFERRED_PREFIX_ORDER
+        if not prefix_allowed and prefix == "GO" and trait_go_fallback_label_allowed(current_label):
+            prefix_allowed = True
+            ACTIVE_TRAIT_GO_FALLBACK_IDS.add(current_id)
 
         if current_obsolete:
             if prefix_allowed:
@@ -5004,7 +5038,7 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
                     oid = canonicalize_trait_ontology_id(item)
                     if not oid:
                         continue
-                    if trait_ontology_prefix(oid) not in TRAIT_PREFERRED_PREFIX_ORDER:
+                    if not trait_output_id_allowed(oid):
                         continue
                     if oid not in replaced_by:
                         replaced_by.append(oid)
@@ -5014,7 +5048,7 @@ def load_trait_ontology_index(obo_path: Path) -> dict[str, Any]:
                     oid = canonicalize_trait_ontology_id(item)
                     if not oid:
                         continue
-                    if trait_ontology_prefix(oid) not in TRAIT_PREFERRED_PREFIX_ORDER:
+                    if not trait_output_id_allowed(oid):
                         continue
                     if oid not in consider:
                         consider.append(oid)
@@ -5799,7 +5833,7 @@ def pick_preferred_mapping_pair(mapped_ids: str, mapped_labels: str) -> tuple[st
         pairs.append((item, label))
     pairs.sort(
         key=lambda pair: (
-            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(pair[0]), 999),
+            trait_output_preference_rank(pair[0]),
             pair[0],
         )
     )
@@ -5816,7 +5850,7 @@ def pick_preferred_ontology_term(
     ordered = sorted(
         (term_id for term_id in term_ids if term_id in ontology_terms),
         key=lambda term_id: (
-            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+            trait_output_preference_rank(term_id),
             term_id,
         ),
     )
@@ -6705,7 +6739,7 @@ def build_ukb_field_supplement_cache(
         scored_terms.sort(
             key=lambda item: (
                 item[0],
-                -TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(item[1]), 999),
+                -trait_output_preference_rank(item[1]),
                 item[1],
             ),
             reverse=True,
@@ -7004,7 +7038,7 @@ def trait_candidate_prefix_rank(candidate_id: str) -> int:
         return 999
     best = 999
     for part in parts:
-        rank = TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(part), 999)
+        rank = trait_output_preference_rank(part)
         if rank < best:
             best = rank
     return best
@@ -7015,6 +7049,23 @@ def candidate_has_go_mapping(candidate_id: str) -> bool:
     if not parts:
         return False
     return any(trait_ontology_prefix(part) == "GO" for part in parts)
+
+
+def candidate_has_allowed_go_fallback_mapping(candidate_id: str) -> bool:
+    parts = split_multi_ids(candidate_id)
+    if not parts:
+        return False
+    return any(trait_go_fallback_id_allowed(part) for part in parts)
+
+
+def candidate_has_disallowed_go_mapping(candidate_id: str) -> bool:
+    parts = split_multi_ids(candidate_id)
+    if not parts:
+        return False
+    return any(
+        trait_ontology_prefix(part) == "GO" and not trait_go_fallback_id_allowed(part)
+        for part in parts
+    )
 
 
 def candidate_has_hp_mapping(candidate_id: str) -> bool:
@@ -7688,7 +7739,7 @@ def preferred_exact_term_for_phrase(
     ordered = sorted(
         candidate_ids,
         key=lambda tid: (
-            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+            trait_output_preference_rank(tid),
             tid,
         ),
     )
@@ -7730,7 +7781,7 @@ def preferred_exact_term_for_phrase_with_required_tokens(
     ordered = sorted(
         filtered_ids,
         key=lambda tid: (
-            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+            trait_output_preference_rank(tid),
             tid,
         ),
     )
@@ -7840,7 +7891,7 @@ def preferred_exact_cancer_family_term_for_phrase(
                 family_rank,
                 location_overlap,
                 lexical_overlap,
-                -TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+                -trait_output_preference_rank(term_id),
                 term_id,
             )
         )
@@ -8446,7 +8497,7 @@ def map_trait_queries(
                 ordered = sorted(
                     exact_term_ids,
                     key=lambda tid: (
-                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        trait_output_preference_rank(tid),
                         tid,
                     ),
                 )
@@ -12485,7 +12536,7 @@ def map_trait_queries(
                                 or norm_key(ontology_terms[tid].label)
                             )
                         ),
-                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        trait_output_preference_rank(tid),
                         len(normalize(ontology_terms[tid].label)),
                         tid,
                     ),
@@ -12547,7 +12598,7 @@ def map_trait_queries(
                                 or norm_key(ontology_terms[tid].label)
                             )
                         ),
-                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        trait_output_preference_rank(tid),
                         len(normalize(ontology_terms[tid].label)),
                         tid,
                     ),
@@ -12730,7 +12781,7 @@ def map_trait_queries(
                 ordered = sorted(
                     exact_term_ids,
                     key=lambda tid: (
-                        TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(tid), 999),
+                        trait_output_preference_rank(tid),
                         tid,
                     ),
                 )
@@ -12775,7 +12826,7 @@ def map_trait_queries(
             scored_terms.sort(
                 key=lambda item: (
                     item[0],
-                    -TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(item[1]), 999),
+                    -trait_output_preference_rank(item[1]),
                     item[1],
                 ),
                 reverse=True,
@@ -13915,9 +13966,9 @@ def map_trait_queries(
                 candidate for candidate in candidates if candidate_has_hp_mapping(candidate.efo_id)
             ]
         for candidate in candidates:
-            if candidate_has_go_mapping(candidate.efo_id):
+            if candidate_has_disallowed_go_mapping(candidate.efo_id):
                 candidate.is_validated = False
-                candidate.evidence = f"{candidate.evidence}; GO term mappings always require review"
+                candidate.evidence = f"{candidate.evidence}; disallowed GO term mappings always require review"
         query_lexical_norm = normalize_trait_text_for_similarity(query_for_matching) or (
             query_exact_norms[0] if query_exact_norms else norm_key(query_for_matching)
         )
@@ -17054,8 +17105,15 @@ def map_trait_queries(
                     )
                 )
                 go_mapping_block = (
-                    candidate_has_go_mapping(candidate.efo_id)
-                    and not trait_semantic_label
+                    candidate_has_disallowed_go_mapping(candidate.efo_id)
+                    or (
+                        candidate_has_go_mapping(candidate.efo_id)
+                        and not candidate_has_allowed_go_fallback_mapping(candidate.efo_id)
+                    )
+                    or (
+                        candidate_has_allowed_go_fallback_mapping(candidate.efo_id)
+                        and not trait_semantic_label
+                    )
                 )
                 uberon_mapping_block = (
                     candidate_has_uberon_mapping(candidate.efo_id)
@@ -17976,7 +18034,7 @@ def apply_obsolete_trait_id_output_guard(
                     label_rescue_ids = sorted(
                         label_rescue_ids,
                         key=lambda rid: (
-                            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(rid), 999),
+                            trait_output_preference_rank(rid),
                             rid,
                         ),
                     )
@@ -18082,7 +18140,7 @@ def apply_no_uberon_output_guard(
         ordered = sorted(
             candidate_ids,
             key=lambda term_id: (
-                TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+                trait_output_preference_rank(term_id),
                 term_id,
             ),
         )
@@ -18566,7 +18624,7 @@ def select_specific_shared_parent_term(
         candidates,
         key=lambda term_id: (
             trait_term_depth(term_id, term_parents=term_parents, memo=depth_memo, visiting=visiting),
-            -TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999),
+            -trait_output_preference_rank(term_id),
             len(informative_trait_tokens(norm_key(ontology_terms[term_id].label))),
             term_id,
         ),
@@ -18738,7 +18796,7 @@ def _resolve_low_confidence_ids_and_labels(
                     replacement_ids = sorted(
                         dict.fromkeys(replacement_ids),
                         key=lambda rid: (
-                            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(rid), 999),
+                            trait_output_preference_rank(rid),
                             rid,
                         ),
                     )
@@ -23909,7 +23967,7 @@ def harmonize_trait_rows_by_query_constraints(
                 )
                 if candidate_is_broad_umbrella_trait(probe):
                     score -= 0.20
-                prefix_rank = TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(term_id), 999)
+                prefix_rank = trait_output_preference_rank(term_id)
                 candidate_rows.append((0 if tier == 0 else 1, score, prefix_rank, term_id, term_label))
         if not candidate_rows:
             return ("", "", "")
@@ -28112,7 +28170,7 @@ def harmonize_trait_rows_by_query_constraints(
                     label = normalize(term_label)
                     if not canonical_id or not label:
                         return
-                    if trait_ontology_prefix(canonical_id) not in ALLOWED_TRAIT_OUTPUT_PREFIXES:
+                    if not trait_output_id_allowed(canonical_id):
                         return
                     candidate_score = trait_similarity_score(
                         source_similarity_text,
@@ -37188,7 +37246,7 @@ def parse_catalog_mapped_pairs(
     pairs: list[tuple[str, str]] = []
     issues: list[str] = []
     for idx, mapped_id in enumerate(raw_ids):
-        if trait_ontology_prefix(mapped_id) not in TRAIT_PREFERRED_PREFIX_ORDER:
+        if not trait_output_id_allowed(mapped_id):
             continue
         label = normalize(labels[idx] if idx < len(labels) else "")
         pairs.append((mapped_id, label))
@@ -37300,7 +37358,7 @@ def choose_best_catalog_term_id(
             0 if canonical_id == source_id else 1,
             0 if source_exact and label_exact == source_exact else 1,
             0 if source_norm and label_norm == source_norm else 1,
-            TRAIT_PREFERRED_PREFIX_ORDER.get(trait_ontology_prefix(canonical_id), 999),
+            trait_output_preference_rank(canonical_id),
             canonical_id,
         )
 
