@@ -14,7 +14,7 @@ MONDO_1060198	ischemic stroke	HP_0002140	Ischemic stroke	existing exact label in
 MONDO_0017611	pituitary adenoma	MONDO_0021439	benign neoplasm of pituitary gland	best existing condition match in catalog export
 MONDO_0043839	peptic ulcer	MONDO_0004247	peptic ulcer disease	best existing condition match in catalog export
 EFO_0004244	interstitial lung disease	MONDO_0015925	interstitial lung disease	existing exact label in catalog export
-MONDO_0000945	chronic venous insufficiency	HP_0005293	Venous insufficiency	best existing condition match in catalog export
+HP_0005293	Venous insufficiency	MONDO_0000945	venous insufficiency	prefer MONDO disease term over xref-only HP alias
 EFO_0000668	pre-eclampsia	MONDO_0005081	preeclampsia	existing exact label variant in catalog export
 EFO_0005773	retinal detachment	MONDO_0008375	retinal detachment	existing exact label in catalog export
 HP_0010535	sleep apnea	MONDO_0005296	sleep apnea syndrome	best existing condition match in catalog export
