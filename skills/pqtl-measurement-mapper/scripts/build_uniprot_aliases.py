@@ -23,6 +23,8 @@ ACCESSION_KEYS = ["entry", "accession", "uniprotkb", "uniprot_id"]
 GENE_KEYS = ["gene names (primary)", "gene names", "gene", "genes"]
 PROTEIN_KEYS = ["protein names", "protein name", "protein"]
 ALT_NAME_KEYS = ["alternative products", "protein names", "gene names"]
+DEFAULT_DOWNLOAD_DIRNAME = ".cache"
+DEFAULT_UNIPROT_EXPORT_FILENAME = "uniprot_human_export.tsv"
 
 
 def normalize(text: str) -> str:
@@ -96,6 +98,10 @@ def download_uniprot_export(url: str, out_path: Path, timeout: float) -> None:
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
         out_path.write_bytes(response.read())
+
+
+def resolve_default_download_path(output_path: Path, filename: str) -> Path:
+    return output_path.resolve().parent / DEFAULT_DOWNLOAD_DIRNAME / filename
 
 
 def build_aliases(input_path: Path, output_path: Path, source_tag: str) -> tuple[int, int]:
@@ -184,8 +190,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--download-to",
-        default="/tmp/uniprot_human_export.tsv",
-        help="Path for downloaded UniProt export when --download-human is used",
+        default="",
+        help=(
+            "Path for downloaded UniProt export when --download-human is used. "
+            f"Defaults to <output-parent>/{DEFAULT_DOWNLOAD_DIRNAME}/{DEFAULT_UNIPROT_EXPORT_FILENAME}"
+        ),
     )
     parser.add_argument(
         "--reviewed-only",
@@ -205,12 +214,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    output_path = Path(args.output)
     try:
         input_path: Path
         source_tag = args.source
 
         if args.download_human:
-            input_path = Path(args.download_to)
+            input_path = (
+                Path(args.download_to)
+                if args.download_to
+                else resolve_default_download_path(output_path, DEFAULT_UNIPROT_EXPORT_FILENAME)
+            )
             url = build_uniprot_human_stream_url(reviewed_only=args.reviewed_only)
             download_uniprot_export(url, input_path, timeout=args.timeout)
             print(f"[OK] downloaded UniProt export to {input_path}")
@@ -221,8 +235,8 @@ def main() -> int:
                 raise ValueError("--input is required unless --download-human is set")
             input_path = Path(args.input)
 
-        input_rows, output_rows = build_aliases(input_path, Path(args.output), source_tag)
-        print(f"[OK] processed {input_rows} rows and wrote {output_rows} accessions to {args.output}")
+        input_rows, output_rows = build_aliases(input_path, output_path, source_tag)
+        print(f"[OK] processed {input_rows} rows and wrote {output_rows} accessions to {output_path}")
         return 0
     except Exception as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

@@ -37330,7 +37330,6 @@ def discover_catalog_trait_export_path(
         add_candidate(input_path.parent / "efo-traits-export.tsv")
     if output_path is not None:
         add_candidate(output_path.parent / "efo-traits-export.tsv")
-    add_candidate(Path.home() / "Downloads" / "efo-traits-export.tsv")
 
     for candidate in candidates:
         if candidate.exists():
@@ -38975,7 +38974,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Optional live catalog trait export TSV with columns like trait/uri. "
             "If omitted, trait-map auto-discovers efo-traits-export.tsv from common locations "
-            "(bundled references, current working directory, input/output directory, Downloads)."
+            "(bundled references, current working directory, input directory, output directory)."
         ),
     )
     p_trait.add_argument(

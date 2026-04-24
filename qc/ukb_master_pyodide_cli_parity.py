@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 ID_PATTERN = re.compile(r"\b(?:EFO|MONDO|HP|OBA)_[0-9]{3,}\b")
+DEFAULT_OUTPUT_DIR = Path("tmp")
 
 
 def normalize(value: str) -> str:
@@ -270,25 +271,25 @@ def main() -> int:
         help="Pyodide mapping engine: fast (mapper_core) or cli_compat (runtime bundle + map_measurement_efo.py)",
     )
     parser.add_argument("--min-score", type=float, default=0.82)
-    parser.add_argument("--cli-output", type=Path, default=Path("/tmp/ukb_master_cli_mapped.tsv"))
-    parser.add_argument("--cli-review-output", type=Path, default=Path("/tmp/ukb_master_cli_review.tsv"))
-    parser.add_argument("--cli-qc-risk-output", type=Path, default=Path("/tmp/ukb_master_cli_qc_risk.tsv"))
-    parser.add_argument("--cli-qc-summary-output", type=Path, default=Path("/tmp/ukb_master_cli_qc_summary.json"))
-    parser.add_argument("--pyodide-output", type=Path, default=Path("/tmp/ukb_master_pyodide_mapped.tsv"))
+    parser.add_argument("--cli-output", type=Path, default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_mapped.tsv")
+    parser.add_argument("--cli-review-output", type=Path, default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_review.tsv")
+    parser.add_argument("--cli-qc-risk-output", type=Path, default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_qc_risk.tsv")
+    parser.add_argument("--cli-qc-summary-output", type=Path, default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_qc_summary.json")
+    parser.add_argument("--pyodide-output", type=Path, default=DEFAULT_OUTPUT_DIR / "ukb_master_pyodide_mapped.tsv")
     parser.add_argument(
         "--compare-output",
         type=Path,
-        default=Path("/tmp/ukb_master_cli_pyodide_manual_compare.tsv"),
+        default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_pyodide_manual_compare.tsv",
     )
     parser.add_argument(
         "--summary-output",
         type=Path,
-        default=Path("/tmp/ukb_master_cli_pyodide_manual_summary.json"),
+        default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_pyodide_manual_summary.json",
     )
     parser.add_argument(
         "--focus-output",
         type=Path,
-        default=Path("/tmp/ukb_master_cli_pyodide_manual_focus.tsv"),
+        default=DEFAULT_OUTPUT_DIR / "ukb_master_cli_pyodide_manual_focus.tsv",
         help=(
             "Focused rows where CLI is manual_only/different_nonoverlap and "
             "Pyodide is exact_match/partial_overlap."

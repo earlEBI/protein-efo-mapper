@@ -24,6 +24,8 @@ ALLOWED_ID_RE = re.compile(r"^(EFO|OBA):\d+$", re.IGNORECASE)
 CHEBI_XREF_RE = re.compile(r"CHEBI[:_](\d{1,7})", re.IGNORECASE)
 HMDB_XREF_RE = re.compile(r"HMDB[:_]?([0-9]{3,})", re.IGNORECASE)
 KEGG_XREF_RE = re.compile(r"(?:CPD:|COMPOUND:|KEGG[:_])([CD]\d{5})", re.IGNORECASE)
+DEFAULT_DOWNLOAD_DIRNAME = ".cache"
+DEFAULT_EFO_OBO_FILENAME = "efo.obo"
 
 
 def normalize(text: str) -> str:
@@ -252,6 +254,10 @@ def download_obo(url: str, out_path: Path, timeout: float) -> None:
         out_path.write_bytes(resp.read())
 
 
+def resolve_default_download_path(output_path: Path, filename: str) -> Path:
+    return output_path.resolve().parent / DEFAULT_DOWNLOAD_DIRNAME / filename
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build full measurement branch cache from EFO OBO")
     parser.add_argument(
@@ -265,8 +271,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--download-to",
-        default="/tmp/efo.obo",
-        help="Where to save downloaded OBO before parsing",
+        default="",
+        help=(
+            "Where to save downloaded OBO before parsing. "
+            f"Defaults to <output-parent>/{DEFAULT_DOWNLOAD_DIRNAME}/{DEFAULT_EFO_OBO_FILENAME}"
+        ),
     )
     parser.add_argument(
         "--measurement-root",
@@ -285,11 +294,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    output_path = Path(args.output)
     try:
         if args.efo_obo:
             obo_path = Path(args.efo_obo)
         else:
-            obo_path = Path(args.download_to)
+            obo_path = (
+                Path(args.download_to)
+                if args.download_to
+                else resolve_default_download_path(output_path, DEFAULT_EFO_OBO_FILENAME)
+            )
             download_obo(args.download_url, obo_path, timeout=args.timeout)
             print(f"[OK] downloaded EFO OBO to {obo_path}")
 
@@ -305,8 +319,8 @@ def main() -> int:
         if root_id not in selected_ids:
             raise ValueError(f"Measurement root not found in ontology graph: {root_id}")
 
-        count = write_cache(terms, selected_ids, Path(args.output), args.source)
-        print(f"[OK] wrote {count} measurement terms to {args.output} (root={root_id})")
+        count = write_cache(terms, selected_ids, output_path, args.source)
+        print(f"[OK] wrote {count} measurement terms to {output_path} (root={root_id})")
         return 0
     except Exception as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

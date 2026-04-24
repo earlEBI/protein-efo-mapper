@@ -1,0 +1,38 @@
+name: pqtl-measurement-mapper
+purpose: Map analyte and trait inputs to controlled EFO or OBA terms for downstream GWAS curation.
+audience:
+  - curation
+owner:
+  team: gwas-catalog
+  contact: gwas-catalog-maintainers
+status: draft
+inputs:
+  required:
+    - query file in txt, list, csv, or tsv format with analyte or trait inputs
+    - current analyte-efo-mapper checkout or installed analyte-efo-mapper tool with bundled pqtl resources
+  optional:
+    - explicit input type columns such as query_type or input_type
+    - trait-map columns such as trait_scale, code, and data_type for disease or phenotype mapping
+    - explicit path to analyte-efo-mapper CLI or map_measurement_efo.py script
+outputs:
+  primary:
+    - mapping TSV emitted by analyte-efo-mapper map or trait-map commands
+  notes:
+    - trait-map runs may also write a review TSV for manual follow-up
+    - analyte workflows may also write unmapped-only TSV output
+    - downstream consumers should keep validation=validated rows and manually review medium-confidence rows
+dependencies:
+  tools:
+    - python3
+    - analyte-efo-mapper checkout or installed CLI
+  references:
+    - references/mapping-guidelines.md
+  assumptions:
+    - use the bundled mapper in the current checkout when available, otherwise locate or bootstrap an analyte-efo-mapper installation first
+    - setup-bundled-caches has been run, or equivalent bundled resources are already present, before first trait-map use
+    - local shortlist validation is preferred over free-form LLM selection for ambiguous mappings
+test_coverage:
+  level: manual
+  scenarios:
+    - use the current checkout or an installed analyte-efo-mapper tool to map protein or metabolite identifiers to measurement EFO terms
+    - use the current checkout or an installed analyte-efo-mapper tool to run trait-map with review flags for ambiguous disease or phenotype cases

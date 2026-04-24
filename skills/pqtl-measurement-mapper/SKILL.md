@@ -130,7 +130,6 @@ Build local index:
 ```bash
 .venv/bin/python skills/pqtl-measurement-mapper/scripts/build_uniprot_aliases.py \
   --download-human \
-  --download-to /tmp/uniprot_human_export.tsv \
   --output skills/pqtl-measurement-mapper/references/uniprot_aliases.tsv \
   --source uniprot-human-live
 ```

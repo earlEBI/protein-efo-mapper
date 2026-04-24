@@ -64,9 +64,9 @@ Use the QC helper to compare manual mappings vs CLI trait-map vs Pyodide mapper:
 
 ```bash
 .venv/bin/python qc/ukb_master_pyodide_cli_parity.py \
-  --manual-input /Users/earl/Downloads/UK_Biobank_master_file.tsv \
+  --manual-input ./path/to/UK_Biobank_master_file.tsv \
   --run-cli \
   --pyodide-engine cli_compat
 ```
 
-Outputs default to `/tmp/ukb_master_cli_pyodide_manual_{compare,focus,summary}.*`.
+Outputs default to `./tmp/ukb_master_cli_pyodide_manual_{compare,focus,summary}.*`.
