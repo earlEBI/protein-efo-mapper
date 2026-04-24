@@ -1,4 +1,4 @@
 interface:
   display_name: "pQTL Measurement Mapper"
-  short_description: "Map proteins or metabolites to measurement EFO terms"
-  default_prompt: "Use $pqtl-measurement-mapper to map protein/metabolite IDs or gene symbols to measurement EFO IDs with validation."
+  short_description: "Map analytes or traits to EFO/OBA terms using the local mapper checkout or an installed analyte-efo-mapper tool"
+  default_prompt: "Use $pqtl-measurement-mapper to map analyte or trait inputs to validated EFO/OBA terms. If the mapper is available in the current checkout, use it here; otherwise locate or bootstrap an analyte-efo-mapper install first, then run map or trait-map as appropriate."
